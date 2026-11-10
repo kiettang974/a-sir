@@ -1,0 +1,6 @@
+[workspace]
+members = ["app", "crates/asr-core"]
+resolver = "3"
+
+[profile.release]
+lto = "thin"

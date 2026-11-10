@@ -1,0 +1,8 @@
+# whisper.cpp's CMake probes CPU features by *running* a tiny program per feature. On
+# macOS 27.2 the i8mm/SVE/SME probes spin forever instead of crashing with an illegal
+# instruction, so the build hangs. Pre-set the answers the probes gave on this Mac before
+# (dotprod is still probed; it runs fine). whisper-rs-sys passes GGML_* env vars to CMake.
+[env]
+GGML_MACHINE_SUPPORTS_i8mm = "0"
+GGML_MACHINE_SUPPORTS_sve = "0"
+GGML_MACHINE_SUPPORTS_sme = "0"

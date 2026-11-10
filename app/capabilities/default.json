@@ -1,0 +1,14 @@
+{
+  "identifier": "default",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "dialog:allow-ask",
+    "dialog:allow-message",
+    "clipboard-manager:allow-write-text",
+    "clipboard-manager:allow-write-html",
+    "opener:allow-reveal-item-in-dir"
+  ]
+}

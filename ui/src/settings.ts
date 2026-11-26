@@ -20,6 +20,12 @@ import {
   type SummaryStyleOption,
 } from "./ipc";
 
+const PROVIDER_KEY_URL: Record<Provider, string> = {
+  claude: "https://console.anthropic.com/settings/keys",
+  chatGpt: "https://platform.openai.com/api-keys",
+  gemini: "https://aistudio.google.com/apikey",
+};
+
 const FALLBACK_STYLES: SummaryStyleOption[] = [
   {
     id: "workEmail",
@@ -1556,6 +1562,12 @@ function providerBlock(
       "div",
       { className: "provider-head" },
       el("span", { textContent: name }),
+      el("button", {
+        className: "link",
+        textContent: "Tạo API key ↗",
+        title: `Mở trang tạo API key của ${name}`,
+        onclick: () => invoke("open_url", { url: PROVIDER_KEY_URL[provider] }),
+      }),
       el(
         "label",
         {},

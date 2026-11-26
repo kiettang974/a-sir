@@ -9,7 +9,11 @@ use std::sync::Mutex;
 
 use audio_server::AudioServer;
 
-use asr_core::ai::{AiSettings, Provider, SummaryStyle, SummaryStyleInfo};
+use asr_core::ai::{AiSettings, ModelProbe, Provider, SummaryStyle, SummaryStyleInfo};
+use asr_core::clean::AiCleanProposal;
+use asr_core::context::{
+    ACCEPTED_EXTENSIONS, ContextAttachment, MAX_FILE_BYTES, MAX_TOTAL_BYTES, MeetingContext,
+};
 use asr_core::deliverable::{MeetingRow, TemplateFormat};
 use asr_core::glossary::Term;
 use asr_core::models::{CustomModel, DiscoveredModel, ModelStore, ModelSummary};
@@ -311,10 +315,11 @@ async fn probe_accessible_models(
     app: State<'_, App>,
     provider: Provider,
     candidates: Option<Vec<String>>,
-) -> Result<Vec<String>, String> {
+    model: String,
+) -> Result<ModelProbe, String> {
     let client = app
         .workspace
-        .client(provider, Some(""))
+        .client(provider, Some(&model))
         .map_err(|e| e.to_string())?;
     off_thread(move || {
         client
@@ -405,18 +410,129 @@ fn export_glossary(app: State<App>, terms: Vec<Term>, path: PathBuf) -> Result<(
 }
 
 /// Sends the transcript to the provider the user picked, and only that one.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MeetingContextView {
+    notes: String,
+    attachments: Vec<ContextAttachment>,
+    max_file_bytes: u64,
+    max_total_bytes: u64,
+    accepted_extensions: &'static [&'static str],
+}
+
+impl From<MeetingContext> for MeetingContextView {
+    fn from(ctx: MeetingContext) -> Self {
+        Self {
+            notes: ctx.notes,
+            attachments: ctx.attachments,
+            max_file_bytes: MAX_FILE_BYTES,
+            max_total_bytes: MAX_TOTAL_BYTES,
+            accepted_extensions: &ACCEPTED_EXTENSIONS,
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AddContextFilesView {
+    context: MeetingContextView,
+    errors: Vec<String>,
+}
+
+#[tauri::command]
+fn get_meeting_context(app: State<App>, id: u64) -> MeetingContextView {
+    app.workspace.context_store().load(id).into()
+}
+
+#[tauri::command]
+fn save_meeting_context_notes(
+    app: State<App>,
+    id: u64,
+    notes: String,
+) -> Result<MeetingContextView, String> {
+    app.workspace
+        .context_store()
+        .save_notes(id, &notes)
+        .map(Into::into)
+}
+
+#[tauri::command]
+fn add_meeting_context_files(
+    app: State<App>,
+    id: u64,
+    paths: Vec<PathBuf>,
+) -> Result<AddContextFilesView, String> {
+    let res = app.workspace.context_store().add_files(id, &paths)?;
+    Ok(AddContextFilesView {
+        context: res.context.into(),
+        errors: res.errors,
+    })
+}
+
+#[tauri::command]
+fn remove_meeting_context_file(
+    app: State<App>,
+    id: u64,
+    attachment_id: String,
+) -> Result<MeetingContextView, String> {
+    app.workspace
+        .context_store()
+        .remove_file(id, &attachment_id)
+        .map(Into::into)
+}
+
+#[tauri::command]
+async fn preview_ai_clean(
+    app: State<'_, App>,
+    id: u64,
+    provider: Provider,
+    use_context: bool,
+) -> Result<AiCleanProposal, String> {
+    let transcript = app.runner.transcript(id)?.text()?;
+    let workspace = app.workspace.clone();
+    off_thread(move || {
+        let (notes, attachments) = if use_context {
+            workspace.context_store().load_ai_attachments(id)?
+        } else {
+            (String::new(), Vec::new())
+        };
+        workspace
+            .propose_ai_clean(provider, &transcript, &notes, &attachments)
+            .map_err(|e| e.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+fn save_ai_clean(app: State<App>, id: u64, cleaned_text: String) -> Result<PathBuf, String> {
+    app.runner.transcript(id)?.write_ai_cleaned(&cleaned_text)
+}
+
 #[tauri::command]
 async fn summarize_job(
     app: State<'_, App>,
     id: u64,
     provider: Provider,
     profile_id: Option<String>,
+    use_context: Option<bool>,
 ) -> Result<Draft, String> {
     let transcript = app.runner.transcript(id)?.text()?;
     let workspace = app.workspace.clone();
+    let include_context = use_context.unwrap_or(false);
     off_thread(move || {
+        let (notes, attachments) = if include_context {
+            workspace.context_store().load_ai_attachments(id)?
+        } else {
+            (String::new(), Vec::new())
+        };
         workspace
-            .summarize_with_profile_override(provider, &transcript, profile_id.as_deref())
+            .summarize_with_context(
+                provider,
+                &transcript,
+                profile_id.as_deref(),
+                &notes,
+                &attachments,
+            )
             .map_err(|e| e.to_string())
     })
     .await
@@ -910,6 +1026,12 @@ fn main() {
             import_glossary,
             export_glossary,
             summarize_job,
+            get_meeting_context,
+            save_meeting_context_notes,
+            add_meeting_context_files,
+            remove_meeting_context_file,
+            preview_ai_clean,
+            save_ai_clean,
             save_note,
             load_note,
             meeting_templates,

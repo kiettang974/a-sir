@@ -90,19 +90,28 @@ impl Transcript {
     /// Writes "<name>_fixed.txt" applying both built-in cleanup and user glossary replacements.
     pub fn write_cleaned_with_glossary(&self, terms: &[Term]) -> Result<PathBuf, String> {
         let cleaned = clean::clean_transcript_with_glossary(&self.text()?, terms);
+        self.write_variant("_fixed", &cleaned)
+    }
+
+    /// Writes an AI-cleaned copy as "<name>_ai_fixed.txt" without overwriting existing copies.
+    pub fn write_ai_cleaned(&self, cleaned: &str) -> Result<PathBuf, String> {
+        self.write_variant("_ai_fixed", cleaned)
+    }
+
+    fn write_variant(&self, suffix: &str, content: &str) -> Result<PathBuf, String> {
         let dir = self.txt.parent().unwrap_or(Path::new("."));
         let stem = format!(
-            "{}_fixed",
+            "{}{suffix}",
             self.txt.file_stem().unwrap_or_default().to_string_lossy()
         );
         for mut paths in candidates(dir, &stem, &["txt"]) {
             let path = paths.remove(0);
             match fs::read_to_string(&path) {
-                Ok(existing) if existing == cleaned => return Ok(path),
+                Ok(existing) if existing == content => return Ok(path),
                 Ok(_) => continue,
                 Err(_) if path.exists() => continue,
                 Err(_) => {
-                    save_atomic(&path, cleaned.as_bytes())
+                    save_atomic(&path, content.as_bytes())
                         .map_err(|e| format!("không ghi được {}: {e}", path.display()))?;
                     return Ok(path);
                 }

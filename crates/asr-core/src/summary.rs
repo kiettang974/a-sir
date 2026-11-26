@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::ai::{AiError, LlmClient, SummaryStyle};
+use crate::ai::{AiAttachment, AiError, LlmClient, SummaryStyle};
 use crate::glossary::Term;
 
 /// A timestamped quote backing a row; `seconds` is where playback starts.
@@ -454,11 +454,46 @@ pub fn summarize_with_profile(
     template_columns: &[String],
     profile: SummaryProfileMode<'_>,
 ) -> Result<Draft, AiError> {
-    let reply = client.complete(
-        &system_prompt(style, template_columns, profile),
-        &prompt(transcript, terms),
-        &schema(),
-    )?;
+    summarize_with_context(client, transcript, terms, style, template_columns, profile, "", &[])
+}
+
+/// Full entry point including optional per-recording notes and multimodal attachments.
+#[allow(clippy::too_many_arguments)]
+pub fn summarize_with_context(
+    client: &dyn LlmClient,
+    transcript: &str,
+    terms: &[Term],
+    style: SummaryStyle,
+    template_columns: &[String],
+    profile: SummaryProfileMode<'_>,
+    context_notes: &str,
+    attachments: &[AiAttachment],
+) -> Result<Draft, AiError> {
+    let mut sys = system_prompt(style, template_columns, profile);
+    let mut user_prompt = prompt(transcript, terms);
+    let has_notes = !context_notes.trim().is_empty();
+    let has_attachments = !attachments.is_empty();
+    if has_notes || has_attachments {
+        sys.push_str(
+            "\n\nQuy tắc dùng ngữ cảnh cuộc họp (ghi chú và tài liệu đính kèm):\n\
+             - Ngữ cảnh CHỈ dùng để nhận diện đúng tên riêng, thuật ngữ, tên hệ thống, đối tượng và mục tiêu cuộc họp.\n\
+             - Mọi quyết định đã chốt, người phụ trách và thời hạn BẮT BUỘC phải có căn cứ trực tiếp trong bản chép lời.\n\
+             - Nếu tài liệu trước họp đề xuất một phương án nhưng cuộc họp chốt phương án khác, ghi theo phương án cuộc họp chốt và dẫn mốc giờ từ bản chép lời.\n\
+             - Nếu thông tin chỉ có trong tài liệu hoặc cuộc họp nói sẽ chốt sau / chưa rõ, đưa vào `pending` (Cần xác nhận), KHÔNG tự ghi là đã chốt.\n\
+             - Trích dẫn (`quote`) và mốc giờ (`time`) luôn lấy từ bản chép lời.",
+        );
+        if has_notes {
+            user_prompt.push_str(&format!(
+                "\n\nGhi chú ngữ cảnh cuộc họp do người dùng cung cấp:\n{}",
+                context_notes.trim()
+            ));
+        }
+    }
+    let reply = if has_attachments {
+        client.complete_with_attachments(&sys, &user_prompt, &schema(), attachments)?
+    } else {
+        client.complete(&sys, &user_prompt, &schema())?
+    };
     parse(&reply)
 }
 

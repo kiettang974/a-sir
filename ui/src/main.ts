@@ -8,6 +8,7 @@ import "@fontsource/literata/vietnamese-400.css";
 import "@fontsource/literata/latin-400.css";
 import "./style.css";
 
+import { aiCleanPane, contextTabBody } from "./context";
 import { el } from "./dom";
 import { icon } from "./icons";
 import { type LocalModelProgress, overflowMenu, progressBar } from "./ipc";
@@ -86,7 +87,8 @@ let suppressClickOnce = false;
 let pendingQueueRender = false;
 let transcript: { id: number; text: string; lines: Line[] } | null = null;
 let readerNote = "";
-let view: "reader" | "memos" | "settings" | "note" = "reader";
+let view: "reader" | "memos" | "settings" | "note" | "aiClean" = "reader";
+let readerTab: "transcript" | "context" = "transcript";
 let pendingSettingsTab: "speech" | "ai" | "minutes" | "glossary" | "update" | undefined;
 let memos: MemoList | null = null;
 let memoFilter = "";
@@ -239,6 +241,7 @@ function forget(id: number) {
 
 async function select(id: number) {
   view = "reader";
+  readerTab = "transcript";
   selected = id;
   readerNote = "";
   transcript = null;
@@ -837,7 +840,7 @@ function readerPane(): HTMLElement {
           },
           {
             label: "Làm sạch bản chép",
-            title: "Bỏ câu rác, gộp từ lặp và sửa từ nghe nhầm theo danh sách từ vựng riêng",
+            title: "Bỏ câu rác, gộp từ lặp và sửa từ nghe nhầm theo danh sách từ vựng riêng tại máy",
             onClick: async () => {
               try {
                 const path = await invoke<string>("clean_transcript", { id: job.id });
@@ -848,14 +851,52 @@ function readerPane(): HTMLElement {
             },
           },
           {
+            label: "Làm sạch bằng AI",
+            title: "Dùng AI cùng ngữ cảnh cuộc họp để đề xuất sửa tên riêng và thuật ngữ nghe nhầm",
+            onClick: () => {
+              view = "aiClean";
+              render();
+            },
+          },
+          {
             label: "Mở trong Finder",
             onClick: () => revealItemInDir(state.txt),
           },
         ]),
       ),
     ),
-    readerNote ? el("p", { className: "note", textContent: readerNote }) : null,
-    el("article", { className: "transcript" }, ...(shown === null ? [] : transcriptLines(shown.lines))),
+    el(
+      "div",
+      { className: "settings-tabs", role: "tablist", ariaLabel: "Chế độ xem bản ghi" },
+      el("button", {
+        className: `settings-tab${readerTab === "transcript" ? " active" : ""}`,
+        role: "tab",
+        textContent: "Bản chép lời",
+        onclick: () => {
+          if (readerTab === "transcript") return;
+          readerTab = "transcript";
+          render();
+        },
+      }),
+      el("button", {
+        className: `settings-tab${readerTab === "context" ? " active" : ""}`,
+        role: "tab",
+        textContent: "Ngữ cảnh",
+        onclick: () => {
+          if (readerTab === "context") return;
+          readerTab = "context";
+          render();
+        },
+      }),
+    ),
+    readerTab === "context"
+      ? contextTabBody(job.id)
+      : el(
+          "div",
+          { className: "reader-body" },
+          readerNote ? el("p", { className: "note", textContent: readerNote }) : null,
+          el("article", { className: "transcript" }, ...(shown === null ? [] : transcriptLines(shown.lines))),
+        ),
   );
 }
 
@@ -941,7 +982,38 @@ function rightPane(): HTMLElement {
         pendingSettingsTab = "ai";
         render();
       },
+      openContext: () => {
+        view = "reader";
+        readerTab = "context";
+        render();
+      },
       back: () => select(job.id),
+    });
+  }
+  if (view === "aiClean" && job) {
+    return aiCleanPane(job.id, jobName(job), {
+      openSettings: () => {
+        view = "settings";
+        selected = null;
+        pendingSettingsTab = "ai";
+        render();
+      },
+      openContext: () => {
+        view = "reader";
+        readerTab = "context";
+        render();
+      },
+      back: () => {
+        view = "reader";
+        readerTab = "transcript";
+        render();
+      },
+      onSaved: (path) => {
+        view = "reader";
+        readerTab = "transcript";
+        readerNote = `Đã lưu bản làm sạch bằng AI: ${baseName(path)} (cùng thư mục với bản gốc).`;
+        render();
+      },
     });
   }
   return readerPane();
@@ -991,7 +1063,7 @@ async function main() {
       pendingQueueRender = true;
       return;
     }
-    if (view !== "reader" && modelsReady) {
+    if ((view !== "reader" || readerTab === "context") && modelsReady) {
       // Leave the right pane alone: rebuilding it would lose what is being typed there.
       root.querySelector(".queue")?.replaceWith(queuePane());
       refreshMemoControls();

@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::ai::{AiError, AiSettings, ApiKeys, HttpClient, Provider};
+use crate::ai::{AiAttachment, AiError, AiSettings, ApiKeys, HttpClient, Provider};
+use crate::clean::{self, AiCleanProposal};
+use crate::context::ContextStore;
 use crate::deliverable::{self, MeetingRow, TemplateFormat};
 use crate::docx;
 use crate::excel;
@@ -462,10 +464,14 @@ impl Workspace {
         cols
     }
 
+    pub fn context_store(&self) -> ContextStore {
+        ContextStore::new(&self.dir)
+    }
+
     /// Sends the transcript to `provider`, and only that one, with the user's glossary,
     /// summary writing style, active summary profile, and any custom template columns saved at invocation time.
     pub fn summarize(&self, provider: Provider, transcript: &str) -> Result<Draft, AiError> {
-        self.summarize_with_profile_override(provider, transcript, None)
+        self.summarize_with_context(provider, transcript, None, "", &[])
     }
 
     /// Same as [`Self::summarize`], optionally overriding the summary profile for this run
@@ -475,6 +481,18 @@ impl Workspace {
         provider: Provider,
         transcript: &str,
         profile_id: Option<&str>,
+    ) -> Result<Draft, AiError> {
+        self.summarize_with_context(provider, transcript, profile_id, "", &[])
+    }
+
+    /// Summarizes with optional profile override and optional per-recording context notes/attachments.
+    pub fn summarize_with_context(
+        &self,
+        provider: Provider,
+        transcript: &str,
+        profile_id: Option<&str>,
+        context_notes: &str,
+        attachments: &[AiAttachment],
     ) -> Result<Draft, AiError> {
         let style = self.ai_settings().summary_style;
         let columns = self.active_template_columns();
@@ -499,13 +517,33 @@ impl Workspace {
         } else {
             SummaryProfileMode::BaOpenKit
         };
-        summary::summarize_with_profile(
+        summary::summarize_with_context(
             &self.client(provider, None)?,
             transcript,
             &self.glossary(),
             style,
             &columns,
             profile_mode,
+            context_notes,
+            attachments,
+        )
+    }
+
+    /// Asks the selected AI provider to propose grounded transcript corrections using glossary
+    /// and optional per-recording notes/attachments.
+    pub fn propose_ai_clean(
+        &self,
+        provider: Provider,
+        transcript: &str,
+        context_notes: &str,
+        attachments: &[AiAttachment],
+    ) -> Result<AiCleanProposal, AiError> {
+        clean::propose_ai_clean(
+            &self.client(provider, None)?,
+            transcript,
+            &self.glossary(),
+            context_notes,
+            attachments,
         )
     }
 

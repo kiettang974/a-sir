@@ -57,6 +57,7 @@ impl Provider {
                 "gemini-3.8-flash",
                 "gemini-3.7-flash",
                 "gemini-3.6-flash",
+                "gemini-3.5-flash",
                 "gemini-4-argon",
                 "gemini-4-carbon",
                 "gemini-2.5-flash",
@@ -96,9 +97,41 @@ pub enum AiError {
     MissingKey,
 }
 
+/// Optional attachment sent alongside a prompt (plain text or base64 image/PDF).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AiAttachment {
+    Text {
+        name: String,
+        content: String,
+    },
+    Binary {
+        name: String,
+        mime_type: String,
+        base64: String,
+    },
+}
+
 pub trait LlmClient: Send + Sync {
     /// The model's text. `schema` constrains it to JSON of that shape.
     fn complete(&self, system: &str, user: &str, schema: &Value) -> Result<String, AiError>;
+
+    /// Same as [`Self::complete`] with optional multimodal attachments (text, images, PDFs).
+    fn complete_with_attachments(
+        &self,
+        system: &str,
+        user: &str,
+        schema: &Value,
+        attachments: &[AiAttachment],
+    ) -> Result<String, AiError> {
+        let _ = attachments;
+        self.complete(system, user, schema)
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+pub struct ModelProbe {
+    pub checked: Vec<String>,
+    pub accessible: Vec<String>,
 }
 
 pub struct HttpClient {
@@ -205,19 +238,22 @@ impl HttpClient {
         }
     }
 
-    /// Probes up to 6 prioritized modern models in parallel with tiny fast calls and returns
-    /// only the ones this API key actually has quota/permission to invoke.
+    /// Checks the selected model and up to five other candidates in parallel.
+    /// Returns both the models checked and the subset that responded successfully.
     /// Pass `prefetched` from an earlier `list_models()` call to avoid a duplicate network round-trip.
     pub fn probe_accessible_models(
         &self,
         prefetched: Option<&[String]>,
-    ) -> Result<Vec<String>, AiError> {
+    ) -> Result<ModelProbe, AiError> {
         const MAX_PROBES: usize = 6;
         let available = match prefetched {
-            Some(list) if !list.is_empty() => list.to_vec(),
+            Some(list) => list.to_vec(),
             _ => filter_modern_models(self.provider, self.list_models()?),
         };
-        let mut candidates: Vec<String> = Vec::new();
+        let mut candidates = Vec::new();
+        if !self.model.is_empty() {
+            candidates.push(self.model.clone());
+        }
         for &rec in self.provider.recommended_models() {
             if available.iter().any(|m| m == rec) && !candidates.iter().any(|c| c == rec) {
                 candidates.push(rec.to_owned());
@@ -252,20 +288,25 @@ impl HttpClient {
                     let client_ref = &probe_client;
                     scope.spawn(move || {
                         let (url, headers, body) = probe.request("Reply OK", "OK", None, 8);
-                        (id, probe.send_with(client_ref, &url, &headers, &body).is_ok())
+                        (
+                            id,
+                            probe.send_with(client_ref, &url, &headers, &body).is_ok(),
+                        )
                     })
                 })
                 .collect();
-            handles
-                .into_iter()
-                .filter_map(|h| h.join().ok())
-                .collect()
+            handles.into_iter().filter_map(|h| h.join().ok()).collect()
         });
 
-        Ok(results
+        let checked = results.iter().map(|(id, _)| id.clone()).collect();
+        let accessible = results
             .into_iter()
             .filter_map(|(id, ok)| ok.then_some(id))
-            .collect())
+            .collect();
+        Ok(ModelProbe {
+            checked,
+            accessible,
+        })
     }
 
     /// Short plain-text completion (e.g. naming a custom Markdown profile).
@@ -299,17 +340,70 @@ impl HttpClient {
         schema: Option<&Value>,
         max_tokens: u32,
     ) -> (String, Vec<(&'static str, String)>, Value) {
+        self.request_with_attachments(system, user, schema, max_tokens, &[])
+    }
+
+    fn request_with_attachments(
+        &self,
+        system: &str,
+        user: &str,
+        schema: Option<&Value>,
+        max_tokens: u32,
+        attachments: &[AiAttachment],
+    ) -> (String, Vec<(&'static str, String)>, Value) {
+        let mut full_user = user.to_owned();
+        for att in attachments {
+            if let AiAttachment::Text { name, content } = att {
+                full_user.push_str(&format!(
+                    "\n\n--- Tài liệu đính kèm: {name} ---\n{}",
+                    content.trim()
+                ));
+            }
+        }
+        let binaries: Vec<(&str, &str, &str)> = attachments
+            .iter()
+            .filter_map(|att| match att {
+                AiAttachment::Binary {
+                    name,
+                    mime_type,
+                    base64,
+                } => Some((name.as_str(), mime_type.as_str(), base64.as_str())),
+                AiAttachment::Text { .. } => None,
+            })
+            .collect();
+
         match self.provider {
             Provider::Claude => {
                 let headers = vec![
                     ("x-api-key", self.key.clone()),
                     ("anthropic-version", ANTHROPIC_VERSION.to_owned()),
                 ];
+                let content = if binaries.is_empty() {
+                    json!(full_user)
+                } else {
+                    let mut blocks = vec![json!({ "type": "text", "text": full_user })];
+                    for (_name, mime, b64) in &binaries {
+                        let block_type = if *mime == "application/pdf" {
+                            "document"
+                        } else {
+                            "image"
+                        };
+                        blocks.push(json!({
+                            "type": block_type,
+                            "source": {
+                                "type": "base64",
+                                "media_type": mime,
+                                "data": b64,
+                            }
+                        }));
+                    }
+                    Value::Array(blocks)
+                };
                 let mut body = json!({
                     "model": self.model,
                     "max_tokens": max_tokens,
                     "system": system,
-                    "messages": [{ "role": "user", "content": user }],
+                    "messages": [{ "role": "user", "content": content }],
                 });
                 if let Some(schema) = schema {
                     body["output_config"] = json!({
@@ -320,12 +414,36 @@ impl HttpClient {
                 (format!("{}/messages", self.base_url), headers, body)
             }
             Provider::ChatGpt => {
+                let user_content = if binaries.is_empty() {
+                    json!(full_user)
+                } else {
+                    let mut blocks = vec![json!({ "type": "text", "text": full_user })];
+                    for (name, mime, b64) in &binaries {
+                        if *mime == "application/pdf" {
+                            blocks.push(json!({
+                                "type": "file",
+                                "file": {
+                                    "filename": name,
+                                    "file_data": format!("data:application/pdf;base64,{b64}"),
+                                }
+                            }));
+                        } else {
+                            blocks.push(json!({
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": format!("data:{mime};base64,{b64}"),
+                                }
+                            }));
+                        }
+                    }
+                    Value::Array(blocks)
+                };
                 let mut body = json!({
                     "model": self.model,
                     "max_completion_tokens": max_tokens,
                     "messages": [
                         { "role": "developer", "content": system },
-                        { "role": "user", "content": user },
+                        { "role": "user", "content": user_content },
                     ],
                 });
                 if let Some(schema) = schema {
@@ -343,9 +461,18 @@ impl HttpClient {
                     config["responseMimeType"] = json!("application/json");
                     config["responseJsonSchema"] = schema.clone();
                 }
+                let mut parts = vec![json!({ "text": full_user })];
+                for (_name, mime, b64) in &binaries {
+                    parts.push(json!({
+                        "inlineData": {
+                            "mimeType": mime,
+                            "data": b64,
+                        }
+                    }));
+                }
                 let body = json!({
                     "systemInstruction": { "parts": [{ "text": system }] },
-                    "contents": [{ "role": "user", "parts": [{ "text": user }] }],
+                    "contents": [{ "role": "user", "parts": parts }],
                     "generationConfig": config,
                 });
                 let url = format!("{}/models/{}:generateContent", self.base_url, self.model);
@@ -455,6 +582,47 @@ impl LlmClient for HttpClient {
         let reply = self.send(&url, &headers, &body, SUMMARY_TIMEOUT)?;
         self.read_text(&reply)
     }
+
+    fn complete_with_attachments(
+        &self,
+        system: &str,
+        user: &str,
+        schema: &Value,
+        attachments: &[AiAttachment],
+    ) -> Result<String, AiError> {
+        let (url, headers, body) = self.request_with_attachments(
+            system,
+            user,
+            Some(schema),
+            MAX_OUTPUT_TOKENS,
+            attachments,
+        );
+        let reply = self.send(&url, &headers, &body, SUMMARY_TIMEOUT).map_err(|e| {
+            if !attachments.is_empty()
+                && let AiError::Rejected { status, message } = &e
+                && (*status == 400 || *status == 415 || *status == 422)
+            {
+                let names: Vec<&str> = attachments
+                    .iter()
+                    .map(|a| match a {
+                        AiAttachment::Text { name, .. } | AiAttachment::Binary { name, .. } => {
+                            name.as_str()
+                        }
+                    })
+                    .collect();
+                return AiError::Rejected {
+                    status: *status,
+                    message: format!(
+                        "model \"{}\" không đọc được tệp đính kèm ({}). Bạn có thể đổi model hoặc bỏ chọn Ngữ cảnh cuộc họp. Chi tiết: {message}",
+                        self.model,
+                        names.join(", ")
+                    ),
+                };
+            }
+            e
+        })?;
+        self.read_text(&reply)
+    }
 }
 
 fn check_status(status: u16, text: &str) -> Result<Value, AiError> {
@@ -465,7 +633,7 @@ fn check_status(status: u16, text: &str) -> Result<Value, AiError> {
     Err(match status {
         401 | 403 => AiError::Unauthorized(message),
         429 if message.contains("limit: 0") => AiError::RateLimited(
-            "gói hiện tại không có hạn mức cho model này (limit: 0). Bấm \"Chọn model\" → \"Lọc model gọi được\" để chọn model tài khoản được phép dùng.".into(),
+            "gói hiện tại không có hạn mức cho model này (limit: 0). Mở \"Chọn model\" để xem các model đã thử thành công.".into(),
         ),
         429 => AiError::RateLimited(message),
         _ => AiError::Rejected { status, message },
@@ -1163,6 +1331,30 @@ mod tests {
     }
 
     #[test]
+    fn model_probe_reports_failures_separately_from_unchecked_models() {
+        let (url, seen) = serve(404, json!({ "error": { "message": "model not found" } }));
+        let probe = HttpClient::with_base_url(Provider::Gemini, "saved", "k", &url)
+            .probe_accessible_models(Some(&[]))
+            .unwrap();
+
+        assert_eq!(probe.checked, ["saved"]);
+        assert!(probe.accessible.is_empty());
+        assert!(
+            seen.recv()
+                .unwrap()
+                .head
+                .contains("/models/saved:generatecontent")
+        );
+
+        let (url, _seen) = serve(200, json!({}));
+        let probe = HttpClient::with_base_url(Provider::Gemini, "", "k", &url)
+            .probe_accessible_models(Some(&["available".into()]))
+            .unwrap();
+        assert_eq!(probe.checked, ["available"]);
+        assert_eq!(probe.accessible, ["available"]);
+    }
+
+    #[test]
     fn keys_round_trip_in_a_file_only_the_user_can_read() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("keys.json");
@@ -1283,6 +1475,6 @@ mod tests {
         let body = r#"{"error":{"message":"Quota exceeded for metric: free_tier_requests, limit: 0, model: gemini-4-carbon"}}"#;
         let err = check_status(429, body).unwrap_err();
         assert!(err.to_string().contains("limit: 0"));
-        assert!(err.to_string().contains("Lọc model gọi được"));
+        assert!(err.to_string().contains("Chọn model"));
     }
 }

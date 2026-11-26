@@ -3,6 +3,7 @@ import { writeHtml } from "@tauri-apps/plugin-clipboard-manager";
 import { ask, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 
+import { describeContext, type MeetingContextView } from "./context";
 import { el } from "./dom";
 import { icon } from "./icons";
 import {
@@ -171,7 +172,7 @@ function editable(
   return node;
 }
 
-type Links = { openSettings: () => void; back: () => void };
+type Links = { openSettings: () => void; openContext: () => void; back: () => void };
 
 /** Fills itself in and keeps its own state, so queue updates can't disturb typing here. */
 export function notePane(id: number, name: string, links: Links): HTMLElement {
@@ -254,7 +255,12 @@ type ProfilesConfig = {
   custom: SummaryProfile[];
 };
 
-  function showForm(failure = "", previousNote?: Note, selectedProfileId?: string) {
+  function showForm(
+    failure = "",
+    previousNote?: Note,
+    selectedProfileId?: string,
+    selectedUseContext?: boolean,
+  ) {
     head.replaceChildren(el("h2", { textContent: name }), back);
     const body = el("div", { className: "note-form" });
     scroll.replaceChildren(body);
@@ -263,8 +269,19 @@ type ProfilesConfig = {
       invoke<ProfilesConfig>("summary_profiles").catch(
         (): ProfilesConfig => ({ enabled: true, activeId: "ba-open-kit", custom: [] }),
       ),
+      invoke<MeetingContextView>("get_meeting_context", { id }).catch(
+        (): MeetingContextView => ({
+          notes: "",
+          attachments: [],
+          maxFileBytes: 15 * 1024 * 1024,
+          maxTotalBytes: 40 * 1024 * 1024,
+          acceptedExtensions: ["png", "jpg", "jpeg", "pdf", "txt", "md"],
+        }),
+      ),
     ])
-      .then(([ai, profiles]) => drawForm(body, ai, profiles, failure, previousNote, selectedProfileId))
+      .then(([ai, profiles, ctx]) =>
+        drawForm(body, ai, profiles, ctx, failure, previousNote, selectedProfileId, selectedUseContext),
+      )
       .catch((e) => body.replaceChildren(el("p", { className: "problem problem-text", textContent: String(e) })));
   }
 
@@ -272,9 +289,11 @@ type ProfilesConfig = {
     body: HTMLElement,
     ai: AiView,
     profiles: ProfilesConfig,
+    ctx: MeetingContextView,
     failure: string,
     previousNote?: Note,
     selectedProfileId?: string,
+    selectedUseContext?: boolean,
   ) {
     const usable = PROVIDERS.filter((p) => ai.keys[p]);
     if (usable.length === 0) {
@@ -312,22 +331,39 @@ type ProfilesConfig = {
         el("option", { value: o.value, selected: o.value === validProfile, textContent: o.label }),
       ),
     );
+    const ctxInfo = describeContext(ctx);
+    const useCtxBox = el("input", {
+      type: "checkbox",
+      checked: selectedUseContext ?? ctxInfo.hasAny,
+      disabled: !ctxInfo.hasAny,
+    }) as HTMLInputElement;
     const label = () => `Tạo tóm tắt bằng ${PROVIDER_NAME[select.value as Provider]}`;
-    const notice = () => `Nội dung bản chép lời sẽ được gửi đến ${PROVIDER_NAME[select.value as Provider]}.`;
+    const notice = () => {
+      const pName = PROVIDER_NAME[select.value as Provider];
+      const parts = ["bản chép lời", "từ vựng riêng"];
+      if (useCtxBox.checked && ctxInfo.hasAny) {
+        if (ctx.notes.trim()) parts.push("ghi chú ngữ cảnh");
+        if (ctx.attachments.length > 0) parts.push(`${ctx.attachments.length} tệp đính kèm`);
+      }
+      return `Nội dung ${parts.join(", ")} sẽ được gửi đến ${pName}.`;
+    };
     const sending = el("p", { className: "sending", textContent: notice() });
     const start = el("button", { className: "add", textContent: label() });
-    select.onchange = () => {
+    const syncNotice = () => {
       start.textContent = label();
       sending.textContent = notice();
     };
+    select.onchange = syncNotice;
+    useCtxBox.onchange = syncNotice;
     start.onclick = async () => {
       const provider = select.value as Provider;
       const profileId = profileSelect.value;
+      const useContext = useCtxBox.checked && ctxInfo.hasAny;
       start.disabled = true;
       start.textContent = "Đang tạo tóm tắt…";
       sending.textContent = `Đang chờ ${PROVIDER_NAME[provider]}. Cuộc họp dài có thể mất vài phút.`;
       try {
-        const draft = await invoke<Draft>("summarize_job", { id, provider, profileId });
+        const draft = await invoke<Draft>("summarize_job", { id, provider, profileId, useContext });
         const note: Note = {
           greeting: previousNote?.greeting ?? "",
           intro: previousNote?.intro ?? "",
@@ -339,7 +375,7 @@ type ProfilesConfig = {
         showNote(note);
         save(note);
       } catch (e) {
-        showForm(String(e), previousNote, profileId);
+        showForm(String(e), previousNote, profileId, useContext);
       }
     };
     body.replaceChildren(
@@ -347,6 +383,22 @@ type ProfilesConfig = {
       failure ? el("p", { className: "problem problem-text", textContent: failure }) : "",
       el("label", {}, "Soạn bằng", select),
       el("label", {}, "Profile tóm tắt", profileSelect),
+      el(
+        "div",
+        { className: "context-summary-box" },
+        el(
+          "label",
+          { className: "hw-filter-toggle" },
+          useCtxBox,
+          el("span", { textContent: "Dùng ngữ cảnh cuộc họp" }),
+        ),
+        el("span", { className: "style-desc", textContent: ctxInfo.label }),
+        el("button", {
+          className: "link",
+          textContent: "Xem tab Ngữ cảnh",
+          onclick: links.openContext,
+        }),
+      ),
       sending,
       el(
         "div",

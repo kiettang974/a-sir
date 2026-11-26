@@ -229,6 +229,43 @@ button:active:not(:disabled) { transform: translateY(0.5px); }
   gap: 8px;
   padding: 0 14px 10px;
 }
+.queue-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 12px 10px;
+  padding: 6px 10px;
+  border-radius: var(--radius-md);
+  background: var(--card);
+  border: 1px solid var(--rule);
+  color: var(--ink-soft);
+}
+.queue-search:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+.queue-search-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+}
+.queue-search-input::placeholder { color: var(--ink-faint); }
+.queue-search-clear {
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-sm);
+  color: var(--ink-soft);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+.queue-search-clear:hover { background: var(--hover-subtle); color: var(--ink); }
 .group-input {
   flex: 1;
   min-width: 0;

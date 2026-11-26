@@ -71,6 +71,8 @@ let selected: number | null = null;
 let openMenuJobId: number | null = null;
 let creatingGroup = false;
 let newGroupName = "";
+let searchingQueue = false;
+let queueSearchQuery = "";
 const collapsedGroups = new Set<string>();
 let selectedGroup: string | null = null;
 let openColorGroup: string | null = null;
@@ -317,6 +319,17 @@ function refreshQueueOnly() {
   if (q) q.replaceWith(queuePane());
 }
 
+function refreshQueueListOnly() {
+  const list = root.querySelector(".queue .jobs");
+  if (list) list.replaceWith(queueList());
+}
+
+function matchesQueueSearch(text: string): boolean {
+  const q = queueSearchQuery.trim().normalize("NFC").toLowerCase();
+  if (!q) return true;
+  return text.normalize("NFC").toLowerCase().includes(q);
+}
+
 async function submitNewGroup() {
   const trimmed = newGroupName.trim();
   if (!trimmed) return;
@@ -381,21 +394,33 @@ function setDragHighlight(target: HTMLElement | null) {
 }
 
 function queueList(): HTMLElement {
+  const hasQuery = searchingQueue && queueSearchQuery.trim().length > 0;
+  const filteredJobs = hasQuery ? jobs.filter((j) => matchesQueueSearch(jobName(j))) : jobs;
+
   if (groups.length === 0) {
     selectedGroup = null;
-    return el("ul", { className: "jobs" }, ...jobs.map(jobRow));
+    return el("ul", { className: "jobs" }, ...filteredJobs.map(jobRow));
   }
   if (selectedGroup && !groups.includes(selectedGroup)) {
     selectedGroup = null;
   }
 
   const container = el("div", { className: "jobs grouped-jobs" });
-  const visibleGroups = selectedGroup ? [selectedGroup] : groups;
+  const baseGroups = selectedGroup ? [selectedGroup] : groups;
+  const visibleGroups = hasQuery
+    ? baseGroups.filter(
+        (name) =>
+          matchesQueueSearch(name) ||
+          filteredJobs.some((j) => j.group === name),
+      )
+    : baseGroups;
 
   for (const name of visibleGroups) {
-    const groupJobs = jobs.filter((j) => j.group === name);
+    const groupJobs = (hasQuery && !matchesQueueSearch(name) ? filteredJobs : jobs).filter(
+      (j) => j.group === name,
+    );
     const isActive = selectedGroup === name;
-    const collapsed = !isActive && collapsedGroups.has(name);
+    const collapsed = !isActive && !hasQuery && collapsedGroups.has(name);
     const color = groupColorOf(name);
     const colorDot = el("span", {
       className: `group-dot${color === "none" ? "" : ` ${color}`}`,
@@ -525,8 +550,8 @@ function queueList(): HTMLElement {
     container.append(block);
   }
 
-  const ungrouped = jobs.filter((j) => !j.group || !groups.includes(j.group));
-  if (!selectedGroup && (ungrouped.length > 0 || jobs.length > 0)) {
+  const ungrouped = filteredJobs.filter((j) => !j.group || !groups.includes(j.group));
+  if (!selectedGroup && (ungrouped.length > 0 || (!hasQuery && jobs.length > 0))) {
     const ungroupedBlock = el(
       "div",
       { className: "group-block ungrouped" },
@@ -573,6 +598,29 @@ function queuePane(): HTMLElement {
     queueMicrotask(() => groupInput?.focus());
   }
 
+  let searchInput: HTMLInputElement | null = null;
+  if (searchingQueue) {
+    searchInput = el("input", {
+      className: "queue-search-input",
+      type: "text",
+      placeholder: "Tìm bản ghi hoặc nhóm…",
+      value: queueSearchQuery,
+      ariaLabel: "Tìm kiếm bản ghi âm hoặc nhóm",
+      oninput: (e: Event) => {
+        queueSearchQuery = (e.target as HTMLInputElement).value;
+        refreshQueueListOnly();
+      },
+      onkeydown: (e: KeyboardEvent) => {
+        if (e.key === "Escape") {
+          searchingQueue = false;
+          queueSearchQuery = "";
+          refreshQueueOnly();
+        }
+      },
+    }) as HTMLInputElement;
+    queueMicrotask(() => searchInput?.focus());
+  }
+
   return el(
     "section",
     { className: "queue" },
@@ -593,6 +641,20 @@ function queuePane(): HTMLElement {
           },
           icon("plus", 15),
         ),
+      ),
+      el(
+        "button",
+        {
+          className: `icon-btn${searchingQueue ? " active" : ""}`,
+          title: "Tìm bản ghi âm",
+          ariaLabel: "Tìm bản ghi âm",
+          onclick: () => {
+            searchingQueue = !searchingQueue;
+            if (!searchingQueue) queueSearchQuery = "";
+            refreshQueueOnly();
+          },
+        },
+        icon("search", 15),
       ),
       el(
         "button",
@@ -633,6 +695,28 @@ function queuePane(): HTMLElement {
           )
         : null,
     ),
+    searchingQueue && searchInput
+      ? el(
+          "div",
+          { className: "queue-search" },
+          icon("search", 14),
+          searchInput,
+          el(
+            "button",
+            {
+              className: "queue-search-clear",
+              title: "Đóng tìm kiếm",
+              ariaLabel: "Đóng tìm kiếm",
+              onclick: () => {
+                searchingQueue = false;
+                queueSearchQuery = "";
+                refreshQueueOnly();
+              },
+            },
+            icon("close", 13),
+          ),
+        )
+      : null,
     creatingGroup && groupInput
       ? el(
           "div",
@@ -1184,6 +1268,10 @@ async function main() {
     busy = payload.busy;
     if (pointerDrag?.active) {
       pendingQueueRender = true;
+      return;
+    }
+    if (document.activeElement?.classList.contains("queue-search-input")) {
+      refreshQueueListOnly();
       return;
     }
     if ((view !== "reader" || readerTab === "context") && modelsReady) {

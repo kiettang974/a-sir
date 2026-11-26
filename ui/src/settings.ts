@@ -946,8 +946,8 @@ function minutesSection(ai: AiView): HTMLElement {
     try {
       const updated = await setTemplatesEnabled(next);
       tplStatus.textContent = next
-        ? "Đã bật chế độ dùng template xuất biên bản."
-        : "Đã tắt template cố định — dùng theo profile BA và văn phong đã chọn.";
+        ? "Đã bật dùng file mẫu xuất biên bản."
+        : "Đã tắt file mẫu riêng.";
       tplStatus.className = "provider-status status-inline";
       drawTemplateBox(updated);
     } catch (e) {
@@ -1007,22 +1007,12 @@ function minutesSection(ai: AiView): HTMLElement {
     const enabled = Boolean(tpl.enabled);
 
     if (!enabled) {
-      blocks.push(
-        el(
-          "div",
-          { className: "tpl-preview-doc" },
-          el("div", {
-            className: "tpl-preview-title",
-            textContent: "Đang tắt — tự tóm tắt theo bố cục biên bản chuẩn",
-          }),
-          el("div", {
-            className: "tpl-preview-meta",
-            textContent:
-              "App tự chia 4 phần rõ ràng: Ý trao đổi chính · Việc đã chốt · Việc cần làm (ai làm, hạn khi nào) · Điểm cần hỏi lại, viết theo đúng văn phong bạn chọn ở trên.",
-          }),
-        ),
-      );
-    } else if (!tpl.excel && !tpl.docx) {
+      tplPreview.hidden = true;
+      tplPreview.replaceChildren();
+      return;
+    }
+    tplPreview.hidden = false;
+    if (!tpl.excel && !tpl.docx) {
       blocks.push(
         buildPreviewTable(
           "Mẫu mặc định đang áp dụng (Word & Excel)",
@@ -1071,11 +1061,12 @@ function minutesSection(ai: AiView): HTMLElement {
     if (tpl.docx) activeParts.push(`Word: ${tpl.docx}`);
     tplLabel.textContent = !enabled
       ? activeParts.length
-        ? `Đang tắt (đã lưu sẵn ${activeParts.join(" · ")}, bật công tắc để dùng lại)`
-        : "Đang tắt — mặc định dùng profile BA và văn phong đã chọn."
+        ? `Đã lưu sẵn ${activeParts.join(" · ")} (bật công tắc để áp dụng khi xuất).`
+        : ""
       : activeParts.length
         ? `Đang bật — ${activeParts.join(" · ")}`
         : "Đang bật — đang dùng mẫu mặc định (Word & Excel). Chọn file riêng bên dưới nếu muốn thay.";
+    tplLabel.hidden = !tplLabel.textContent;
     const detected: string[] = [];
     if (enabled && tpl.excel && tpl.excelColumns?.length) {
       detected.push(`Cột Excel nhận diện: ${tpl.excelColumns.join(" | ")}`);

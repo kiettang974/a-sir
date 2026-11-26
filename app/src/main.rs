@@ -406,12 +406,17 @@ fn export_glossary(app: State<App>, terms: Vec<Term>, path: PathBuf) -> Result<(
 
 /// Sends the transcript to the provider the user picked, and only that one.
 #[tauri::command]
-async fn summarize_job(app: State<'_, App>, id: u64, provider: Provider) -> Result<Draft, String> {
+async fn summarize_job(
+    app: State<'_, App>,
+    id: u64,
+    provider: Provider,
+    profile_id: Option<String>,
+) -> Result<Draft, String> {
     let transcript = app.runner.transcript(id)?.text()?;
     let workspace = app.workspace.clone();
     off_thread(move || {
         workspace
-            .summarize(provider, &transcript)
+            .summarize_with_profile_override(provider, &transcript, profile_id.as_deref())
             .map_err(|e| e.to_string())
     })
     .await

@@ -31,7 +31,7 @@ impl Provider {
         match self {
             Provider::Claude => "claude-sonnet-4-5",
             Provider::ChatGpt => "gpt-4.1-mini",
-            Provider::Gemini => "gemini-2.5-flash",
+            Provider::Gemini => "gemini-3.8-flash",
         }
     }
 
@@ -54,11 +54,13 @@ impl Provider {
                 "gpt-5",
             ],
             Provider::Gemini => &[
+                "gemini-3.8-flash",
+                "gemini-3.7-flash",
+                "gemini-3.6-flash",
+                "gemini-4-argon",
+                "gemini-4-carbon",
                 "gemini-2.5-flash",
-                "gemini-2.5-flash-lite",
                 "gemini-2.5-pro",
-                "gemini-2.0-flash",
-                "gemini-2.0-flash-lite",
             ],
         }
     }
@@ -525,6 +527,7 @@ pub fn is_modern_model(provider: Provider, id: &str) -> bool {
             s.starts_with("gpt-4o")
                 || s.starts_with("gpt-4.1")
                 || s.starts_with("gpt-5")
+                || s.starts_with("gpt-6")
                 || s.starts_with("o3")
                 || s.starts_with("o4")
         }
@@ -553,6 +556,7 @@ pub fn is_modern_model(provider: Provider, id: &str) -> bool {
             s.contains("gemini-2.0")
                 || s.contains("gemini-2.5")
                 || s.contains("gemini-3")
+                || s.contains("gemini-4")
         }
     }
 }
@@ -785,11 +789,12 @@ impl AiSettings {
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
-        // Migrate old placeholder default IDs that don't exist on public APIs.
-        const STALE_DEFAULTS: [(Provider, &str); 3] = [
+        // Migrate old/deprecated default IDs to current defaults.
+        const STALE_DEFAULTS: [(Provider, &str); 4] = [
             (Provider::Claude, "claude-opus-5-5"),
             (Provider::ChatGpt, "gpt-6-astra"),
             (Provider::Gemini, "gemini-3.6-flash"),
+            (Provider::Gemini, "gemini-2.5-flash"),
         ];
         for (provider, stale) in STALE_DEFAULTS {
             if settings.models.get(&provider).map(String::as_str) == Some(stale) {
@@ -1230,7 +1235,7 @@ mod tests {
         let loaded = AiSettings::load(&path);
         assert_eq!(loaded.default_provider, Provider::ChatGpt);
         assert_eq!(loaded.model(Provider::ChatGpt), "gpt-4.1");
-        assert_eq!(loaded.model(Provider::Gemini), "gemini-2.5-flash");
+        assert_eq!(loaded.model(Provider::Gemini), "gemini-3.8-flash");
         assert_eq!(loaded.summary_style, SummaryStyle::WorkEmail);
     }
 

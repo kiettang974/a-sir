@@ -465,18 +465,31 @@ impl Workspace {
     /// Sends the transcript to `provider`, and only that one, with the user's glossary,
     /// summary writing style, active summary profile, and any custom template columns saved at invocation time.
     pub fn summarize(&self, provider: Provider, transcript: &str) -> Result<Draft, AiError> {
+        self.summarize_with_profile_override(provider, transcript, None)
+    }
+
+    /// Same as [`Self::summarize`], optionally overriding the summary profile for this run
+    /// (`"__disabled__"` disables profiles, `DEFAULT_PROFILE_ID` uses BA, or a custom profile id).
+    pub fn summarize_with_profile_override(
+        &self,
+        provider: Provider,
+        transcript: &str,
+        profile_id: Option<&str>,
+    ) -> Result<Draft, AiError> {
         let style = self.ai_settings().summary_style;
         let columns = self.active_template_columns();
         let profiles = self.summary_profiles();
-        let custom_profile = if profiles.enabled && profiles.active_id != DEFAULT_PROFILE_ID {
-            profiles
-                .custom
-                .iter()
-                .find(|p| p.id == profiles.active_id)
+        let (enabled, chosen_id) = match profile_id {
+            Some("__disabled__") | Some("") => (false, DEFAULT_PROFILE_ID),
+            Some(id) => (true, id),
+            None => (profiles.enabled, profiles.active_id.as_str()),
+        };
+        let custom_profile = if enabled && chosen_id != DEFAULT_PROFILE_ID {
+            profiles.custom.iter().find(|p| p.id == chosen_id)
         } else {
             None
         };
-        let profile_mode = if !profiles.enabled {
+        let profile_mode = if !enabled {
             SummaryProfileMode::Disabled
         } else if let Some(p) = custom_profile {
             SummaryProfileMode::Custom {

@@ -37,8 +37,6 @@ type Draft = { discussion?: string[]; rows: Row[]; actions?: ActionItem[]; pendi
 /** The working copy. Row text is HTML by now, because it is edited in place. */
 type Note = Draft & { greeting: string; intro: string };
 
-const DEFAULT_INTRO =
-  "Em xin gửi lại meeting note đã trao đổi hôm nay ạ. Nếu có nội dung cần bổ sung, anh chị nhắn em ạ. Em cảm ơn team đã tham gia.";
 const SAVE_DELAY_MS = 700;
 
 function escapeHtml(text: string): string {
@@ -245,22 +243,38 @@ export function notePane(id: number, name: string, links: Links): HTMLElement {
 
   const back = el("button", { className: "link", textContent: "Về bản chép lời", onclick: links.back });
 
-  function showForm(greeting: string, intro: string, failure = "", previousNote?: Note) {
+type SummaryProfile = {
+  id: string;
+  name: string;
+  description: string;
+};
+type ProfilesConfig = {
+  enabled: boolean;
+  activeId: string;
+  custom: SummaryProfile[];
+};
+
+  function showForm(failure = "", previousNote?: Note, selectedProfileId?: string) {
     head.replaceChildren(el("h2", { textContent: name }), back);
     const body = el("div", { className: "note-form" });
     scroll.replaceChildren(body);
-    invoke<AiView>("ai_settings")
-      .then((ai) => drawForm(body, ai, greeting, intro, failure, previousNote))
+    Promise.all([
+      invoke<AiView>("ai_settings"),
+      invoke<ProfilesConfig>("summary_profiles").catch(
+        (): ProfilesConfig => ({ enabled: true, activeId: "ba-open-kit", custom: [] }),
+      ),
+    ])
+      .then(([ai, profiles]) => drawForm(body, ai, profiles, failure, previousNote, selectedProfileId))
       .catch((e) => body.replaceChildren(el("p", { className: "problem problem-text", textContent: String(e) })));
   }
 
   function drawForm(
     body: HTMLElement,
     ai: AiView,
-    greeting: string,
-    intro: string,
+    profiles: ProfilesConfig,
     failure: string,
     previousNote?: Note,
+    selectedProfileId?: string,
   ) {
     const usable = PROVIDERS.filter((p) => ai.keys[p]);
     if (usable.length === 0) {
@@ -274,14 +288,28 @@ export function notePane(id: number, name: string, links: Links): HTMLElement {
       );
       return;
     }
-    const greetingBox = el("input", { className: "field", value: greeting, placeholder: "Dear anh Nguyễn, anh Quốc và team," });
-    const introBox = el("textarea", { className: "field", value: intro, rows: 3 });
     const initial = usable.includes(ai.defaultProvider) ? ai.defaultProvider : usable[0];
     const select = el(
       "select",
       { className: "field" },
       ...usable.map((p) =>
         el("option", { value: p, selected: p === initial, textContent: `${PROVIDER_NAME[p]} (${ai.models[p]})` }),
+      ),
+    );
+    const defaultProfile = selectedProfileId ?? (profiles.enabled ? profiles.activeId : "__disabled__");
+    const profileOptions: { value: string; label: string }[] = [
+      { value: "ba-open-kit", label: "BA (Mặc định)" },
+      ...profiles.custom.map((p) => ({ value: p.id, label: p.name })),
+      { value: "__disabled__", label: "Không dùng profile (tóm tắt tự do)" },
+    ];
+    const validProfile = profileOptions.some((o) => o.value === defaultProfile)
+      ? defaultProfile
+      : "ba-open-kit";
+    const profileSelect = el(
+      "select",
+      { className: "field" },
+      ...profileOptions.map((o) =>
+        el("option", { value: o.value, selected: o.value === validProfile, textContent: o.label }),
       ),
     );
     const label = () => `Tạo tóm tắt bằng ${PROVIDER_NAME[select.value as Provider]}`;
@@ -294,14 +322,15 @@ export function notePane(id: number, name: string, links: Links): HTMLElement {
     };
     start.onclick = async () => {
       const provider = select.value as Provider;
+      const profileId = profileSelect.value;
       start.disabled = true;
       start.textContent = "Đang tạo tóm tắt…";
       sending.textContent = `Đang chờ ${PROVIDER_NAME[provider]}. Cuộc họp dài có thể mất vài phút.`;
       try {
-        const draft = await invoke<Draft>("summarize_job", { id, provider });
+        const draft = await invoke<Draft>("summarize_job", { id, provider, profileId });
         const note: Note = {
-          greeting: escapeHtml(greetingBox.value),
-          intro: escapeHtml(introBox.value),
+          greeting: previousNote?.greeting ?? "",
+          intro: previousNote?.intro ?? "",
           discussion: draft.discussion ?? [],
           rows: draft.rows.map(toHtmlRow),
           actions: draft.actions ?? [],
@@ -310,15 +339,14 @@ export function notePane(id: number, name: string, links: Links): HTMLElement {
         showNote(note);
         save(note);
       } catch (e) {
-        showForm(greetingBox.value, introBox.value, String(e), previousNote);
+        showForm(String(e), previousNote, profileId);
       }
     };
     body.replaceChildren(
       el("h3", { textContent: "Tạo biên bản cuộc họp" }),
       failure ? el("p", { className: "problem problem-text", textContent: failure }) : "",
-      el("label", {}, "Lời chào", greetingBox),
-      el("label", {}, "Câu mở đầu", introBox),
       el("label", {}, "Soạn bằng", select),
+      el("label", {}, "Profile tóm tắt", profileSelect),
       sending,
       el(
         "div",
@@ -482,7 +510,7 @@ export function notePane(id: number, name: string, links: Links): HTMLElement {
                 okLabel: "Tạo lại",
                 cancelLabel: "Giữ bản này",
               });
-              if (yes) showForm(htmlToText(note.greeting, false), htmlToText(note.intro, false), "", note);
+              if (yes) showForm("", note);
             },
           },
           {
@@ -764,7 +792,7 @@ export function notePane(id: number, name: string, links: Links): HTMLElement {
   }
 
   invoke<Note | null>("load_note", { id })
-    .then((saved) => (saved ? showNote(saved) : showForm("", DEFAULT_INTRO)))
-    .catch(() => showForm("", DEFAULT_INTRO));
+    .then((saved) => (saved ? showNote(saved) : showForm()))
+    .catch(() => showForm());
   return pane;
 }

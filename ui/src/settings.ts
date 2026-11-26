@@ -47,22 +47,35 @@ function persistAiSettings(ai: AiView): Promise<unknown> {
 
 type Term = { correct: string; heardAs: string; note: string };
 
-type OsId = "mac" | "windows" | "linux";
-const OS_LABEL: Record<OsId, string> = { mac: "macOS", windows: "Windows", linux: "Linux" };
+type OsId = "mac" | "windows" | "linux" | "mobile";
+const OS_LABEL: Record<OsId, string> = {
+  mac: "macOS",
+  windows: "Windows",
+  linux: "Linux",
+  mobile: "Di động",
+};
 
 /** Small OS icons showing where a model runs; a dimmed icon means it does not. */
 function platformChips(platforms?: string[]): HTMLElement {
   const supported = new Set(platforms ?? ["mac", "windows", "linux"]);
   return el(
     "span",
-    { className: "os-chips", title: "Hệ điều hành chạy được model này" },
-    ...(["mac", "windows", "linux"] as OsId[]).map((os) => {
+    { className: "os-chips", title: "Thiết bị / hệ điều hành hỗ trợ model này" },
+    ...(["mac", "windows", "linux", "mobile"] as OsId[]).map((os) => {
       const ok = supported.has(os);
+      const title =
+        os === "mobile"
+          ? ok
+            ? "Hỗ trợ tốt cho Di động (nhẹ RAM)"
+            : "Nặng, không khuyên dùng cho Di động"
+          : ok
+            ? `Chạy được trên ${OS_LABEL[os]}`
+            : `Chưa hỗ trợ ${OS_LABEL[os]}`;
       const chip = el(
         "span",
         {
           className: `os-chip${ok ? "" : " off"}`,
-          title: ok ? `Chạy được trên ${OS_LABEL[os]}` : `Chưa hỗ trợ ${OS_LABEL[os]}`,
+          title,
         },
         icon(os, 14),
       );
@@ -71,6 +84,14 @@ function platformChips(platforms?: string[]): HTMLElement {
     }),
   );
 }
+
+type SystemInfo = {
+  os: OsId;
+  arch: string;
+  chip: string;
+  ramGb: number;
+  cpuCores: number;
+};
 
 type LocalModelView = {
   id: string;
@@ -83,6 +104,8 @@ type LocalModelView = {
   selected: boolean;
   custom?: boolean;
   platforms?: string[];
+  minRamGb?: number;
+  compatible?: boolean;
 };
 
 type DiscoveredModel = {
@@ -120,8 +143,11 @@ const RESOURCE_PROFILES: { id: ResourceProfile; label: string; description: stri
 type LocalModelsView = {
   selected: string;
   resourceProfile: ResourceProfile;
+  system?: SystemInfo;
   models: LocalModelView[];
 };
+
+let filterCompatibleOnly = true;
 
 type SummaryProfile = {
   id: string;
@@ -638,31 +664,55 @@ function speechSection(
     hfResults,
   );
 
-  return el(
-    "section",
-    {},
-    el(
-      "div",
-      { className: "hf-head" },
-      el("h3", { textContent: "Giọng nói & tốc độ chép lời" }),
-      el("button", {
-        className: "link",
-        textContent: "Mở thư mục model",
-        title: "Mở thư mục lưu các file model đã tải trên máy trong Finder",
-        onclick: () => invoke("open_models_dir"),
-      }),
-    ),
-    el("p", {
-      className: "hint",
-      textContent:
-        "Mọi model đều chạy thẳng trên máy. Đổi model sẽ áp dụng cho bản ghi mới; bản đang chạy dở vẫn tiếp tục đến xong.",
-    }),
-    resourceBox,
-    hfBox,
-    el(
-      "div",
-      { className: "model-list" },
-      ...data.models.map((m) => {
+  const modelListEl = el("div", { className: "model-list" });
+  const hwFilterWrap = el("div");
+
+  const renderModelList = () => {
+    const sys = data.system;
+    const isCompatible = (m: LocalModelView) => m.compatible !== false;
+    const visibleModels = filterCompatibleOnly
+      ? data.models.filter((m) => isCompatible(m) || m.ready || m.selected)
+      : data.models;
+    const hiddenCount = data.models.length - visibleModels.length;
+
+    if (sys) {
+      const hwParts: string[] = [];
+      if (sys.chip) hwParts.push(sys.chip);
+      else hwParts.push(OS_LABEL[sys.os] ?? sys.os);
+      if (sys.ramGb > 0) hwParts.push(`${sys.ramGb} GB RAM`);
+      if (sys.cpuCores > 0) hwParts.push(`${sys.cpuCores} nhân`);
+      const filterCheckbox = el("input", {
+        type: "checkbox",
+        checked: filterCompatibleOnly,
+        onchange: () => {
+          filterCompatibleOnly = filterCheckbox.checked;
+          renderModelList();
+        },
+      }) as HTMLInputElement;
+      hwFilterWrap.replaceChildren(
+        el(
+          "div",
+          { className: "hw-filter-bar" },
+          el("span", { textContent: `Cấu hình máy: ${hwParts.join(" · ")}` }),
+          el(
+            "label",
+            { className: "hw-filter-toggle" },
+            filterCheckbox,
+            el("span", {
+              textContent:
+                hiddenCount > 0
+                  ? `Chỉ hiện model phù hợp (đang ẩn ${hiddenCount})`
+                  : "Chỉ hiện model phù hợp",
+            }),
+          ),
+        ),
+      );
+    } else {
+      hwFilterWrap.replaceChildren();
+    }
+
+    modelListEl.replaceChildren(
+      ...visibleModels.map((m) => {
         const progress = downloading.get(m.id);
         const error = errors.get(m.id);
         const active = m.selected && m.ready;
@@ -701,6 +751,18 @@ function speechSection(
                     onclick: () => onDownload(m.id),
                   });
 
+        const ramTag = m.minRamGb ? ` · RAM ≥ ${m.minRamGb} GB` : "";
+        const compatWarn =
+          m.compatible === false
+            ? el("span", {
+                className: "model-badge",
+                textContent:
+                  sys && m.platforms && !m.platforms.includes(sys.os)
+                    ? `Chưa hỗ trợ ${OS_LABEL[sys.os]}`
+                    : "Nặng với máy",
+              })
+            : null;
+
         return el(
           "div",
           { className: `model-card${active ? " selected" : ""}` },
@@ -715,6 +777,7 @@ function speechSection(
                 className: `model-badge${active ? " active" : m.ready ? " ready" : ""}`,
                 textContent: statusLabel,
               }),
+              compatWarn,
             ),
             action,
           ),
@@ -722,14 +785,40 @@ function speechSection(
           el(
             "div",
             { className: "model-meta" },
-            el("span", { textContent: `Dung lượng: ${formatBytes(m.bytes)}` }),
+            el("span", { textContent: `Dung lượng: ${formatBytes(m.bytes)}${ramTag}` }),
             platformChips(m.platforms),
           ),
           progress !== undefined ? progressBar(progress) : null,
           error ? el("p", { className: "provider-status status-inline bad", textContent: error }) : null,
         );
       }),
+    );
+  };
+  renderModelList();
+
+  return el(
+    "section",
+    {},
+    el(
+      "div",
+      { className: "hf-head" },
+      el("h3", { textContent: "Giọng nói & tốc độ chép lời" }),
+      el("button", {
+        className: "link",
+        textContent: "Mở thư mục model",
+        title: "Mở thư mục lưu các file model đã tải trên máy trong Finder",
+        onclick: () => invoke("open_models_dir"),
+      }),
     ),
+    el("p", {
+      className: "hint",
+      textContent:
+        "Mọi model đều chạy thẳng trên máy. Đổi model sẽ áp dụng cho bản ghi mới; bản đang chạy dở vẫn tiếp tục đến xong.",
+    }),
+    resourceBox,
+    hfBox,
+    hwFilterWrap,
+    modelListEl,
   );
 }
 

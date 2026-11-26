@@ -11,7 +11,7 @@ use serde::Serialize;
 
 /// Core Data dates count seconds from 2001-01-01.
 const CORE_DATA_EPOCH: i64 = 978_307_200;
-const AUDIO_EXTENSIONS: [&str; 2] = ["m4a", "qta"];
+const AUDIO_EXTENSIONS: [&str; 8] = ["m4a", "qta", "mp3", "wav", "aac", "flac", "ogg", "wma"];
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -32,8 +32,14 @@ pub enum ListError {
     Other(String),
 }
 
+#[cfg(target_os = "macos")]
 pub fn folder(home: &Path) -> PathBuf {
     home.join("Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings")
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn folder(home: &Path) -> PathBuf {
+    home.join("Documents").join("Sound Recordings")
 }
 
 /// Newest first. A folder that doesn't exist simply means no recordings.

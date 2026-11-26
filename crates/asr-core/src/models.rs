@@ -395,10 +395,17 @@ impl ModelEntry {
                 ready: self.is_ready(dir),
                 custom: false,
                 // Qwen3-ASR needs POSIX mmap, so it has no Windows build.
-                platforms: if m.engine_kind == EngineKind::QwenAsr {
-                    vec!["mac", "linux"]
-                } else {
-                    vec!["mac", "windows", "linux"]
+                // Lightweight Whisper GGML models (<= 600 MB) run well on mobile devices.
+                platforms: {
+                    let mut p = if m.engine_kind == EngineKind::QwenAsr {
+                        vec!["mac", "linux"]
+                    } else {
+                        vec!["mac", "windows", "linux"]
+                    };
+                    if m.engine_kind == EngineKind::WhisperCpp && m.total_bytes() <= 600_000_000 {
+                        p.push("mobile");
+                    }
+                    p
                 },
             },
             Self::Custom(c) => ModelSummary {
@@ -411,7 +418,11 @@ impl ModelEntry {
                 bytes: c.bytes,
                 ready: self.is_ready(dir),
                 custom: true,
-                platforms: vec!["mac", "windows", "linux"],
+                platforms: if c.bytes <= 600_000_000 {
+                    vec!["mac", "windows", "linux", "mobile"]
+                } else {
+                    vec!["mac", "windows", "linux"]
+                },
             },
         }
     }

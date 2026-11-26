@@ -546,28 +546,12 @@ function queuePane(): HTMLElement {
       el(
         "button",
         {
-          className: "add",
-          title: "Mở ứng dụng Ghi âm mặc định của máy",
-          onclick: async () => {
-            try {
-              await invoke("open_voice_recorder");
-            } catch (e) {
-              await message(String(e), { title: "Chưa mở được app Ghi âm", kind: "warning" });
-            }
-          },
-        },
-        icon("mic", 15),
-        el("span", { textContent: "Mở app Ghi âm" }),
-      ),
-      el(
-        "button",
-        {
-          className: `icon-btn${view === "memos" ? " active" : ""}`,
-          title: "Nhập từ thư viện Ghi âm",
-          ariaLabel: "Mở danh sách từ thư viện Ghi âm",
+          className: `add${view === "memos" ? " active" : ""}`,
+          title: "Đọc danh sách bản ghi từ thư mục app Ghi âm",
           onclick: openMemos,
         },
-        icon("folder", 16),
+        icon("mic", 15),
+        el("span", { textContent: "Từ app Ghi âm" }),
       ),
       el(
         "button",

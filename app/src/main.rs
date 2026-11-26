@@ -567,12 +567,134 @@ fn allow_job_audio(app: State<App>, id: u64) -> Result<String, String> {
     Ok(app.audio_server.register(id, source))
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SystemInfo {
+    os: &'static str,
+    arch: &'static str,
+    chip: String,
+    ram_gb: u64,
+    cpu_cores: usize,
+}
+
+fn current_os_id() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "mac"
+    } else if cfg!(target_os = "windows") {
+        "windows"
+    } else {
+        "linux"
+    }
+}
+
+fn detect_system_info() -> &'static SystemInfo {
+    static INFO: std::sync::OnceLock<SystemInfo> = std::sync::OnceLock::new();
+    INFO.get_or_init(|| {
+        let cpu_cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(0);
+        let (chip, ram_gb) = detect_hw();
+        SystemInfo {
+            os: current_os_id(),
+            arch: std::env::consts::ARCH,
+            chip,
+            ram_gb,
+            cpu_cores,
+        }
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn detect_hw() -> (String, u64) {
+    let chip = Command::new("sysctl")
+        .args(["-n", "machdep.cpu.brand_string"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_owned())
+        .unwrap_or_default();
+    let ram_bytes = Command::new("sysctl")
+        .args(["-n", "hw.memsize"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .unwrap_or(0);
+    let ram_gb = (ram_bytes + 536_870_912) / 1_073_741_824;
+    (chip, ram_gb)
+}
+
+#[cfg(target_os = "windows")]
+fn detect_hw() -> (String, u64) {
+    #[repr(C)]
+    struct MemoryStatusEx {
+        dw_length: u32,
+        dw_memory_load: u32,
+        ull_total_phys: u64,
+        ull_avail_phys: u64,
+        ull_total_page_file: u64,
+        ull_avail_page_file: u64,
+        ull_total_virtual: u64,
+        ull_avail_virtual: u64,
+        ull_avail_extended_virtual: u64,
+    }
+    unsafe extern "system" {
+        fn GlobalMemoryStatusEx(lp_buffer: *mut MemoryStatusEx) -> i32;
+    }
+    let mut status = MemoryStatusEx {
+        dw_length: std::mem::size_of::<MemoryStatusEx>() as u32,
+        dw_memory_load: 0,
+        ull_total_phys: 0,
+        ull_avail_phys: 0,
+        ull_total_page_file: 0,
+        ull_avail_page_file: 0,
+        ull_total_virtual: 0,
+        ull_avail_virtual: 0,
+        ull_avail_extended_virtual: 0,
+    };
+    let ok = unsafe { GlobalMemoryStatusEx(&mut status) } != 0;
+    let ram_gb = if ok {
+        (status.ull_total_phys + 536_870_912) / 1_073_741_824
+    } else {
+        0
+    };
+    let chip = std::env::var("PROCESSOR_IDENTIFIER").unwrap_or_default();
+    (chip, ram_gb)
+}
+
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+fn detect_hw() -> (String, u64) {
+    let ram_kb = std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with("MemTotal:"))
+                .and_then(|l| l.split_whitespace().nth(1))
+                .and_then(|n| n.parse::<u64>().ok())
+        })
+        .unwrap_or(0);
+    let ram_gb = (ram_kb + 524_288) / 1_048_576;
+    (String::new(), ram_gb)
+}
+
+fn min_ram_for_model(bytes: u64) -> u64 {
+    if bytes <= 600_000_000 {
+        4
+    } else if bytes <= 2_000_000_000 {
+        8
+    } else {
+        16
+    }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct LocalModelView {
     #[serde(flatten)]
     summary: ModelSummary,
     selected: bool,
+    min_ram_gb: u64,
+    compatible: bool,
 }
 
 #[derive(Serialize)]
@@ -580,6 +702,7 @@ struct LocalModelView {
 struct LocalModelsView {
     selected: String,
     resource_profile: ResourceProfile,
+    system: SystemInfo,
     models: Vec<LocalModelView>,
 }
 
@@ -592,18 +715,27 @@ struct LocalModelProgress {
 
 fn local_models_view(app: &App) -> LocalModelsView {
     let selected = app.workspace.asr_model();
+    let system = detect_system_info().clone();
     let models = app
         .models
         .list()
         .into_iter()
-        .map(|summary| LocalModelView {
-            selected: summary.id == selected,
-            summary,
+        .map(|summary| {
+            let min_ram_gb = min_ram_for_model(summary.bytes);
+            let os_ok = summary.platforms.contains(&system.os);
+            let ram_ok = system.ram_gb == 0 || system.ram_gb >= min_ram_gb;
+            LocalModelView {
+                selected: summary.id == selected,
+                min_ram_gb,
+                compatible: os_ok && ram_ok,
+                summary,
+            }
         })
         .collect();
     LocalModelsView {
         selected,
         resource_profile: app.workspace.resource_profile(),
+        system,
         models,
     }
 }

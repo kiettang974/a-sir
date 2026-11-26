@@ -14,13 +14,7 @@ const SUMMARY_TIMEOUT: Duration = Duration::from_secs(600);
 const PING_TIMEOUT: Duration = Duration::from_secs(12);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(4);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
-/// Claude models that accept `fallbacks: "default"`; a typed-in older model would get a 400.
-const CLAUDE_WITH_FALLBACKS: [&str; 4] = [
-    "claude-opus-5-5",
-    "claude-opus-5",
-    "claude-fable-5-1",
-    "claude-sonnet-5-5",
-];
+const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -35,43 +29,36 @@ impl Provider {
 
     pub fn default_model(self) -> &'static str {
         match self {
-            Provider::Claude => "claude-opus-5-5",
-            Provider::ChatGpt => "gpt-6-astra",
-            Provider::Gemini => "gemini-3.6-flash",
+            Provider::Claude => "claude-sonnet-4-5",
+            Provider::ChatGpt => "gpt-4.1-mini",
+            Provider::Gemini => "gemini-2.5-flash",
         }
     }
 
     pub fn recommended_models(self) -> &'static [&'static str] {
         match self {
             Provider::Claude => &[
-                "claude-opus-5-5",
-                "claude-sonnet-5-5",
-                "claude-fable-5-2",
-                "claude-haiku-5-5",
-                "claude-opus-5",
-                "claude-sonnet-5",
-                "claude-haiku-4-5-20251001",
+                "claude-sonnet-4-5",
+                "claude-opus-4-5",
+                "claude-haiku-4-5",
+                "claude-sonnet-4-20250514",
+                "claude-3-7-sonnet-latest",
             ],
             Provider::ChatGpt => &[
-                "gpt-6.1-sol",
-                "gpt-6.1-terra",
-                "gpt-6-astra",
-                "gpt-6-sol",
-                "gpt-6-luna",
-                "gpt-5.6-sol",
-                "gpt-5.6-terra",
-                "gpt-5.4",
-                "gpt-5.4-mini",
+                "gpt-4.1-mini",
+                "gpt-4.1",
+                "gpt-4o-mini",
+                "gpt-4o",
+                "o4-mini",
+                "gpt-5-mini",
+                "gpt-5",
             ],
             Provider::Gemini => &[
                 "gemini-2.5-flash",
                 "gemini-2.5-flash-lite",
                 "gemini-2.5-pro",
-                "gemini-3.6-flash",
-                "gemini-3.7-flash",
-                "gemini-3.8-flash",
-                "gemini-4-argon",
-                "gemini-4-carbon",
+                "gemini-2.0-flash",
+                "gemini-2.0-flash-lite",
             ],
         }
     }
@@ -153,7 +140,7 @@ impl HttpClient {
                         format!("{}/models?limit=1000{after}", self.base_url),
                         vec![
                             ("x-api-key", self.key.clone()),
-                            ("anthropic-version", "2026-10-21".to_owned()),
+                            ("anthropic-version", ANTHROPIC_VERSION.to_owned()),
                         ],
                     )
                 }
@@ -312,9 +299,9 @@ impl HttpClient {
     ) -> (String, Vec<(&'static str, String)>, Value) {
         match self.provider {
             Provider::Claude => {
-                let mut headers = vec![
+                let headers = vec![
                     ("x-api-key", self.key.clone()),
-                    ("anthropic-version", "2026-10-21".to_owned()),
+                    ("anthropic-version", ANTHROPIC_VERSION.to_owned()),
                 ];
                 let mut body = json!({
                     "model": self.model,
@@ -327,15 +314,6 @@ impl HttpClient {
                         "effort": "high",
                         "format": { "type": "json_schema", "schema": schema },
                     });
-                }
-                // A meeting at a medical lab can trip a safety classifier by accident. This
-                // stays with Claude, on another Claude model, so the user's choice of company holds.
-                if CLAUDE_WITH_FALLBACKS.contains(&self.model.as_str()) {
-                    headers.push((
-                        "anthropic-beta",
-                        "server-side-fallback-2026-07-01".to_owned(),
-                    ));
-                    body["fallbacks"] = json!("default");
                 }
                 (format!("{}/messages", self.base_url), headers, body)
             }
@@ -523,25 +501,13 @@ pub fn is_modern_model(provider: Provider, id: &str) -> bool {
     let s = id.to_ascii_lowercase();
     match provider {
         Provider::Claude => {
-            if s.contains("claude-2") || s.contains("claude-3") || s.contains("claude-instant") {
+            if s.contains("claude-2") || s.contains("claude-instant") {
                 return false;
             }
-            const MODERN_FAMILIES: [&str; 4] = [
-                "claude-opus-",
-                "claude-sonnet-",
-                "claude-haiku-",
-                "claude-fable-",
-            ];
-            MODERN_FAMILIES.iter().any(|fam| {
-                s.split_once(fam).is_some_and(|(_, rest)| {
-                    rest.starts_with("4-5")
-                        || rest.starts_with("4-6")
-                        || rest.starts_with('5')
-                        || rest.starts_with('6')
-                })
-            }) || !(s.contains("claude-0")
-                || s.contains("claude-1")
-                || s.contains("claude-4"))
+            if s.contains("claude-3-") && !(s.contains("3-5") || s.contains("3-7")) {
+                return false;
+            }
+            s.starts_with("claude-")
         }
         Provider::ChatGpt => {
             const SKIP: [&str; 7] = [
@@ -556,15 +522,14 @@ pub fn is_modern_model(provider: Provider, id: &str) -> bool {
             if SKIP.iter().any(|w| s.contains(w)) {
                 return false;
             }
-            s.starts_with("gpt-4.1")
+            s.starts_with("gpt-4o")
+                || s.starts_with("gpt-4.1")
                 || s.starts_with("gpt-5")
-                || s.starts_with("gpt-6")
                 || s.starts_with("o3")
                 || s.starts_with("o4")
         }
         Provider::Gemini => {
             if s.contains("gemini-1.")
-                || s.contains("gemini-2.0")
                 || s == "gemini-pro"
                 || s == "gemini-ultra"
             {
@@ -585,7 +550,9 @@ pub fn is_modern_model(provider: Provider, id: &str) -> bool {
             if SKIP.iter().any(|w| s.contains(w)) {
                 return false;
             }
-            s.contains("gemini-2.5") || s.contains("gemini-3") || s.contains("gemini-4")
+            s.contains("gemini-2.0")
+                || s.contains("gemini-2.5")
+                || s.contains("gemini-3")
         }
     }
 }
@@ -814,10 +781,24 @@ impl Default for AiSettings {
 
 impl AiSettings {
     pub fn load(path: &Path) -> Self {
-        fs::read(path)
+        let mut settings: Self = fs::read(path)
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // Migrate old placeholder default IDs that don't exist on public APIs.
+        const STALE_DEFAULTS: [(Provider, &str); 3] = [
+            (Provider::Claude, "claude-opus-5-5"),
+            (Provider::ChatGpt, "gpt-6-astra"),
+            (Provider::Gemini, "gemini-3.6-flash"),
+        ];
+        for (provider, stale) in STALE_DEFAULTS {
+            if settings.models.get(&provider).map(String::as_str) == Some(stale) {
+                settings
+                    .models
+                    .insert(provider, provider.default_model().to_owned());
+            }
+        }
+        settings
     }
 
     pub fn save(&self, path: &Path) -> Result<(), String> {
@@ -993,17 +974,12 @@ mod tests {
             { "type": "fallback", "from": {}, "to": {} },
             { "type": "text", "text": "{\"a\":1}" },
         ]});
-        let (result, seen) = call(Provider::Claude, "claude-opus-5-5", 200, reply);
+        let (result, seen) = call(Provider::Claude, "claude-sonnet-4-5", 200, reply);
         assert_eq!(result.unwrap(), "{\"a\":1}");
         assert!(seen.head.starts_with("post /messages "));
         assert!(seen.head.contains("x-api-key: khoa-bi-mat"));
-        assert!(seen.head.contains("anthropic-version: 2026-10-21"));
-        assert!(
-            seen.head
-                .contains("anthropic-beta: server-side-fallback-2026-07-01")
-        );
+        assert!(seen.head.contains("anthropic-version: 2023-06-01"));
         assert_eq!(seen.body["system"], "hệ thống");
-        assert_eq!(seen.body["fallbacks"], "default");
         assert_eq!(seen.body["output_config"]["format"]["type"], "json_schema");
     }
 
@@ -1019,7 +995,7 @@ mod tests {
     #[test]
     fn chatgpt_request_and_reply_shape() {
         let reply = json!({ "choices": [{ "finish_reason": "stop", "message": { "content": "ok", "refusal": null } }] });
-        let (result, seen) = call(Provider::ChatGpt, "gpt-6-astra", 200, reply);
+        let (result, seen) = call(Provider::ChatGpt, "gpt-4.1-mini", 200, reply);
         assert_eq!(result.unwrap(), "ok");
         assert!(seen.head.starts_with("post /chat/completions "));
         assert!(seen.head.contains("authorization: bearer khoa-bi-mat"));
@@ -1031,11 +1007,11 @@ mod tests {
     #[test]
     fn gemini_request_and_reply_shape() {
         let reply = json!({ "candidates": [{ "finishReason": "STOP", "content": { "parts": [{ "text": "o" }, { "text": "k" }] } }] });
-        let (result, seen) = call(Provider::Gemini, "gemini-3.6-flash", 200, reply);
+        let (result, seen) = call(Provider::Gemini, "gemini-2.5-flash", 200, reply);
         assert_eq!(result.unwrap(), "ok");
         assert!(
             seen.head
-                .starts_with("post /models/gemini-3.6-flash:generatecontent ")
+                .starts_with("post /models/gemini-2.5-flash:generatecontent ")
         );
         assert!(seen.head.contains("x-goog-api-key: khoa-bi-mat"));
         assert_eq!(
@@ -1233,7 +1209,7 @@ mod tests {
         settings.save(&path).unwrap();
         let loaded = AiSettings::load(&path);
         assert_eq!(loaded.default_provider, Provider::Gemini);
-        assert_eq!(loaded.model(Provider::Claude), "claude-opus-5-5");
+        assert_eq!(loaded.model(Provider::Claude), "claude-sonnet-4-5");
         assert!(
             !fs::read_to_string(&path)
                 .unwrap()
@@ -1248,12 +1224,13 @@ mod tests {
         let path = dir.path().join("ai.json");
         fs::write(
             &path,
-            r#"{"defaultProvider":"chatGpt","models":{"chatGpt":"gpt-6-astra"}}"#,
+            r#"{"defaultProvider":"chatGpt","models":{"chatGpt":"gpt-4.1","gemini":"gemini-3.6-flash"}}"#,
         )
         .unwrap();
         let loaded = AiSettings::load(&path);
         assert_eq!(loaded.default_provider, Provider::ChatGpt);
-        assert_eq!(loaded.model(Provider::ChatGpt), "gpt-6-astra");
+        assert_eq!(loaded.model(Provider::ChatGpt), "gpt-4.1");
+        assert_eq!(loaded.model(Provider::Gemini), "gemini-2.5-flash");
         assert_eq!(loaded.summary_style, SummaryStyle::WorkEmail);
     }
 
@@ -1271,21 +1248,22 @@ mod tests {
 
     #[test]
     fn modern_model_filtering_keeps_current_and_drops_legacy() {
-        assert!(is_modern_model(Provider::Claude, "claude-opus-5-5"));
+        assert!(is_modern_model(Provider::Claude, "claude-sonnet-4-5"));
         assert!(is_modern_model(Provider::Claude, "claude-haiku-4-5-20251001"));
-        assert!(!is_modern_model(Provider::Claude, "claude-3-5-sonnet-20241022"));
+        assert!(is_modern_model(Provider::Claude, "claude-3-7-sonnet-latest"));
+        assert!(!is_modern_model(Provider::Claude, "claude-3-haiku-20240307"));
         assert!(!is_modern_model(Provider::Claude, "claude-2.1"));
 
-        assert!(is_modern_model(Provider::ChatGpt, "gpt-6-astra"));
+        assert!(is_modern_model(Provider::ChatGpt, "gpt-4o"));
         assert!(is_modern_model(Provider::ChatGpt, "gpt-4.1-mini"));
         assert!(is_modern_model(Provider::ChatGpt, "o4-mini"));
         assert!(!is_modern_model(Provider::ChatGpt, "gpt-4o-realtime-preview"));
         assert!(!is_modern_model(Provider::ChatGpt, "gpt-3.5-turbo"));
 
-        assert!(is_modern_model(Provider::Gemini, "gemini-3.6-flash"));
+        assert!(is_modern_model(Provider::Gemini, "gemini-2.5-flash"));
         assert!(is_modern_model(Provider::Gemini, "gemini-2.5-pro"));
+        assert!(is_modern_model(Provider::Gemini, "gemini-2.0-flash"));
         assert!(!is_modern_model(Provider::Gemini, "gemini-1.5-pro"));
-        assert!(!is_modern_model(Provider::Gemini, "gemini-2.0-flash"));
         assert!(!is_modern_model(Provider::Gemini, "gemini-2.5-flash-tts"));
 
         // Falls back to raw list if filtering would empty it.

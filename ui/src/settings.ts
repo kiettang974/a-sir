@@ -658,18 +658,20 @@ function speechSection(
       ...data.models.map((m) => {
         const progress = downloading.get(m.id);
         const error = errors.get(m.id);
-        const statusLabel = m.selected
-          ? "Đang dùng"
-          : progress !== undefined
+        const active = m.selected && m.ready;
+        const statusLabel =
+          progress !== undefined
             ? `Đang tải ${progress}%`
-            : m.ready
-              ? "Sẵn sàng"
-              : "Chưa tải";
+            : active
+              ? "Đang dùng"
+              : m.ready
+                ? "Sẵn sàng"
+                : "Chưa tải";
 
         const action =
           progress !== undefined
             ? el("span", { className: "model-status-text", textContent: `Đang tải: ${progress}%` })
-            : m.selected
+            : active
               ? el("span", { className: "model-badge active", textContent: "Đang dùng" })
               : m.ready
                 ? el(
@@ -694,7 +696,7 @@ function speechSection(
 
         return el(
           "div",
-          { className: `model-card${m.selected ? " selected" : ""}` },
+          { className: `model-card${active ? " selected" : ""}` },
           el(
             "div",
             { className: "model-card-head" },
@@ -703,7 +705,7 @@ function speechSection(
               { className: "model-card-title" },
               el("strong", { textContent: m.name }),
               el("span", {
-                className: `model-badge${m.selected ? " active" : m.ready ? " ready" : ""}`,
+                className: `model-badge${active ? " active" : m.ready ? " ready" : ""}`,
                 textContent: statusLabel,
               }),
             ),

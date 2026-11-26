@@ -529,8 +529,8 @@ impl Workspace {
         )
     }
 
-    /// Asks the selected AI provider to propose grounded transcript corrections using glossary
-    /// and optional per-recording notes/attachments.
+    /// Runs local rule-based + glossary cleanup first, then asks the selected AI provider to
+    /// propose grounded terminology corrections using optional per-recording notes/attachments.
     pub fn propose_ai_clean(
         &self,
         provider: Provider,
@@ -538,10 +538,12 @@ impl Workspace {
         context_notes: &str,
         attachments: &[AiAttachment],
     ) -> Result<AiCleanProposal, AiError> {
+        let glossary = self.glossary();
+        let precleaned = clean::clean_transcript_with_glossary(transcript, &glossary);
         clean::propose_ai_clean(
             &self.client(provider, None)?,
-            transcript,
-            &self.glossary(),
+            &precleaned,
+            &glossary,
             context_notes,
             attachments,
         )

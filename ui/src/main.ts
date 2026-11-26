@@ -840,19 +840,7 @@ function readerPane(): HTMLElement {
           },
           {
             label: "Làm sạch bản chép",
-            title: "Bỏ câu rác, gộp từ lặp và sửa từ nghe nhầm theo danh sách từ vựng riêng tại máy",
-            onClick: async () => {
-              try {
-                const path = await invoke<string>("clean_transcript", { id: job.id });
-                note(`Đã tạo ${baseName(path)} cùng thư mục với bản gốc.`);
-              } catch (e) {
-                note(String(e));
-              }
-            },
-          },
-          {
-            label: "Làm sạch bằng AI",
-            title: "Dùng AI cùng ngữ cảnh cuộc họp để đề xuất sửa tên riêng và thuật ngữ nghe nhầm",
+            title: "Lọc câu rác, từ lặp và sửa tên riêng/thuật ngữ (tại máy hoặc bằng AI theo ngữ cảnh)",
             onClick: () => {
               view = "aiClean";
               render();
@@ -1011,7 +999,7 @@ function rightPane(): HTMLElement {
       onSaved: (path) => {
         view = "reader";
         readerTab = "transcript";
-        readerNote = `Đã lưu bản làm sạch bằng AI: ${baseName(path)} (cùng thư mục với bản gốc).`;
+        readerNote = `Đã lưu bản làm sạch: ${baseName(path)} (cùng thư mục với bản gốc).`;
         render();
       },
     });

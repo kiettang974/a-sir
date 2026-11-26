@@ -229,7 +229,7 @@ export function aiCleanPane(jobId: number, title: string, cb: AiCleanCallbacks):
   const head = el(
     "header",
     { className: "reader-head" },
-    el("h2", { textContent: `Làm sạch bằng AI — ${title}` }),
+    el("h2", { textContent: `Làm sạch bản chép — ${title}` }),
     el("button", { className: "link", textContent: "Về bản chép lời", onclick: cb.back }),
   );
   const scroll = el("div", { className: "note-scroll" });
@@ -241,16 +241,105 @@ export function aiCleanPane(jobId: number, title: string, cb: AiCleanCallbacks):
     ai: AiView,
     ctx: MeetingContextView,
     failure = "",
+    initialUseAi?: boolean,
     initialProvider?: Provider,
     initialUseContext?: boolean,
   ) => {
     const usable = PROVIDERS.filter((p) => ai.keys[p]);
+    const useAi = initialUseAi ?? usable.length > 0;
+    const ctxInfo = describeContext(ctx);
+
+    const useAiBox = el("input", {
+      type: "checkbox",
+      checked: useAi,
+      onchange: () => {
+        renderSetup(ai, ctx, "", useAiBox.checked, initialProvider, initialUseContext);
+      },
+    }) as HTMLInputElement;
+
+    const stepsBox = el(
+      "div",
+      { className: "profile-list" },
+      el(
+        "div",
+        { className: "profile-item active" },
+        el(
+          "div",
+          { className: "profile-info" },
+          el(
+            "span",
+            { className: "profile-name-row" },
+            el("strong", { textContent: "Bước 1 · Làm sạch tại máy (luôn chạy trước)" }),
+            el("span", { className: "model-option-badge", textContent: "Offline" }),
+          ),
+          el("span", {
+            className: "style-desc",
+            textContent:
+              "Tự lọc câu ảo giác, gộp từ lặp và thay theo Từ vựng riêng ngay trên máy.",
+          }),
+        ),
+      ),
+      el(
+        "div",
+        { className: `profile-item${useAi ? " active" : ""}` },
+        el(
+          "label",
+          { className: "profile-pick" },
+          useAiBox,
+          el(
+            "span",
+            { className: "profile-info" },
+            el(
+              "span",
+              { className: "profile-name-row" },
+              el("strong", { textContent: "Bước 2 · Rà soát tiếp bằng AI + Ngữ cảnh" }),
+            ),
+            el("span", {
+              className: "style-desc",
+              textContent:
+                "Sau bước 1, gửi bản đã lọc kèm ngữ cảnh cuộc họp cho AI đề xuất sửa tên riêng & thuật ngữ, cho đối chiếu diff trước khi lưu.",
+            }),
+          ),
+        ),
+      ),
+    );
+
+    if (!useAi) {
+      const runLocalBtn = el("button", {
+        className: "add",
+        textContent: "Làm sạch tại máy",
+        onclick: async () => {
+          runLocalBtn.disabled = true;
+          runLocalBtn.textContent = "Đang làm sạch tại máy…";
+          try {
+            const path = await invoke<string>("clean_transcript", { id: jobId });
+            cb.onSaved(path);
+          } catch (e) {
+            renderSetup(ai, ctx, String(e), false, initialProvider, initialUseContext);
+          }
+        },
+      });
+      body.replaceChildren(
+        el("h3", { textContent: "Làm sạch bản chép lời" }),
+        failure ? el("p", { className: "problem problem-text", textContent: failure }) : "",
+        stepsBox,
+        el("p", {
+          className: "sending",
+          textContent: "Chỉ chạy Bước 1 trên máy — không gửi dữ liệu ra ngoài. Lưu ra file riêng (_fixed.txt).",
+        }),
+        el("div", { className: "actions wrap" }, runLocalBtn),
+      );
+      return;
+    }
+
     if (usable.length === 0) {
       body.replaceChildren(
-        el("h3", { textContent: "Chưa có tài khoản AI để làm sạch" }),
+        el("h3", { textContent: "Làm sạch bản chép lời" }),
+        stepsBox,
         el("p", {
           className: "hint",
-          textContent: "Vào Cấu hình → Tài khoản AI để thêm key Claude, ChatGPT hoặc Gemini.",
+          textContent:
+            "Chưa có tài khoản AI cho Bước 2. Vào Cấu hình → Tài khoản AI để thêm key, hoặc bỏ tick Bước 2 để chỉ làm sạch tại máy.",
         }),
         el("button", { className: "add", textContent: "Mở Cấu hình", onclick: cb.openSettings }),
       );
@@ -276,7 +365,6 @@ export function aiCleanPane(jobId: number, title: string, cb: AiCleanCallbacks):
       ),
     ) as HTMLSelectElement;
 
-    const ctxInfo = describeContext(ctx);
     const useCtxBox = el("input", {
       type: "checkbox",
       checked: initialUseContext ?? ctxInfo.hasAny,
@@ -286,12 +374,12 @@ export function aiCleanPane(jobId: number, title: string, cb: AiCleanCallbacks):
     const disclosure = el("p", { className: "sending" });
     const updateDisclosure = () => {
       const pName = PROVIDER_NAME[providerSelect.value as Provider];
-      const sendingParts = ["bản chép lời", "từ vựng riêng"];
+      const sendingParts = ["bản chép lời (đã lọc Bước 1)", "từ vựng riêng"];
       if (useCtxBox.checked && ctxInfo.hasAny) {
         if (ctx.notes.trim()) sendingParts.push("ghi chú ngữ cảnh");
         if (ctx.attachments.length > 0) sendingParts.push(`${ctx.attachments.length} tệp đính kèm`);
       }
-      disclosure.textContent = `Sẽ gửi ${sendingParts.join(", ")} đến ${pName}. Bản gốc không bị ghi đè.`;
+      disclosure.textContent = `Bước 1 chạy tại máy, sau đó Bước 2 gửi ${sendingParts.join(", ")} đến ${pName}. Bản gốc không bị ghi đè.`;
     };
     providerSelect.onchange = updateDisclosure;
     useCtxBox.onchange = updateDisclosure;
@@ -299,12 +387,12 @@ export function aiCleanPane(jobId: number, title: string, cb: AiCleanCallbacks):
 
     const runBtn = el("button", {
       className: "add",
-      textContent: "Chạy làm sạch bằng AI",
+      textContent: "Chạy làm sạch (Tại máy → AI)",
       onclick: async () => {
         const provider = providerSelect.value as Provider;
         const useContext = useCtxBox.checked && ctxInfo.hasAny;
         runBtn.disabled = true;
-        runBtn.textContent = "Đang rà soát bản chép lời…";
+        runBtn.textContent = "Đang lọc tại máy & rà soát bằng AI…";
         try {
           const proposal = await invoke<AiCleanProposal>("preview_ai_clean", {
             id: jobId,
@@ -313,20 +401,16 @@ export function aiCleanPane(jobId: number, title: string, cb: AiCleanCallbacks):
           });
           renderDiff(ai, ctx, proposal, provider, useContext);
         } catch (e) {
-          renderSetup(ai, ctx, String(e), provider, useContext);
+          renderSetup(ai, ctx, String(e), true, provider, useContext);
         }
       },
     });
 
     body.replaceChildren(
-      el("h3", { textContent: "Làm sạch bản chép lời bằng AI" }),
-      el("p", {
-        className: "hint",
-        textContent:
-          "AI đề xuất sửa tên riêng, từ viết tắt và thuật ngữ nghe nhầm có căn cứ, giữ nguyên mốc giờ, số liệu và phủ định. Bạn sẽ đối chiếu trước khi lưu bản sạch riêng.",
-      }),
+      el("h3", { textContent: "Làm sạch bản chép lời" }),
       failure ? el("p", { className: "problem problem-text", textContent: failure }) : "",
-      el("label", {}, "Xử lý bằng", providerSelect),
+      stepsBox,
+      el("label", {}, "AI xử lý Bước 2", providerSelect),
       el(
         "div",
         { className: "context-summary-box" },
@@ -359,7 +443,6 @@ export function aiCleanPane(jobId: number, title: string, cb: AiCleanCallbacks):
     const saveBtn = el("button", {
       className: "add",
       textContent: "Lưu bản sạch riêng",
-      disabled: proposal.edits.length === 0,
       onclick: async () => {
         saveBtn.disabled = true;
         try {
@@ -380,7 +463,8 @@ export function aiCleanPane(jobId: number, title: string, cb: AiCleanCallbacks):
       proposal.edits.length === 0
         ? el("p", {
             className: "hint",
-            textContent: "AI không phát hiện lỗi tên riêng hay thuật ngữ nào cần sửa thêm.",
+            textContent:
+              "Đã lọc xong theo quy tắc tại máy và AI không phát hiện thêm lỗi tên riêng hay thuật ngữ nào. Bạn vẫn có thể bấm Lưu bản sạch riêng nếu muốn lưu kết quả đã lọc tại máy.",
           })
         : el(
             "div",
@@ -418,7 +502,7 @@ export function aiCleanPane(jobId: number, title: string, cb: AiCleanCallbacks):
         el("button", {
           className: "link",
           textContent: "Chạy lại",
-          onclick: () => renderSetup(ai, ctx, "", provider, useContext),
+          onclick: () => renderSetup(ai, ctx, "", true, provider, useContext),
         }),
         saveStatus,
       ),

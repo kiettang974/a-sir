@@ -63,5 +63,5 @@ jobs:
           tagName: v__VERSION__
           releaseName: "A-Sir v__VERSION__"
           releaseBody: "Bản phát hành A-Sir cho macOS (.dmg) và Windows (.exe / .msi)."
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false

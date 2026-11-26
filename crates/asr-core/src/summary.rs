@@ -353,19 +353,53 @@ fn parse(text: &str) -> Result<Draft, AiError> {
 
 const BA_KIT_MEET_SKILL: &str = include_str!("../prompts/ba-kit/meet.md");
 
-fn system_prompt(style: SummaryStyle, template_columns: &[String]) -> String {
+/// Optional profile guiding how the summary is structured.
+#[derive(Debug, Clone, Copy)]
+pub enum SummaryProfileMode<'a> {
+    /// No profile: summarize cleanly using only base rules and Humanizer style.
+    Disabled,
+    /// Built-in BA-Open-Kit (/meet) meeting structure.
+    BaOpenKit,
+    /// User-uploaded Markdown profile instructions.
+    Custom { name: &'a str, content: &'a str },
+}
+
+fn system_prompt(
+    style: SummaryStyle,
+    template_columns: &[String],
+    profile: SummaryProfileMode<'_>,
+) -> String {
+    let profile_block = match profile {
+        SummaryProfileMode::Disabled => {
+            "\n\nNgười dùng đang tắt profile cấu trúc cố định: chỉ tóm tắt gọn gàng, trung thực theo văn phong Humanizer bên dưới."
+                .to_owned()
+        }
+        SummaryProfileMode::BaOpenKit => format!(
+            "\n\nChuẩn BA-Open-Kit (/meet — offline):\n{}",
+            BA_KIT_MEET_SKILL.trim()
+        ),
+        SummaryProfileMode::Custom { name, content } => format!(
+            "\n\nProfile tóm tắt riêng do người dùng cài đặt ({name}):\n{}",
+            content.trim()
+        ),
+    };
     let tpl_note = if template_columns.is_empty() {
-        "\n\nKhông áp template xuất cố định: chỉ dùng thuần cấu trúc BA-Open-Kit (/meet) và văn phong Humanizer ở trên (để mảng `fields` rỗng)."
-            .to_owned()
+        "\n\nKhông áp template xuất cố định (để mảng `fields` rỗng).".to_owned()
     } else {
         format!(
             "\n\nNgười dùng đang bật file mẫu xuất biên bản với các cột: [{}].\nVới mỗi dòng trong `rows`, hãy điền thêm mảng `fields` gồm cặp `{{\"column\": \"<tên cột đúng như trên>\", \"value\": \"<giá trị tương ứng từ cuộc họp, để rỗng nếu không có căn cứ>\"}}` để xuất khớp đúng cấu trúc file mẫu.",
             template_columns.join(", ")
         )
     };
+    let closing = match profile {
+        SummaryProfileMode::BaOpenKit => "Giữ nguyên cấu trúc BA-Open-Kit, mốc giờ, nguyên văn trích dẫn, tên riêng, thuật ngữ, số liệu, điều kiện, phủ định, mức độ chắc chắn và giữ mọi mục chưa chốt trong `pending`.",
+        SummaryProfileMode::Custom { name, .. } => &format!(
+            "Tuân thủ chặt chẽ profile \"{name}\" ở trên; giữ nguyên mốc giờ, nguyên văn trích dẫn, tên riêng, thuật ngữ, số liệu, điều kiện, phủ định, mức độ chắc chắn và giữ mọi mục chưa chốt trong `pending`."
+        ),
+        SummaryProfileMode::Disabled => "Giữ nguyên mốc giờ, nguyên văn trích dẫn, tên riêng, thuật ngữ, số liệu, điều kiện, phủ định, mức độ chắc chắn và giữ mọi mục chưa chốt trong `pending`.",
+    };
     format!(
-        "{RULES}\n\nChuẩn BA-Open-Kit (/meet — offline):\n{}\n\nYêu cầu văn phong Humanizer ({}):\n{}\n\nTài liệu hướng dẫn diễn đạt tiếng Việt (offline):\n{}\n\nQuy tắc bảo toàn dữ kiện:\n{}{tpl_note}\n\nChỉ điều chỉnh cách diễn đạt phần tóm tắt, hạng mục, việc cần làm và ghi chú theo văn phong trên. Giữ nguyên cấu trúc BA-Open-Kit, mốc giờ, nguyên văn trích dẫn, tên riêng, thuật ngữ, số liệu, điều kiện, phủ định, mức độ chắc chắn và giữ mọi mục chưa chốt trong `pending`.",
-        BA_KIT_MEET_SKILL.trim(),
+        "{RULES}{profile_block}\n\nYêu cầu văn phong Humanizer ({}):\n{}\n\nTài liệu hướng dẫn diễn đạt tiếng Việt (offline):\n{}\n\nQuy tắc bảo toàn dữ kiện:\n{}{tpl_note}\n\nChỉ điều chỉnh cách diễn đạt phần tóm tắt, hạng mục, việc cần làm và ghi chú theo văn phong trên. {closing}",
         style.label(),
         style.prompt_rules(),
         style.skill_guide().trim(),
@@ -401,8 +435,27 @@ pub fn summarize_with_options(
     style: SummaryStyle,
     template_columns: &[String],
 ) -> Result<Draft, AiError> {
+    summarize_with_profile(
+        client,
+        transcript,
+        terms,
+        style,
+        template_columns,
+        SummaryProfileMode::BaOpenKit,
+    )
+}
+
+/// Full entry point allowing the caller to toggle or supply a custom Markdown summary profile.
+pub fn summarize_with_profile(
+    client: &dyn LlmClient,
+    transcript: &str,
+    terms: &[Term],
+    style: SummaryStyle,
+    template_columns: &[String],
+    profile: SummaryProfileMode<'_>,
+) -> Result<Draft, AiError> {
     let reply = client.complete(
-        &system_prompt(style, template_columns),
+        &system_prompt(style, template_columns, profile),
         &prompt(transcript, terms),
         &schema(),
     )?;

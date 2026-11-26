@@ -91,13 +91,37 @@ type LocalModelsView = {
   models: LocalModelView[];
 };
 
-type TabId = "speech" | "ai" | "minutes" | "glossary";
+type SummaryProfile = {
+  id: string;
+  name: string;
+  description: string;
+  content: string;
+  sourceFile?: string | null;
+};
+
+type ProfilesConfig = {
+  enabled: boolean;
+  activeId: string;
+  custom: SummaryProfile[];
+};
+
+type UpdateInfo = {
+  currentVersion: string;
+  latestVersion: string;
+  hasUpdate: boolean;
+  releaseUrl: string;
+  downloadUrl?: string | null;
+  notes: string;
+};
+
+type TabId = "speech" | "ai" | "minutes" | "glossary" | "update";
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "speech", label: "Chép lời" },
   { id: "ai", label: "Tài khoản AI" },
   { id: "minutes", label: "Biên bản" },
   { id: "glossary", label: "Từ vựng riêng" },
+  { id: "update", label: "Cập nhật" },
 ];
 
 type LoadState<T> =
@@ -390,6 +414,11 @@ export function settingsPane(): HTMLElement {
       } else {
         panel.replaceChildren(minutesSection(aiState.data));
       }
+      return;
+    }
+
+    if (activeTab === "update") {
+      panel.replaceChildren(updateSection());
       return;
     }
 
@@ -997,6 +1026,179 @@ function minutesSection(ai: AiView): HTMLElement {
     .then(drawTemplateBox)
     .catch(() => drawTemplateBox({ excel: null, docx: null }));
 
+  // Summary profile selector (default: BA-Open-Kit, toggleable, plus user-uploaded .md profiles).
+  const profSwitch = el("input", {
+    type: "checkbox",
+    className: "switch-input",
+    ariaLabel: "Bật dùng profile tóm tắt",
+  }) as HTMLInputElement;
+  const profSwitchText = el("span", { className: "switch-text", textContent: "Đang bật" });
+  const profToggle = el(
+    "label",
+    { className: "switch" },
+    profSwitch,
+    el("span", { className: "switch-track" }),
+    profSwitchText,
+  );
+  const profDesc = el("p", {
+    className: "style-desc",
+    textContent: "Đang tải danh sách profile…",
+  });
+  const profList = el("div", { className: "profile-list" });
+  const profStatus = el("p", { className: "provider-status status-inline" });
+  const profUploadBtn = el("button", {
+    className: "link",
+    textContent: "Tải file .md tạo profile mới",
+    onclick: async () => {
+      const picked = await open({
+        multiple: false,
+        filters: [{ name: "Markdown", extensions: ["md", "markdown"] }],
+      });
+      if (!picked || Array.isArray(picked)) return;
+      profUploadBtn.disabled = true;
+      profStatus.className = "provider-status status-inline";
+      profStatus.textContent = "Đang đọc file .md và dùng AI đặt tên profile…";
+      try {
+        const updated = await invoke<ProfilesConfig>("import_summary_profile", { path: picked });
+        const created = updated.custom.find((p) => p.id === updated.activeId);
+        profStatus.textContent = created
+          ? `Đã tạo và chọn profile "${created.name}".`
+          : "Đã tạo profile mới.";
+        drawProfiles(updated);
+      } catch (e) {
+        profStatus.className = "provider-status status-inline bad";
+        profStatus.textContent = `Chưa tạo được profile: ${e}`;
+      } finally {
+        profUploadBtn.disabled = false;
+      }
+    },
+  });
+
+  const drawProfiles = (cfg: ProfilesConfig) => {
+    profSwitch.checked = cfg.enabled;
+    profSwitchText.textContent = cfg.enabled ? "Đang bật" : "Đang tắt";
+    profDesc.textContent = cfg.enabled
+      ? "Khi tóm tắt, AI sẽ bám sát hướng dẫn của profile đang chọn. Bạn có thể tải file .md riêng để AI tự đặt tên và áp dụng."
+      : "Đang tắt profile — AI tóm tắt gọn gàng theo văn phong bên dưới mà không ép theo khung BA-Open-Kit.";
+
+    if (!cfg.enabled) {
+      profList.replaceChildren();
+      return;
+    }
+
+    const row = (
+      id: string,
+      name: string,
+      desc: string,
+      badge: string | null,
+      removable: boolean,
+    ) =>
+      el(
+        "div",
+        { className: `profile-item${cfg.activeId === id ? " active" : ""}` },
+        el(
+          "label",
+          { className: "profile-pick" },
+          el("input", {
+            type: "radio",
+            name: "summary-profile",
+            checked: cfg.activeId === id,
+            onchange: async () => {
+              try {
+                const updated = await invoke<ProfilesConfig>("select_summary_profile", { id });
+                profStatus.className = "provider-status status-inline";
+                profStatus.textContent = `Đang dùng profile: ${name}.`;
+                drawProfiles(updated);
+              } catch (e) {
+                profStatus.className = "provider-status status-inline bad";
+                profStatus.textContent = String(e);
+              }
+            },
+          }),
+          el(
+            "span",
+            { className: "profile-info" },
+            el(
+              "span",
+              { className: "profile-name-row" },
+              el("strong", { textContent: name }),
+              badge ? el("span", { className: "model-option-badge", textContent: badge }) : null,
+            ),
+            el("span", { className: "style-desc", textContent: desc }),
+          ),
+        ),
+        removable
+          ? el("button", {
+              className: "link danger-link",
+              textContent: "Xoá",
+              onclick: async () => {
+                try {
+                  const updated = await invoke<ProfilesConfig>("delete_summary_profile", { id });
+                  profStatus.className = "provider-status status-inline";
+                  profStatus.textContent = `Đã xoá profile "${name}".`;
+                  drawProfiles(updated);
+                } catch (e) {
+                  profStatus.className = "provider-status status-inline bad";
+                  profStatus.textContent = String(e);
+                }
+              },
+            })
+          : null,
+      );
+
+    const nodes: HTMLElement[] = [
+      row(
+        "ba-open-kit",
+        "BA-Open-Kit (/meet)",
+        "Bố cục chuẩn 4 phần: Trao đổi chính · Quyết định chốt · Việc cần làm · Điểm cần xác nhận.",
+        "Mặc định",
+        false,
+      ),
+      ...cfg.custom.map((p) =>
+        row(p.id, p.name, p.description, p.sourceFile ?? "File .md", true),
+      ),
+    ];
+    profList.replaceChildren(...nodes);
+  };
+
+  profSwitch.onchange = async () => {
+    const next = profSwitch.checked;
+    profSwitch.disabled = true;
+    try {
+      const updated = await invoke<ProfilesConfig>("set_profiles_enabled", { enabled: next });
+      profStatus.className = "provider-status status-inline";
+      profStatus.textContent = next
+        ? "Đã bật profile tóm tắt."
+        : "Đã tắt profile — tóm tắt tự do theo văn phong đã chọn.";
+      drawProfiles(updated);
+    } catch (e) {
+      profSwitch.checked = !next;
+      profStatus.className = "provider-status status-inline bad";
+      profStatus.textContent = String(e);
+    } finally {
+      profSwitch.disabled = false;
+    }
+  };
+
+  invoke<ProfilesConfig>("summary_profiles")
+    .then(drawProfiles)
+    .catch(() => drawProfiles({ enabled: true, activeId: "ba-open-kit", custom: [] }));
+
+  const profileBlock = el(
+    "div",
+    { className: "style-box" },
+    el(
+      "div",
+      { className: "hf-head" },
+      el("div", { className: "style-title tpl-label", textContent: "Profile tóm tắt" }),
+      profToggle,
+    ),
+    profDesc,
+    profList,
+    el("div", { className: "actions wrap tpl-actions" }, profUploadBtn),
+    profStatus,
+  );
+
   const templateBlock = el(
     "div",
     { className: "style-box" },
@@ -1020,8 +1222,9 @@ function minutesSection(ai: AiView): HTMLElement {
     el("p", {
       className: "hint",
       textContent:
-        "Chọn văn phong viết biên bản chung và tuỳ chọn bật file mẫu Word (.docx) hoặc Excel (.xlsx) riêng khi cần.",
+        "Chọn profile tóm tắt, văn phong viết biên bản và tuỳ chọn bật file mẫu Word (.docx) hoặc Excel (.xlsx) khi cần.",
     }),
+    profileBlock,
     styleBlock,
     templateBlock,
   );
@@ -1106,41 +1309,34 @@ function providerBlock(
       return;
     }
     const generation = ++cache.generation;
-    pickerLoading = true;
+    pickerLoading = force || cache.models === null;
     probing = true;
     pickerError = null;
     drawPicker();
     try {
-      const [modelsRes, accessibleRes] = await Promise.allSettled([
-        force || cache.models === null
-          ? invoke<string[]>("list_models", { provider })
-          : Promise.resolve(cache.models),
-        invoke<string[]>("probe_accessible_models", { provider }),
-      ]);
-      // Guard against stale response when key changed/deleted or a newer request started.
+      // Step 1: fast list_models (~0.3-0.6s), render immediately without blocking on probing.
+      let models = cache.models;
+      if (force || models === null) {
+        models = await invoke<string[]>("list_models", { provider });
+        if (providerModelCache[provider].generation !== generation) return;
+        cache.models = models;
+        pickerLoading = false;
+        if (pickerOpen) drawPicker();
+      }
+      // Step 2: parallel probe (<=5s cap) reusing the already-fetched list (zero duplicate GET).
+      const accessible = await invoke<string[]>("probe_accessible_models", {
+        provider,
+        candidates: models,
+      });
       if (providerModelCache[provider].generation !== generation) return;
-
-      if (modelsRes.status === "fulfilled") {
-        cache.models = modelsRes.value;
-      }
-      if (accessibleRes.status === "fulfilled") {
-        const accessible = accessibleRes.value;
-        cache.accessible = accessible;
-        if (accessible.length > 0 && !accessible.includes(modelName)) {
-          await saveModel(accessible[0]);
-          show(`Tìm thấy ${accessible.length} model gọi được — đã chọn ${accessible[0]}.`);
-        } else if (accessible.length === 0) {
-          show("Không có model nào phản hồi thành công với API key hiện tại (hết hạn mức hoặc chưa bật billing).", true);
-        }
-      }
-
-      if (modelsRes.status === "rejected" && accessibleRes.status === "rejected") {
-        pickerError = String(modelsRes.reason ?? accessibleRes.reason);
-      } else {
-        pickerError = null;
-      }
-      pickerLoading = false;
+      cache.accessible = accessible;
       probing = false;
+      if (accessible.length > 0 && !accessible.includes(modelName)) {
+        await saveModel(accessible[0]);
+        show(`Tìm thấy ${accessible.length} model gọi được — đã chọn ${accessible[0]}.`);
+      } else if (accessible.length === 0) {
+        show("Không có model nào phản hồi thành công với API key hiện tại (hết hạn mức hoặc chưa bật billing).", true);
+      }
       if (pickerOpen) drawPicker();
     } catch (e) {
       if (providerModelCache[provider].generation !== generation) return;
@@ -1191,11 +1387,11 @@ function providerBlock(
     const listBox = el("div", { className: "model-picker-list" });
 
     const drawList = () => {
-      if (pickerLoading || probing) {
+      if (pickerLoading) {
         listBox.replaceChildren(
           el("p", {
             className: "hint",
-            textContent: "Đang lọc các model tài khoản gọi được…",
+            textContent: "Đang tải danh sách model…",
           }),
         );
         return;
@@ -1219,6 +1415,15 @@ function providerBlock(
       const items: HTMLElement[] = [];
       const filteringAccessible = Boolean(hint && accessible !== null && !showAllModels);
       const verifiedSet = new Set(accessible ?? []);
+
+      if (probing) {
+        items.push(
+          el("p", {
+            className: "hint picker-note",
+            textContent: "Đang lọc nhanh các model tài khoản gọi được…",
+          }),
+        );
+      }
 
       if (!hint) {
         items.push(
@@ -1542,5 +1747,101 @@ function glossarySection(initial: Term[]): HTMLElement {
       }),
     ),
     status,
+  );
+}
+
+function updateSection(): HTMLElement {
+  const versionText = el("p", {
+    className: "style-desc tpl-label",
+    textContent: "Phiên bản hiện tại: đang đọc…",
+  });
+  const resultBox = el("div", { className: "update-result" });
+  const status = el("p", { className: "provider-status status-inline" });
+
+  invoke<string>("app_version")
+    .then((v) => {
+      versionText.textContent = `Phiên bản hiện tại: A-Sir v${v}`;
+    })
+    .catch(() => {
+      versionText.textContent = "Phiên bản hiện tại: A-Sir";
+    });
+
+  const checkBtn = el("button", {
+    className: "add",
+    textContent: "Kiểm tra bản cập nhật",
+    onclick: async () => {
+      checkBtn.disabled = true;
+      status.className = "provider-status status-inline";
+      status.textContent = "Đang kiểm tra phiên bản mới trên GitHub Releases…";
+      resultBox.replaceChildren();
+      try {
+        const info = await invoke<UpdateInfo>("check_update");
+        versionText.textContent = `Phiên bản hiện tại: A-Sir v${info.currentVersion}`;
+        if (info.hasUpdate) {
+          status.textContent = `Đã có bản mới A-Sir v${info.latestVersion}!`;
+          const targetUrl = info.downloadUrl ?? info.releaseUrl;
+          const nodes: HTMLElement[] = [];
+          if (info.notes) {
+            nodes.push(el("div", { className: "update-notes", textContent: info.notes }));
+          }
+          nodes.push(
+            el(
+              "div",
+              { className: "actions wrap tpl-actions" },
+              el("button", {
+                className: "add",
+                textContent: info.downloadUrl
+                  ? `Tải A-Sir v${info.latestVersion}`
+                  : `Mở trang tải v${info.latestVersion}`,
+                onclick: () => invoke("open_url", { url: targetUrl }),
+              }),
+              el("button", {
+                className: "link",
+                textContent: "Xem ghi chú phát hành",
+                onclick: () => invoke("open_url", { url: info.releaseUrl }),
+              }),
+            ),
+          );
+          resultBox.replaceChildren(...nodes);
+        } else {
+          status.textContent = `Bạn đang dùng phiên bản mới nhất (v${info.currentVersion}).`;
+          resultBox.replaceChildren(
+            el(
+              "div",
+              { className: "actions wrap tpl-actions" },
+              el("button", {
+                className: "link",
+                textContent: "Mở trang GitHub Releases",
+                onclick: () => invoke("open_url", { url: info.releaseUrl }),
+              }),
+            ),
+          );
+        }
+      } catch (e) {
+        status.className = "provider-status status-inline bad";
+        status.textContent = `Chưa kiểm tra được bản cập nhật: ${e}`;
+      } finally {
+        checkBtn.disabled = false;
+      }
+    },
+  });
+
+  return el(
+    "section",
+    {},
+    el("h3", { textContent: "Cập nhật phần mềm" }),
+    el("p", {
+      className: "hint",
+      textContent:
+        "Kiểm tra phiên bản A-Sir mới nhất (macOS và Windows) từ GitHub Releases.",
+    }),
+    el(
+      "div",
+      { className: "style-box" },
+      versionText,
+      el("div", { className: "actions wrap tpl-actions" }, checkBtn),
+      status,
+      resultBox,
+    ),
   );
 }

@@ -17,7 +17,7 @@ use asr_core::summary::Draft;
 use asr_core::transcriber::{self, ResourceProfile};
 use asr_core::transcript::Line;
 use asr_core::voice_memos::{self, ListError, Recording};
-use asr_core::workspace::Workspace;
+use asr_core::workspace::{ProfilesConfig, UpdateInfo, Workspace};
 use asr_core::{Job, JobRunner, Paths, Queue, audio};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -310,12 +310,68 @@ async fn list_models(app: State<'_, App>, provider: Provider) -> Result<Vec<Stri
 async fn probe_accessible_models(
     app: State<'_, App>,
     provider: Provider,
+    candidates: Option<Vec<String>>,
 ) -> Result<Vec<String>, String> {
     let client = app
         .workspace
         .client(provider, Some(""))
         .map_err(|e| e.to_string())?;
-    off_thread(move || client.probe_accessible_models().map_err(|e| e.to_string())).await
+    off_thread(move || {
+        client
+            .probe_accessible_models(candidates.as_deref())
+            .map_err(|e| e.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+fn summary_profiles(app: State<App>) -> ProfilesConfig {
+    app.workspace.summary_profiles()
+}
+
+#[tauri::command]
+fn set_profiles_enabled(app: State<App>, enabled: bool) -> Result<ProfilesConfig, String> {
+    app.workspace.set_profiles_enabled(enabled)
+}
+
+#[tauri::command]
+fn select_summary_profile(app: State<App>, id: String) -> Result<ProfilesConfig, String> {
+    app.workspace.select_summary_profile(&id)
+}
+
+#[tauri::command]
+async fn import_summary_profile(
+    app: State<'_, App>,
+    path: PathBuf,
+) -> Result<ProfilesConfig, String> {
+    let workspace = app.workspace.clone();
+    off_thread(move || workspace.import_summary_profile(&path)).await
+}
+
+#[tauri::command]
+fn delete_summary_profile(app: State<App>, id: String) -> Result<ProfilesConfig, String> {
+    app.workspace.delete_summary_profile(&id)
+}
+
+#[tauri::command]
+fn app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_owned()
+}
+
+#[tauri::command]
+async fn check_update() -> Result<UpdateInfo, String> {
+    off_thread(|| {
+        asr_core::workspace::check_github_update(env!("CARGO_PKG_VERSION"), "kiettang974/a-sir")
+    })
+    .await
+}
+
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    if !url.starts_with("https://") {
+        return Err("chỉ mở được liên kết https://".into());
+    }
+    open_in_os(url)
 }
 
 #[tauri::command]
@@ -694,6 +750,14 @@ fn main() {
             test_provider,
             list_models,
             probe_accessible_models,
+            summary_profiles,
+            set_profiles_enabled,
+            select_summary_profile,
+            import_summary_profile,
+            delete_summary_profile,
+            app_version,
+            check_update,
+            open_url,
             get_glossary,
             save_glossary,
             import_glossary,

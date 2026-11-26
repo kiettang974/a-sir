@@ -15,8 +15,52 @@ use crate::excel;
 use crate::glossary::{self, Term};
 use crate::models;
 use crate::output::save_atomic;
-use crate::summary::{self, Draft};
+use crate::summary::{self, Draft, SummaryProfileMode};
 use crate::transcriber::ResourceProfile;
+
+pub const DEFAULT_PROFILE_ID: &str = "ba-open-kit";
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_profile_id() -> String {
+    DEFAULT_PROFILE_ID.to_owned()
+}
+
+/// User-uploaded Markdown summary profile.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SummaryProfile {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub content: String,
+    #[serde(default)]
+    pub source_file: Option<String>,
+}
+
+/// Summary profile settings persisted in `summary-profiles.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfilesConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_profile_id")]
+    pub active_id: String,
+    #[serde(default)]
+    pub custom: Vec<SummaryProfile>,
+}
+
+impl Default for ProfilesConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            active_id: default_profile_id(),
+            custom: Vec::new(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -87,6 +131,150 @@ impl Workspace {
 
     fn template_toggle_path(&self) -> PathBuf {
         self.dir.join("meeting-templates-toggle.json")
+    }
+
+    fn profiles_path(&self) -> PathBuf {
+        self.dir.join("summary-profiles.json")
+    }
+
+    pub fn summary_profiles(&self) -> ProfilesConfig {
+        fs::read(self.profiles_path())
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default()
+    }
+
+    fn save_summary_profiles(&self, cfg: &ProfilesConfig) -> Result<(), String> {
+        let body = serde_json::to_vec_pretty(cfg).map_err(|e| e.to_string())?;
+        fs::create_dir_all(&self.dir).map_err(|e| e.to_string())?;
+        save_atomic(&self.profiles_path(), &body).map_err(|e| e.to_string())
+    }
+
+    pub fn set_profiles_enabled(&self, enabled: bool) -> Result<ProfilesConfig, String> {
+        let mut cfg = self.summary_profiles();
+        cfg.enabled = enabled;
+        self.save_summary_profiles(&cfg)?;
+        Ok(cfg)
+    }
+
+    pub fn select_summary_profile(&self, id: &str) -> Result<ProfilesConfig, String> {
+        let mut cfg = self.summary_profiles();
+        let valid = id == DEFAULT_PROFILE_ID || cfg.custom.iter().any(|p| p.id == id);
+        if !valid {
+            return Err("không tìm thấy profile này".into());
+        }
+        cfg.active_id = id.to_owned();
+        cfg.enabled = true;
+        self.save_summary_profiles(&cfg)?;
+        Ok(cfg)
+    }
+
+    pub fn delete_summary_profile(&self, id: &str) -> Result<ProfilesConfig, String> {
+        let mut cfg = self.summary_profiles();
+        cfg.custom.retain(|p| p.id != id);
+        if cfg.active_id == id {
+            cfg.active_id = DEFAULT_PROFILE_ID.to_owned();
+        }
+        self.save_summary_profiles(&cfg)?;
+        Ok(cfg)
+    }
+
+    /// Reads a user `.md` file, asks the configured AI provider to generate a concise Vietnamese
+    /// profile name & 1-line description (falling back to filename/heading if offline or no key),
+    /// saves it, and makes it the active profile.
+    pub fn import_summary_profile(&self, path: &Path) -> Result<ProfilesConfig, String> {
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if ext != "md" && ext != "markdown" {
+            return Err("chỉ hỗ trợ file Markdown (.md)".into());
+        }
+        let content = fs::read_to_string(path)
+            .map_err(|e| format!("không đọc được file .md: {e}"))?;
+        if content.trim().is_empty() {
+            return Err("file .md đang trống".into());
+        }
+        let source_file = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "profile.md".into());
+        let fallback_name = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().replace(['-', '_'], " ").trim().to_owned())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "Profile riêng".into());
+        let fallback_desc = content
+            .lines()
+            .map(|l| l.trim().trim_start_matches('#').trim())
+            .find(|l| !l.is_empty())
+            .map(|l| l.chars().take(120).collect::<String>())
+            .unwrap_or_else(|| format!("Tải lên từ {source_file}"));
+
+        let (name, description) = self
+            .name_profile_with_ai(&content)
+            .unwrap_or((fallback_name, fallback_desc));
+
+        let mut cfg = self.summary_profiles();
+        let slug: String = name
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .take(16)
+            .collect::<String>()
+            .to_lowercase();
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let id = format!(
+            "custom-{}-{stamp}",
+            if slug.is_empty() { "profile" } else { &slug }
+        );
+        cfg.custom.push(SummaryProfile {
+            id: id.clone(),
+            name,
+            description,
+            content,
+            source_file: Some(source_file),
+        });
+        cfg.active_id = id;
+        cfg.enabled = true;
+        self.save_summary_profiles(&cfg)?;
+        Ok(cfg)
+    }
+
+    fn name_profile_with_ai(&self, content: &str) -> Option<(String, String)> {
+        let settings = self.ai_settings();
+        let mut order = vec![settings.default_provider];
+        for p in Provider::ALL {
+            if !order.contains(&p) {
+                order.push(p);
+            }
+        }
+        let client = order
+            .into_iter()
+            .find_map(|p| self.client(p, None).ok())?;
+        let snippet: String = content.chars().take(3000).collect();
+        let system = "Bạn đặt tên ngắn gọn tiếng Việt cho một profile hướng dẫn tóm tắt cuộc họp.\nTrả lời ĐÚNG 2 dòng, không giải thích thêm:\nNAME: <tên profile ngắn 2-5 từ>\nDESC: <mô tả 1 câu ngắn dưới 18 từ>";
+        let reply = client.quick_text(system, &snippet, 120).ok()?;
+        let mut name = None;
+        let mut desc = None;
+        for line in reply.lines() {
+            let trimmed = line.trim();
+            if let Some(rest) = trimmed.strip_prefix("NAME:") {
+                let v = rest.trim().trim_matches('"').to_owned();
+                if !v.is_empty() {
+                    name = Some(v);
+                }
+            } else if let Some(rest) = trimmed.strip_prefix("DESC:") {
+                let v = rest.trim().trim_matches('"').to_owned();
+                if !v.is_empty() {
+                    desc = Some(v);
+                }
+            }
+        }
+        Some((name?, desc.unwrap_or_else(|| "Profile tóm tắt riêng từ file Markdown.".into())))
     }
 
     pub fn templates_enabled(&self) -> bool {
@@ -275,16 +463,36 @@ impl Workspace {
     }
 
     /// Sends the transcript to `provider`, and only that one, with the user's glossary,
-    /// summary writing style, and any custom template columns saved at invocation time.
+    /// summary writing style, active summary profile, and any custom template columns saved at invocation time.
     pub fn summarize(&self, provider: Provider, transcript: &str) -> Result<Draft, AiError> {
         let style = self.ai_settings().summary_style;
         let columns = self.active_template_columns();
-        summary::summarize_with_options(
+        let profiles = self.summary_profiles();
+        let custom_profile = if profiles.enabled && profiles.active_id != DEFAULT_PROFILE_ID {
+            profiles
+                .custom
+                .iter()
+                .find(|p| p.id == profiles.active_id)
+        } else {
+            None
+        };
+        let profile_mode = if !profiles.enabled {
+            SummaryProfileMode::Disabled
+        } else if let Some(p) = custom_profile {
+            SummaryProfileMode::Custom {
+                name: &p.name,
+                content: &p.content,
+            }
+        } else {
+            SummaryProfileMode::BaOpenKit
+        };
+        summary::summarize_with_profile(
             &self.client(provider, None)?,
             transcript,
             &self.glossary(),
             style,
             &columns,
+            profile_mode,
         )
     }
 
@@ -311,6 +519,106 @@ impl Workspace {
         let text = glossary::to_csv(&self.glossary())?;
         fs::write(csv, text).map_err(|e| format!("không ghi được file: {e}"))
     }
+}
+
+/// Latest GitHub release metadata compared against the running app version.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateInfo {
+    pub current_version: String,
+    pub latest_version: String,
+    pub has_update: bool,
+    pub release_url: String,
+    pub download_url: Option<String>,
+    pub notes: String,
+}
+
+fn parse_semver(v: &str) -> (u64, u64, u64) {
+    let clean = v.trim().trim_start_matches(['v', 'V']);
+    let mut parts = clean.split('.').map(|p| {
+        p.chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .parse::<u64>()
+            .unwrap_or(0)
+    });
+    (
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+    )
+}
+
+/// Checks GitHub Releases for `repo` (e.g. `"kiettang974/a-sir"`) and returns update info.
+pub fn check_github_update(current_version: &str, repo: &str) -> Result<UpdateInfo, String> {
+    let url = format!("https://api.github.com/repos/{repo}/releases/latest");
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(4))
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("không khởi tạo được kết nối: {e}"))?;
+    let resp = client
+        .get(&url)
+        .header("User-Agent", "A-Sir")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .map_err(|e| format!("không kết nối được GitHub: {e}"))?;
+    if resp.status().as_u16() == 404 {
+        return Ok(UpdateInfo {
+            current_version: current_version.to_owned(),
+            latest_version: current_version.to_owned(),
+            has_update: false,
+            release_url: format!("https://github.com/{repo}/releases"),
+            download_url: None,
+            notes: "Chưa có bản phát hành nào trên GitHub Releases.".into(),
+        });
+    }
+    if !resp.status().is_success() {
+        return Err(format!("GitHub trả lỗi HTTP {}", resp.status().as_u16()));
+    }
+    let val: serde_json::Value = resp
+        .json()
+        .map_err(|e| format!("dữ liệu phản hồi không hợp lệ: {e}"))?;
+    let tag = val["tag_name"]
+        .as_str()
+        .unwrap_or(current_version)
+        .trim_start_matches(['v', 'V'])
+        .to_owned();
+    let release_url = val["html_url"]
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("https://github.com/{repo}/releases"));
+    let notes = val["body"].as_str().unwrap_or_default().trim().to_owned();
+
+    let preferred_exts: &[&str] = if cfg!(target_os = "macos") {
+        &[".dmg", ".app.tar.gz"]
+    } else if cfg!(target_os = "windows") {
+        &[".exe", ".msi"]
+    } else {
+        &[".AppImage", ".deb"]
+    };
+    let download_url = val["assets"].as_array().and_then(|assets| {
+        preferred_exts.iter().find_map(|ext| {
+            assets.iter().find_map(|a| {
+                let name = a["name"].as_str()?;
+                if name.to_ascii_lowercase().ends_with(&ext.to_ascii_lowercase()) {
+                    a["browser_download_url"].as_str().map(str::to_owned)
+                } else {
+                    None
+                }
+            })
+        })
+    });
+
+    let has_update = parse_semver(&tag) > parse_semver(current_version);
+    Ok(UpdateInfo {
+        current_version: current_version.to_owned(),
+        latest_version: tag,
+        has_update,
+        release_url,
+        download_url,
+        notes,
+    })
 }
 
 #[cfg(test)]

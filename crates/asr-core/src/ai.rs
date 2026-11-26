@@ -11,7 +11,9 @@ use serde_json::{Value, json};
 
 const MAX_OUTPUT_TOKENS: u32 = 16_000;
 const SUMMARY_TIMEOUT: Duration = Duration::from_secs(600);
-const PING_TIMEOUT: Duration = Duration::from_secs(60);
+const PING_TIMEOUT: Duration = Duration::from_secs(12);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(4);
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Claude models that accept `fallbacks: "default"`; a typed-in older model would get a 400.
 const CLAUDE_WITH_FALLBACKS: [&str; 4] = [
     "claude-opus-5-5",
@@ -133,7 +135,7 @@ impl HttpClient {
 
     /// Spends a few tokens to check the key and the model name. Only the status matters.
     pub fn ping(&self) -> Result<(), AiError> {
-        let (url, headers, body) = self.request("Trả lời: OK", "OK", None, 64);
+        let (url, headers, body) = self.request("Reply OK", "OK", None, 8);
         self.send(&url, &headers, &body, PING_TIMEOUT).map(|_| ())
     }
 
@@ -214,11 +216,18 @@ impl HttpClient {
         }
     }
 
-    /// Probes up to 10 prioritized modern models in parallel with tiny `ping()` calls and returns
+    /// Probes up to 6 prioritized modern models in parallel with tiny fast calls and returns
     /// only the ones this API key actually has quota/permission to invoke.
-    pub fn probe_accessible_models(&self) -> Result<Vec<String>, AiError> {
-        const MAX_PROBES: usize = 10;
-        let available = filter_modern_models(self.provider, self.list_models()?);
+    /// Pass `prefetched` from an earlier `list_models()` call to avoid a duplicate network round-trip.
+    pub fn probe_accessible_models(
+        &self,
+        prefetched: Option<&[String]>,
+    ) -> Result<Vec<String>, AiError> {
+        const MAX_PROBES: usize = 6;
+        let available = match prefetched {
+            Some(list) if !list.is_empty() => list.to_vec(),
+            _ => filter_modern_models(self.provider, self.list_models()?),
+        };
         let mut candidates: Vec<String> = Vec::new();
         for &rec in self.provider.recommended_models() {
             if available.iter().any(|m| m == rec) && !candidates.iter().any(|c| c == rec) {
@@ -236,7 +245,8 @@ impl HttpClient {
         candidates.truncate(MAX_PROBES);
 
         let probe_client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(12))
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(PROBE_TIMEOUT)
             .build()
             .map_err(|e| AiError::Network(e.without_url().to_string()))?;
 
@@ -252,7 +262,7 @@ impl HttpClient {
                     };
                     let client_ref = &probe_client;
                     scope.spawn(move || {
-                        let (url, headers, body) = probe.request("Trả lời: OK", "OK", None, 64);
+                        let (url, headers, body) = probe.request("Reply OK", "OK", None, 8);
                         (id, probe.send_with(client_ref, &url, &headers, &body).is_ok())
                     })
                 })
@@ -269,9 +279,17 @@ impl HttpClient {
             .collect())
     }
 
+    /// Short plain-text completion (e.g. naming a custom Markdown profile).
+    pub fn quick_text(&self, system: &str, user: &str, max_tokens: u32) -> Result<String, AiError> {
+        let (url, headers, body) = self.request(system, user, None, max_tokens);
+        let reply = self.send(&url, &headers, &body, PING_TIMEOUT)?;
+        self.read_text(&reply)
+    }
+
     fn get(&self, url: &str, headers: &[(&'static str, String)]) -> Result<Value, AiError> {
         let network = |e: reqwest::Error| AiError::Network(e.without_url().to_string());
         let client = reqwest::blocking::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
             .timeout(PING_TIMEOUT)
             .build()
             .map_err(network)?;

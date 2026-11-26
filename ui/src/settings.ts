@@ -1826,7 +1826,7 @@ function updateSection(): HTMLElement {
     },
   });
 
-  return el(
+  const section = el(
     "section",
     {},
     el("h3", { textContent: "Cập nhật phần mềm" }),
@@ -1844,4 +1844,7 @@ function updateSection(): HTMLElement {
       resultBox,
     ),
   );
+  // Tự kiểm tra ngay khi mở tab, không cần bấm nút.
+  queueMicrotask(() => checkBtn.click());
+  return section;
 }

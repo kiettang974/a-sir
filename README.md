@@ -45,9 +45,3 @@ Bộ cài nằm trong `target/release/bundle/`. Chạy thử khi đang phát tri
 | Bản chép lời và biên bản | `~/Documents/ASR Studio/` | `%USERPROFILE%\Documents\ASR Studio\` |
 
 Gỡ app không xóa các thư mục này. Muốn dọn sạch, hãy xóa chúng bằng tay.
-
-## Nhánh và phát hành
-
-- `dev`: làm việc hằng ngày. Mỗi lần push hoặc mở PR, GitHub Actions kiểm tra lint, clippy và test.
-- `release`: đẩy code vào đây để GitHub Actions build bản macOS và Windows, rồi đăng lên Releases.
-- Đẩy tag dạng `v0.2.0` cũng kích hoạt build tương tự.

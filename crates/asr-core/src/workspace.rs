@@ -621,6 +621,41 @@ pub fn check_github_update(current_version: &str, repo: &str) -> Result<UpdateIn
     })
 }
 
+/// Downloads a release installer into `dir` and returns where it was saved.
+/// Only GitHub release assets of this project are accepted.
+pub fn download_update(url: &str, dir: &Path) -> Result<PathBuf, String> {
+    const PREFIX: &str = "https://github.com/kiettang974/a-sir/releases/download/";
+    if !url.starts_with(PREFIX) {
+        return Err("liên kết tải không thuộc kho phát hành của A-Sir".into());
+    }
+    let name = url
+        .rsplit('/')
+        .next()
+        .filter(|n| !n.is_empty() && !n.contains(['\\', ':']))
+        .ok_or("liên kết tải không hợp lệ")?;
+    fs::create_dir_all(dir).map_err(|e| format!("không tạo được thư mục tải: {e}"))?;
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(8))
+        .timeout(std::time::Duration::from_secs(900))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut resp = client
+        .get(url)
+        .header("User-Agent", "A-Sir")
+        .send()
+        .map_err(|e| format!("không tải được bản cập nhật: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("GitHub trả lỗi HTTP {}", resp.status().as_u16()));
+    }
+    let dest = dir.join(name);
+    let tmp = dest.with_extension("part");
+    let mut file = fs::File::create(&tmp).map_err(|e| e.to_string())?;
+    std::io::copy(&mut resp, &mut file).map_err(|e| format!("tải dở dang: {e}"))?;
+    drop(file);
+    fs::rename(&tmp, &dest).map_err(|e| e.to_string())?;
+    Ok(dest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1788,13 +1788,31 @@ function updateSection(): HTMLElement {
             el(
               "div",
               { className: "actions wrap tpl-actions" },
-              el("button", {
-                className: "add",
-                textContent: info.downloadUrl
-                  ? `Tải A-Sir v${info.latestVersion}`
-                  : `Mở trang tải v${info.latestVersion}`,
-                onclick: () => invoke("open_url", { url: targetUrl }),
-              }),
+              info.downloadUrl
+                ? el("button", {
+                    className: "add",
+                    textContent: `Cập nhật lên v${info.latestVersion}`,
+                    onclick: async (e: MouseEvent) => {
+                      const btn = e.currentTarget as HTMLButtonElement;
+                      btn.disabled = true;
+                      status.className = "provider-status status-inline";
+                      status.textContent = "Đang tải bộ cài, vui lòng đợi…";
+                      try {
+                        await invoke("install_update", { url: info.downloadUrl });
+                        status.textContent =
+                          "Đã tải xong và mở bộ cài. Hãy đóng A-Sir rồi cài theo hướng dẫn.";
+                      } catch (err) {
+                        status.className = "provider-status status-inline bad";
+                        status.textContent = `Chưa cập nhật được: ${err}`;
+                        btn.disabled = false;
+                      }
+                    },
+                  })
+                : el("button", {
+                    className: "add",
+                    textContent: `Mở trang tải v${info.latestVersion}`,
+                    onclick: () => invoke("open_url", { url: targetUrl }),
+                  }),
               el("button", {
                 className: "link",
                 textContent: "Xem ghi chú phát hành",

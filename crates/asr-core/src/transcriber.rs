@@ -299,8 +299,35 @@ impl Transcriber for WhisperCpp {
     }
 }
 
+/// Qwen3-ASR relies on POSIX `mmap`, so Windows builds ship without it.
+#[cfg(not(unix))]
+pub struct QwenAsr;
+
+#[cfg(not(unix))]
+impl QwenAsr {
+    pub fn load(
+        _model_dir: &Path,
+        _vad_model: &Path,
+        _threads: usize,
+        _prompt: Option<String>,
+    ) -> Result<Self, TranscribeError> {
+        Err(TranscribeError::Engine(
+            "Qwen3-ASR chưa chạy được trên Windows, hãy chọn model Whisper hoặc PhoWhisper.".into(),
+        ))
+    }
+}
+
+#[cfg(not(unix))]
+#[cfg(unix)]
+impl Transcriber for QwenAsr {
+    fn transcribe(&self, _: &[f32], _: &Control) -> Result<Vec<Segment>, TranscribeError> {
+        Err(TranscribeError::Engine("Qwen3-ASR chưa chạy được trên Windows.".into()))
+    }
+}
+
 /// Pure-Rust Qwen3-ASR adapter using `qwen-asr` (Accelerate/vDSP on macOS) + shared Silero VAD
 /// for segment timestamps and responsive cancellation.
+#[cfg(unix)]
 pub struct QwenAsr {
     model: Arc<qwen_asr::context::QwenModel>,
     vad_model: String,
@@ -309,6 +336,7 @@ pub struct QwenAsr {
     prompt: Option<String>,
 }
 
+#[cfg(unix)]
 impl QwenAsr {
     pub fn load(
         model_dir: &Path,
@@ -338,6 +366,7 @@ impl QwenAsr {
     }
 }
 
+#[cfg(unix)]
 impl Transcriber for QwenAsr {
     fn transcribe(
         &self,

@@ -366,6 +366,15 @@ async fn check_update() -> Result<UpdateInfo, String> {
     .await
 }
 
+/// Downloads the installer to the user's Downloads folder and opens it.
+#[tauri::command]
+async fn install_update(handle: AppHandle, url: String) -> Result<String, String> {
+    let dir = handle.path().download_dir().map_err(|e| e.to_string())?;
+    let saved = off_thread(move || asr_core::workspace::download_update(&url, &dir)).await?;
+    open_in_os(&saved)?;
+    Ok(saved.display().to_string())
+}
+
 #[tauri::command]
 fn open_url(url: String) -> Result<(), String> {
     if !url.starts_with("https://") {
@@ -757,6 +766,7 @@ fn main() {
             delete_summary_profile,
             app_version,
             check_update,
+            install_update,
             open_url,
             get_glossary,
             save_glossary,

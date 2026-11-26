@@ -39,9 +39,9 @@ const PATHS: Record<IconName, string> = {
   folderPlus: '<path d="M2.2 4.4a1.2 1.2 0 0 1 1.2-1.2h3l1.4 1.5h4.8a1.2 1.2 0 0 1 1.2 1.2v5.7a1.2 1.2 0 0 1-1.2 1.2H3.4a1.2 1.2 0 0 1-1.2-1.2Z"/><path d="M8 7v3.6M6.2 8.8h3.6"/>',
   chevronDown: '<path d="M4.2 6.2 8 10l3.8-3.8"/>',
   chevronRight: '<path d="M6.2 4.2 10 8l-3.8 3.8"/>',
-  mac: '<rect x="2.6" y="3.2" width="10.8" height="7.2" rx="1.2"/><path d="M1.8 13h12.4M6.2 10.4v2.6M9.8 10.4v2.6"/>',
-  windows: '<rect x="2.6" y="2.8" width="4.7" height="4.7" rx=".5"/><rect x="8.7" y="2.8" width="4.7" height="4.7" rx=".5"/><rect x="2.6" y="8.9" width="4.7" height="4.7" rx=".5"/><rect x="8.7" y="8.9" width="4.7" height="4.7" rx=".5"/>',
-  linux: '<rect x="2.2" y="3" width="11.6" height="10" rx="1.6"/><path d="m5 6.6 2 1.6-2 1.6M8.6 10.2h2.4"/>',
+  mac: '<path fill="currentColor" stroke="none" d="M11.6 8.4c0-1.5 1.2-2.2 1.3-2.3-.7-1-1.8-1.2-2.2-1.2-.9-.1-1.8.6-2.3.6-.5 0-1.2-.5-2-.5-1 0-2 .6-2.5 1.5-1.1 1.9-.3 4.6.8 6.1.5.7 1.1 1.6 1.9 1.5.8 0 1.1-.5 2-.5.9 0 1.2.5 2 .5.8 0 1.4-.7 1.9-1.5.6-.9.8-1.7.9-1.8 0 0-1.8-.7-1.8-2.4ZM10.1 3.7c.4-.5.7-1.2.6-2-.6 0-1.4.4-1.8 1-.4.5-.7 1.2-.6 1.9.7.1 1.4-.3 1.8-.9Z"/>',
+  windows: '<path fill="currentColor" stroke="none" d="M2 3.6 7.5 2.8v4.8H2V3.6Zm6.3-.9L14 1.8v5.8H8.3V2.7ZM2 8.4h5.5v4.8L2 12.4V8.4Zm6.3 0H14v5.8l-5.7-.9V8.4Z"/>',
+  linux: '<path d="M4.2 12.6C3.5 11.4 3.2 9.8 3.2 8.2 3.2 4.8 5.2 2.4 8 2.4s4.8 2.4 4.8 5.8c0 1.6-.3 3.2-1 4.4" stroke-width="1.5"/><circle cx="6.2" cy="6.8" r=".95" fill="currentColor" stroke="none"/><circle cx="9.8" cy="6.8" r=".95" fill="currentColor" stroke="none"/><path d="M5.6 9.3 8 10.9l2.4-1.6-2.4-.9-2.4.9Z" fill="currentColor" stroke="none"/><path d="M4.2 12.6c1.2.7 2.4 1 3.8 1s2.6-.3 3.8-1" stroke-width="1.4"/>',
 };
 
 export function icon(name: IconName, size = 15): SVGSVGElement {

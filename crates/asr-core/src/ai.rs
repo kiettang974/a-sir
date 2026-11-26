@@ -39,6 +39,41 @@ impl Provider {
         }
     }
 
+    pub fn recommended_models(self) -> &'static [&'static str] {
+        match self {
+            Provider::Claude => &[
+                "claude-opus-5-5",
+                "claude-sonnet-5-5",
+                "claude-fable-5-2",
+                "claude-haiku-5-5",
+                "claude-opus-5",
+                "claude-sonnet-5",
+                "claude-haiku-4-5-20251001",
+            ],
+            Provider::ChatGpt => &[
+                "gpt-6.1-sol",
+                "gpt-6.1-terra",
+                "gpt-6-astra",
+                "gpt-6-sol",
+                "gpt-6-luna",
+                "gpt-5.6-sol",
+                "gpt-5.6-terra",
+                "gpt-5.4",
+                "gpt-5.4-mini",
+            ],
+            Provider::Gemini => &[
+                "gemini-2.5-flash",
+                "gemini-2.5-flash-lite",
+                "gemini-2.5-pro",
+                "gemini-3.6-flash",
+                "gemini-3.7-flash",
+                "gemini-3.8-flash",
+                "gemini-4-argon",
+                "gemini-4-carbon",
+            ],
+        }
+    }
+
     fn base_url(self) -> &'static str {
         match self {
             Provider::Claude => "https://api.anthropic.com/v1",
@@ -179,6 +214,61 @@ impl HttpClient {
         }
     }
 
+    /// Probes up to 10 prioritized modern models in parallel with tiny `ping()` calls and returns
+    /// only the ones this API key actually has quota/permission to invoke.
+    pub fn probe_accessible_models(&self) -> Result<Vec<String>, AiError> {
+        const MAX_PROBES: usize = 10;
+        let available = filter_modern_models(self.provider, self.list_models()?);
+        let mut candidates: Vec<String> = Vec::new();
+        for &rec in self.provider.recommended_models() {
+            if available.iter().any(|m| m == rec) && !candidates.iter().any(|c| c == rec) {
+                candidates.push(rec.to_owned());
+            }
+        }
+        for m in available {
+            if candidates.len() >= MAX_PROBES {
+                break;
+            }
+            if !candidates.iter().any(|c| c == &m) {
+                candidates.push(m);
+            }
+        }
+        candidates.truncate(MAX_PROBES);
+
+        let probe_client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(12))
+            .build()
+            .map_err(|e| AiError::Network(e.without_url().to_string()))?;
+
+        let results: Vec<(String, bool)> = std::thread::scope(|scope| {
+            let handles: Vec<_> = candidates
+                .into_iter()
+                .map(|id| {
+                    let probe = HttpClient {
+                        provider: self.provider,
+                        model: id.clone(),
+                        key: self.key.clone(),
+                        base_url: self.base_url.clone(),
+                    };
+                    let client_ref = &probe_client;
+                    scope.spawn(move || {
+                        let (url, headers, body) = probe.request("Trả lời: OK", "OK", None, 64);
+                        (id, probe.send_with(client_ref, &url, &headers, &body).is_ok())
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .filter_map(|h| h.join().ok())
+                .collect()
+        });
+
+        Ok(results
+            .into_iter()
+            .filter_map(|(id, ok)| ok.then_some(id))
+            .collect())
+    }
+
     fn get(&self, url: &str, headers: &[(&'static str, String)]) -> Result<Value, AiError> {
         let network = |e: reqwest::Error| AiError::Network(e.without_url().to_string());
         let client = reqwest::blocking::Client::builder()
@@ -278,6 +368,17 @@ impl HttpClient {
             .timeout(timeout)
             .build()
             .map_err(network)?;
+        self.send_with(&client, url, headers, body)
+    }
+
+    fn send_with(
+        &self,
+        client: &reqwest::blocking::Client,
+        url: &str,
+        headers: &[(&'static str, String)],
+        body: &Value,
+    ) -> Result<Value, AiError> {
+        let network = |e: reqwest::Error| AiError::Network(e.without_url().to_string());
         let mut request = client
             .post(url)
             .header("content-type", "application/json")
@@ -365,6 +466,9 @@ fn check_status(status: u16, text: &str) -> Result<Value, AiError> {
     let message = error_message(text);
     Err(match status {
         401 | 403 => AiError::Unauthorized(message),
+        429 if message.contains("limit: 0") => AiError::RateLimited(
+            "gói hiện tại không có hạn mức cho model này (limit: 0). Bấm \"Chọn model\" → \"Lọc model gọi được\" để chọn model tài khoản được phép dùng.".into(),
+        ),
         429 => AiError::RateLimited(message),
         _ => AiError::Rejected { status, message },
     })
@@ -396,6 +500,88 @@ fn is_chat_model(id: &str) -> bool {
         && !NOT_CHAT.iter().any(|word| id.contains(word))
 }
 
+/// Keeps only modern text/chat models so legacy versions don't clutter the picker.
+pub fn is_modern_model(provider: Provider, id: &str) -> bool {
+    let s = id.to_ascii_lowercase();
+    match provider {
+        Provider::Claude => {
+            if s.contains("claude-2") || s.contains("claude-3") || s.contains("claude-instant") {
+                return false;
+            }
+            const MODERN_FAMILIES: [&str; 4] = [
+                "claude-opus-",
+                "claude-sonnet-",
+                "claude-haiku-",
+                "claude-fable-",
+            ];
+            MODERN_FAMILIES.iter().any(|fam| {
+                s.split_once(fam).is_some_and(|(_, rest)| {
+                    rest.starts_with("4-5")
+                        || rest.starts_with("4-6")
+                        || rest.starts_with('5')
+                        || rest.starts_with('6')
+                })
+            }) || !(s.contains("claude-0")
+                || s.contains("claude-1")
+                || s.contains("claude-4"))
+        }
+        Provider::ChatGpt => {
+            const SKIP: [&str; 7] = [
+                "realtime",
+                "audio",
+                "transcribe",
+                "tts",
+                "image",
+                "search-preview",
+                "instruct",
+            ];
+            if SKIP.iter().any(|w| s.contains(w)) {
+                return false;
+            }
+            s.starts_with("gpt-4.1")
+                || s.starts_with("gpt-5")
+                || s.starts_with("gpt-6")
+                || s.starts_with("o3")
+                || s.starts_with("o4")
+        }
+        Provider::Gemini => {
+            if s.contains("gemini-1.")
+                || s.contains("gemini-2.0")
+                || s == "gemini-pro"
+                || s == "gemini-ultra"
+            {
+                return false;
+            }
+            const SKIP: [&str; 10] = [
+                "embedding",
+                "aqa",
+                "imagen",
+                "veo",
+                "learnlm",
+                "gemma",
+                "tts",
+                "native-audio",
+                "robotics",
+                "computer-use",
+            ];
+            if SKIP.iter().any(|w| s.contains(w)) {
+                return false;
+            }
+            s.contains("gemini-2.5") || s.contains("gemini-3") || s.contains("gemini-4")
+        }
+    }
+}
+
+/// Filters a provider's model list to modern models, falling back to the raw list if empty.
+pub fn filter_modern_models(provider: Provider, models: Vec<String>) -> Vec<String> {
+    let filtered: Vec<String> = models
+        .iter()
+        .filter(|id| is_modern_model(provider, id))
+        .cloned()
+        .collect();
+    if filtered.is_empty() { models } else { filtered }
+}
+
 /// All three providers put the human-readable text at `error.message`.
 fn error_message(body: &str) -> String {
     serde_json::from_str::<Value>(body)
@@ -404,12 +590,195 @@ fn error_message(body: &str) -> String {
         .unwrap_or_else(|| body.chars().take(300).collect())
 }
 
-/// Default provider and model names. Keys live in their own file, see `ApiKeys`.
+/// Writing style applied when summarizing transcripts, shared across all AI providers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SummaryStyle {
+    #[default]
+    WorkEmail,
+    AdministrativeNotice,
+    CasualShare,
+    ProductIntro,
+    HowToGuide,
+    CommunityNewsletter,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SummaryStyleInfo {
+    pub id: SummaryStyle,
+    pub label: &'static str,
+    pub description: &'static str,
+    pub before: &'static str,
+    pub after: &'static str,
+}
+
+impl SummaryStyle {
+    pub const ALL: [SummaryStyle; 6] = [
+        SummaryStyle::WorkEmail,
+        SummaryStyle::AdministrativeNotice,
+        SummaryStyle::CasualShare,
+        SummaryStyle::ProductIntro,
+        SummaryStyle::HowToGuide,
+        SummaryStyle::CommunityNewsletter,
+    ];
+
+    pub fn catalog() -> Vec<SummaryStyleInfo> {
+        Self::ALL
+            .into_iter()
+            .map(|id| SummaryStyleInfo {
+                id,
+                label: id.label(),
+                description: id.description(),
+                before: id.example_before(),
+                after: id.example_after(),
+            })
+            .collect()
+    }
+
+    pub fn example_before(self) -> &'static str {
+        match self {
+            SummaryStyle::WorkEmail => {
+                "Mình muốn gửi thông tin về việc bản nháp đã được Lan gửi vào sáng nay. Mình nhờ bạn thực hiện việc kiểm tra bảng chi phí trước 15:00 thứ Năm; phần còn lại chưa cần duyệt."
+            }
+            SummaryStyle::AdministrativeNotice => {
+                "Để phục vụ cho việc tổng hợp nhiệm vụ quý IV, Phòng Tổng hợp đề nghị các đơn vị thực hiện việc rà soát số liệu và tiến hành gửi báo cáo về Phòng Tổng hợp trước 16 giờ ngày 12/11/2026."
+            }
+            SummaryStyle::CasualShare => {
+                "Hôm nay nhóm mình đã có một buổi trao đổi vô cùng hiệu quả và ý nghĩa nhằm mục đích thống nhất lịch bàn giao vào cuối tuần này để mọi người chủ động sắp xếp."
+            }
+            SummaryStyle::ProductIntro => {
+                "Chúng tôi tự hào mang đến sổ bìa vải A5 giá 89.000đ/cuốn, lựa chọn vô cùng lý tưởng cho nhu cầu ghi chép. Giảm 10% cho đơn từ 3 cuốn đến hết ngày 15/11/2026."
+            }
+            SummaryStyle::HowToGuide => {
+                "Trong trường hợp mã phản hồi là 429, việc thử lại yêu cầu cần được thực hiện sau ít nhất 30 giây. Việc thử lại không được thực hiện tự động với yêu cầu POST."
+            }
+            SummaryStyle::CommunityNewsletter => {
+                "Mình rất vui mừng khi được chia sẻ với mọi người một thông tin vô cùng ý nghĩa: Chủ nhật này nhóm mình đổi sách lúc 9h ở thư viện phường. Ai có sách muốn đổi thì mang theo nhé."
+            }
+        }
+    }
+
+    pub fn example_after(self) -> &'static str {
+        match self {
+            SummaryStyle::WorkEmail => {
+                "Lan đã gửi bản nháp sáng nay. Mình nhờ bạn kiểm tra bảng chi phí trước 15:00 thứ Năm; phần còn lại chưa cần duyệt."
+            }
+            SummaryStyle::AdministrativeNotice => {
+                "Để tổng hợp nhiệm vụ quý IV, Phòng Tổng hợp đề nghị các đơn vị rà soát số liệu và gửi báo cáo về Phòng Tổng hợp trước 16 giờ ngày 12/11/2026."
+            }
+            SummaryStyle::CasualShare => {
+                "Hôm nay nhóm đã chốt lịch bàn giao vào cuối tuần này để mọi người chủ động sắp xếp."
+            }
+            SummaryStyle::ProductIntro => {
+                "Sổ bìa vải A5: 89.000đ/cuốn. Giảm 10% cho đơn từ 3 cuốn đến hết ngày 15/11/2026."
+            }
+            SummaryStyle::HowToGuide => {
+                "Nếu mã phản hồi là 429, hãy đợi ít nhất 30 giây trước khi thử lại yêu cầu. Không tự động thử lại yêu cầu POST."
+            }
+            SummaryStyle::CommunityNewsletter => {
+                "Chủ nhật này nhóm mình đổi sách lúc 9h ở thư viện phường. Ai có sách muốn đổi thì mang theo nhé."
+            }
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SummaryStyle::WorkEmail => "Email công việc",
+            SummaryStyle::AdministrativeNotice => "Thông báo hành chính",
+            SummaryStyle::CasualShare => "Chia sẻ đời thường",
+            SummaryStyle::ProductIntro => "Bài giới thiệu sản phẩm",
+            SummaryStyle::HowToGuide => "Hướng dẫn thao tác",
+            SummaryStyle::CommunityNewsletter => "Bản tin cộng đồng",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            SummaryStyle::WorkEmail => {
+                "Lịch sự, trực tiếp. Dùng câu ngắn và nêu rõ quyết định, việc cần làm, người phụ trách và thời hạn nếu có căn cứ."
+            }
+            SummaryStyle::AdministrativeNotice => {
+                "Trang trọng, dùng từ nhất quán. Làm rõ đối tượng áp dụng, thời điểm và điều kiện đã nêu."
+            }
+            SummaryStyle::CasualShare => {
+                "Gần gũi, dùng từ thông dụng và câu ngắn. Giữ nguyên các thuật ngữ cần thiết."
+            }
+            SummaryStyle::ProductIntro => {
+                "Nêu tính năng và lợi ích đã được nhắc đến. Giữ đúng mức độ chắc chắn của từng nhận định."
+            }
+            SummaryStyle::HowToGuide => {
+                "Dùng động từ rõ nghĩa. Trình bày theo thứ tự các bước đã có, kèm điều kiện cần để thực hiện."
+            }
+            SummaryStyle::CommunityNewsletter => {
+                "Rõ ràng, bình tĩnh. Đưa thông tin có ích cho người đọc lên trước, kèm thời gian và cách tham gia nếu cuộc họp có nêu."
+            }
+        }
+    }
+
+    /// Offline Vietnamese Writing Skills reference bundled directly into the app binary.
+    pub fn skill_guide(self) -> &'static str {
+        match self {
+            SummaryStyle::WorkEmail => include_str!(
+                "../prompts/vietnamese-humanizer/skills/humanizer-vi/references/business-writing.md"
+            ),
+            SummaryStyle::AdministrativeNotice => include_str!(
+                "../prompts/vietnamese-humanizer/skills/humanizer-vi/references/administrative-writing.md"
+            ),
+            SummaryStyle::CasualShare => include_str!(
+                "../prompts/vietnamese-humanizer/skills/humanizer-vi/references/conversational.md"
+            ),
+            SummaryStyle::ProductIntro => include_str!(
+                "../prompts/vietnamese-humanizer/skills/humanizer-vi/references/marketing-writing.md"
+            ),
+            SummaryStyle::HowToGuide => include_str!(
+                "../prompts/vietnamese-humanizer/skills/humanizer-vi/references/technical-writing.md"
+            ),
+            SummaryStyle::CommunityNewsletter => include_str!(
+                "../prompts/vietnamese-humanizer/skills/humanizer-vi/references/social-writing.md"
+            ),
+        }
+    }
+
+    /// Shared offline preservation rules (keep facts, numbers, quotes, conditions intact).
+    pub fn preservation_rules() -> &'static str {
+        include_str!(
+            "../prompts/vietnamese-humanizer/skills/humanizer-vi/references/preservation-rules.md"
+        )
+    }
+
+    /// Vietnamese writing guidance injected into the summarization system prompt.
+    pub fn prompt_rules(self) -> &'static str {
+        match self {
+            SummaryStyle::WorkEmail => {
+                "Văn phong Email công việc: lịch sự, trực tiếp, tự nhiên như người đi làm viết tiếng Việt (tránh câu sáo rỗng). Dùng câu ngắn và nêu rõ quyết định, việc cần làm, người phụ trách và thời hạn nếu có căn cứ."
+            }
+            SummaryStyle::AdministrativeNotice => {
+                "Văn phong Thông báo hành chính: trang trọng, khách quan, dùng từ nhất quán. Làm rõ đối tượng áp dụng, thời điểm và điều kiện đã nêu."
+            }
+            SummaryStyle::CasualShare => {
+                "Văn phong Chia sẻ đời thường: gần gũi, dễ đọc, dùng từ thông dụng và câu ngắn tự nhiên. Giữ nguyên các thuật ngữ cần thiết."
+            }
+            SummaryStyle::ProductIntro => {
+                "Văn phong Bài giới thiệu sản phẩm: nêu rõ tính năng và lợi ích đã được nhắc đến trong cuộc họp. Giữ đúng mức độ chắc chắn của từng nhận định, không phóng đại."
+            }
+            SummaryStyle::HowToGuide => {
+                "Văn phong Hướng dẫn thao tác: dùng động từ rõ nghĩa, trực tiếp. Trình bày theo thứ tự các bước đã có, kèm điều kiện cần để thực hiện."
+            }
+            SummaryStyle::CommunityNewsletter => {
+                "Văn phong Bản tin cộng đồng: rõ ràng, bình tĩnh, tự nhiên. Đưa thông tin có ích cho người đọc lên trước, kèm thời gian và cách tham gia nếu cuộc họp có nêu."
+            }
+        }
+    }
+}
+
+/// Default provider, model names, and shared summary writing style. Keys live in `ApiKeys`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AiSettings {
     pub default_provider: Provider,
     pub models: BTreeMap<Provider, String>,
+    pub summary_style: SummaryStyle,
 }
 
 impl Default for AiSettings {
@@ -420,6 +789,7 @@ impl Default for AiSettings {
                 .iter()
                 .map(|p| (*p, p.default_model().to_owned()))
                 .collect(),
+            summary_style: SummaryStyle::default(),
         }
     }
 }
@@ -434,7 +804,7 @@ impl AiSettings {
 
     pub fn save(&self, path: &Path) -> Result<(), String> {
         let bytes = serde_json::to_vec_pretty(self).map_err(|e| e.to_string())?;
-        fs::write(path, bytes).map_err(|e| e.to_string())
+        crate::output::save_atomic(path, &bytes).map_err(|e| e.to_string())
     }
 
     pub fn model(&self, provider: Provider) -> &str {
@@ -471,17 +841,17 @@ impl ApiKeys {
 
     fn write(&self, keys: &BTreeMap<Provider, String>) -> Result<(), AiError> {
         use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
         let fail = |e: std::io::Error| AiError::KeyFile(e.to_string());
         let bytes = serde_json::to_vec_pretty(keys).map_err(|e| AiError::KeyFile(e.to_string()))?;
         let tmp = self.path.with_extension("tmp");
-        let mut file = fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&tmp)
-            .map_err(fail)?;
+        let mut opts = fs::OpenOptions::new();
+        opts.create(true).write(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut file = opts.open(&tmp).map_err(fail)?;
         file.write_all(&bytes).map_err(fail)?;
         fs::rename(&tmp, &self.path).map_err(fail)
     }
@@ -795,7 +1165,6 @@ mod tests {
 
     #[test]
     fn keys_round_trip_in_a_file_only_the_user_can_read() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("keys.json");
         let keys = ApiKeys::at(&path);
@@ -807,10 +1176,14 @@ mod tests {
             keys.get(Provider::Claude).unwrap().as_deref(),
             Some("sk-ant-1234567890abcd")
         );
-        assert_eq!(
-            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
         assert_eq!(
             keys.hints()
                 .unwrap()
@@ -834,8 +1207,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ai.json");
         assert_eq!(AiSettings::load(&path), AiSettings::default());
-        let mut settings = AiSettings::default();
-        settings.default_provider = Provider::Gemini;
+        let mut settings = AiSettings {
+            default_provider: Provider::Gemini,
+            ..Default::default()
+        };
         settings.models.insert(Provider::Claude, "  ".into());
         settings.save(&path).unwrap();
         let loaded = AiSettings::load(&path);
@@ -847,5 +1222,66 @@ mod tests {
                 .to_lowercase()
                 .contains("key")
         );
+    }
+
+    #[test]
+    fn legacy_settings_without_summary_style_default_to_work_email() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ai.json");
+        fs::write(
+            &path,
+            r#"{"defaultProvider":"chatGpt","models":{"chatGpt":"gpt-6-astra"}}"#,
+        )
+        .unwrap();
+        let loaded = AiSettings::load(&path);
+        assert_eq!(loaded.default_provider, Provider::ChatGpt);
+        assert_eq!(loaded.model(Provider::ChatGpt), "gpt-6-astra");
+        assert_eq!(loaded.summary_style, SummaryStyle::WorkEmail);
+    }
+
+    #[test]
+    fn summary_style_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ai.json");
+        let settings = AiSettings {
+            summary_style: SummaryStyle::HowToGuide,
+            ..Default::default()
+        };
+        settings.save(&path).unwrap();
+        assert_eq!(AiSettings::load(&path).summary_style, SummaryStyle::HowToGuide);
+    }
+
+    #[test]
+    fn modern_model_filtering_keeps_current_and_drops_legacy() {
+        assert!(is_modern_model(Provider::Claude, "claude-opus-5-5"));
+        assert!(is_modern_model(Provider::Claude, "claude-haiku-4-5-20251001"));
+        assert!(!is_modern_model(Provider::Claude, "claude-3-5-sonnet-20241022"));
+        assert!(!is_modern_model(Provider::Claude, "claude-2.1"));
+
+        assert!(is_modern_model(Provider::ChatGpt, "gpt-6-astra"));
+        assert!(is_modern_model(Provider::ChatGpt, "gpt-4.1-mini"));
+        assert!(is_modern_model(Provider::ChatGpt, "o4-mini"));
+        assert!(!is_modern_model(Provider::ChatGpt, "gpt-4o-realtime-preview"));
+        assert!(!is_modern_model(Provider::ChatGpt, "gpt-3.5-turbo"));
+
+        assert!(is_modern_model(Provider::Gemini, "gemini-3.6-flash"));
+        assert!(is_modern_model(Provider::Gemini, "gemini-2.5-pro"));
+        assert!(!is_modern_model(Provider::Gemini, "gemini-1.5-pro"));
+        assert!(!is_modern_model(Provider::Gemini, "gemini-2.0-flash"));
+        assert!(!is_modern_model(Provider::Gemini, "gemini-2.5-flash-tts"));
+
+        // Falls back to raw list if filtering would empty it.
+        assert_eq!(
+            filter_modern_models(Provider::Claude, vec!["claude-3-haiku".into()]),
+            vec!["claude-3-haiku".to_owned()]
+        );
+    }
+
+    #[test]
+    fn limit_zero_quota_error_gives_actionable_hint() {
+        let body = r#"{"error":{"message":"Quota exceeded for metric: free_tier_requests, limit: 0, model: gemini-4-carbon"}}"#;
+        let err = check_status(429, body).unwrap_err();
+        assert!(err.to_string().contains("limit: 0"));
+        assert!(err.to_string().contains("Lọc model gọi được"));
     }
 }

@@ -77,7 +77,8 @@ impl Rig {
         };
         let runner = JobRunner::start(
             paths,
-            move || Ok(Box::new(engine.clone()) as Box<dyn Transcriber>),
+            crate::models::DEFAULT_MODEL_ID.to_owned(),
+            move |_model_id| Ok(Box::new(engine.clone()) as Box<dyn Transcriber>),
             move |queue: &Queue| {
                 tx.lock().unwrap().send(queue.jobs.to_vec()).ok();
             },
@@ -211,7 +212,8 @@ fn the_engine_is_released_when_the_queue_empties_and_loaded_again_for_new_work()
             data: dir.path().join("data"),
             output: dir.path().join("out"),
         },
-        move || {
+        crate::models::DEFAULT_MODEL_ID.to_owned(),
+        move |_model_id| {
             live_in.fetch_add(1, Ordering::SeqCst);
             loads_in.fetch_add(1, Ordering::SeqCst);
             Ok(Box::new(Counted {
@@ -254,7 +256,8 @@ fn several_queued_jobs_share_one_loaded_engine() {
             data: dir.path().join("data"),
             output: dir.path().join("out"),
         },
-        move || {
+        crate::models::DEFAULT_MODEL_ID.to_owned(),
+        move |_model_id| {
             live_in.fetch_add(1, Ordering::SeqCst);
             loads_in.fetch_add(1, Ordering::SeqCst);
             Ok(Box::new(Counted {
@@ -364,6 +367,8 @@ fn restarting_requeues_a_job_left_running() {
         id: 7,
         source: source.clone(),
         title: None,
+        model: None,
+        group: None,
         state: JobState::Running {
             percent: 40,
             eta_s: Some(9),
@@ -389,6 +394,7 @@ fn a_checkpoint_skips_finished_chunks_and_keeps_their_timing() {
     fs::create_dir_all(&work).unwrap();
     let checkpoint = Checkpoint {
         fingerprint: fingerprint(&source).unwrap(),
+        model: Some(crate::models::DEFAULT_MODEL_ID.to_owned()),
         chunks: vec![(0, 16_000), (16_000, 32_000)],
         done: vec![vec![Segment {
             start_ms: 0,
@@ -427,6 +433,7 @@ fn a_checkpoint_for_a_changed_source_is_ignored() {
     fs::create_dir_all(&work).unwrap();
     let stale = Checkpoint {
         fingerprint: "khác".into(),
+        model: None,
         chunks: vec![(0, 1)],
         done: vec![vec![]],
     };
@@ -529,4 +536,132 @@ fn a_finished_job_hands_out_its_transcript_and_a_removed_one_does_not() {
     rig.runner.remove(id);
     assert!(rig.runner.jobs().is_empty());
     assert!(rig.runner.transcript(id).is_err());
+}
+
+#[test]
+fn resuming_a_checkpointed_job_keeps_its_original_model_and_new_jobs_use_the_new_default() {
+    let dir = tempfile::tempdir().unwrap();
+    let loaded_models = Arc::new(Mutex::new(Vec::<String>::new()));
+    let loaded_in = loaded_models.clone();
+    let fake = Fake::default();
+    let fake_in = fake.clone();
+    let runner = JobRunner::start(
+        Paths {
+            data: dir.path().join("data"),
+            output: dir.path().join("out"),
+        },
+        "whisper-large-v3-turbo".to_owned(),
+        move |model_id| {
+            loaded_in.lock().unwrap().push(model_id.to_owned());
+            Ok(Box::new(fake_in.clone()) as Box<dyn Transcriber>)
+        },
+        |_: &Queue| {},
+    )
+    .unwrap();
+
+    let first_src = write_wav(&dir.path().join("first.wav"), 2);
+    let second_src = write_wav(&dir.path().join("second.wav"), 1);
+    runner.set_paused(true);
+    let first_id = runner.enqueue(first_src.clone()).unwrap();
+    // Simulate a checkpoint written by Turbo before the user switches default model.
+    let work = dir.path().join("data/work").join(first_id.to_string());
+    fs::create_dir_all(&work).unwrap();
+    let checkpoint = Checkpoint {
+        fingerprint: fingerprint(&first_src).unwrap(),
+        model: Some("whisper-large-v3-turbo".to_owned()),
+        chunks: vec![(0, 16_000), (16_000, 32_000)],
+        done: vec![vec![Segment {
+            start_ms: 0,
+            end_ms: 900,
+            text: "khúc turbo".into(),
+        }]],
+    };
+    fs::write(
+        work.join("checkpoint.json"),
+        serde_json::to_vec(&checkpoint).unwrap(),
+    )
+    .unwrap();
+
+    // User switches default model to PhoWhisper and adds a new job.
+    runner.set_default_model("phowhisper-medium-q5_0".to_owned());
+    let second_id = runner.enqueue(second_src).unwrap();
+    runner.set_paused(false);
+
+    let deadline = Instant::now() + WAIT;
+    while runner.jobs().iter().filter(|j| is_done(&j.state)).count() < 2 {
+        assert!(Instant::now() < deadline, "{:?}", runner.jobs());
+        thread::sleep(Duration::from_millis(2));
+    }
+
+    assert_eq!(
+        *loaded_models.lock().unwrap(),
+        vec!["whisper-large-v3-turbo", "phowhisper-medium-q5_0"]
+    );
+    // First job resumed its second chunk only (16_000 samples); second job ran full 16_000 samples.
+    assert_eq!(*fake.calls.lock().unwrap(), [16_000, 16_000]);
+    let first_text = runner.transcript(first_id).unwrap().text().unwrap();
+    assert!(first_text.contains("khúc turbo"));
+    assert_eq!(
+        runner.jobs().into_iter().find(|j| j.id == second_id).unwrap().model.as_deref(),
+        Some("phowhisper-medium-q5_0")
+    );
+}
+
+#[test]
+fn a_checkpoint_from_a_different_model_is_ignored() {
+    let rig = Rig::new();
+    let source = rig.wav("mismatch.wav", 2);
+    rig.runner.set_paused(true);
+    let id = rig.runner.enqueue(source.clone()).unwrap();
+    let work = rig.dir.path().join("data/work").join(id.to_string());
+    fs::create_dir_all(&work).unwrap();
+    let wrong_model = Checkpoint {
+        fingerprint: fingerprint(&source).unwrap(),
+        model: Some("phowhisper-medium-q5_0".to_owned()),
+        chunks: vec![(0, 16_000), (16_000, 32_000)],
+        done: vec![vec![Segment {
+            start_ms: 0,
+            end_ms: 900,
+            text: "khác model".into(),
+        }]],
+    };
+    fs::write(
+        work.join("checkpoint.json"),
+        serde_json::to_vec(&wrong_model).unwrap(),
+    )
+    .unwrap();
+    rig.runner.set_paused(false);
+    rig.wait_state(id, "done", is_done);
+    assert_eq!(*rig.fake.calls.lock().unwrap(), [32_000]);
+}
+
+#[test]
+fn groups_create_folders_and_move_finished_outputs() {
+    let rig = Rig::new();
+    let group = rig.runner.create_group("Kế toán / Q4").unwrap();
+    assert_eq!(group, "Kế toán - Q4");
+    assert!(rig.dir.path().join("out").join(&group).is_dir());
+
+    let source = rig.wav("hop.wav", 1);
+    let id = rig.runner.enqueue(source).unwrap();
+    rig.wait_state(id, "done", is_done);
+
+    rig.runner.set_job_group(id, Some(group.clone())).unwrap();
+    let job = rig.runner.jobs().into_iter().find(|j| j.id == id).unwrap();
+    assert_eq!(job.group.as_deref(), Some(group.as_str()));
+    let JobState::Done { txt, srt } = job.state else {
+        panic!("expected done job");
+    };
+    assert_eq!(txt.parent(), Some(rig.dir.path().join("out").join(&group).as_path()));
+    assert!(txt.exists());
+    assert!(srt.exists());
+
+    rig.runner.delete_group(&group).unwrap();
+    let job_after = rig.runner.jobs().into_iter().find(|j| j.id == id).unwrap();
+    assert_eq!(job_after.group, None);
+    let JobState::Done { txt: txt2, .. } = job_after.state else {
+        panic!("expected done job");
+    };
+    assert_eq!(txt2.parent(), Some(rig.dir.path().join("out").as_path()));
+    assert!(txt2.exists());
 }

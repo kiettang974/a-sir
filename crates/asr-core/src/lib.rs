@@ -3,6 +3,9 @@
 pub mod ai;
 pub mod audio;
 pub mod clean;
+pub mod deliverable;
+pub mod docx;
+pub mod excel;
 pub mod glossary;
 mod jobs;
 pub mod models;

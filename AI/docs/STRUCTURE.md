@@ -1,10 +1,10 @@
-# INDEX: mục lục source cho agent
+# Bản đồ mã nguồn ASR Studio
 
-> Thêm, đổi tên hoặc xoá file/module thì phải sửa file này trong cùng thay đổi.
+Cập nhật bản đồ khi thêm, đổi tên hoặc xoá mô-đun hay điểm vào được mô tả ở đây.
 
 ## 1. Tổng quan
 
-ASR Studio là app macOS chép lời file ghi âm tiếng Việt ngay trên máy (Rust + Tauri 2 + whisper.cpp qua `whisper-rs`, Metal), rồi dùng nhà cung cấp AI do người dùng chọn (Claude, ChatGPT, Gemini) để biến bản chép lời thành bảng meeting note. Âm thanh không rời máy; chỉ text bản chép lời được gửi, và chỉ đến đúng nhà cung cấp người dùng chọn.
+ASR Studio là app macOS chép lời file ghi âm tiếng Việt ngay trên máy (Rust + Tauri 2 + whisper.cpp qua `whisper-rs`, Metal), rồi dùng nhà cung cấp AI do người dùng chọn (Claude, ChatGPT, Gemini) để biến bản chép lời thành bảng meeting note. Âm thanh không rời máy; khi người dùng yêu cầu tóm tắt, app gửi bản chép lời và danh sách thuật ngữ đến nhà cung cấp đã chọn.
 
 - `crates/asr-core`: toàn bộ logic, không phụ thuộc Tauri.
 - `app`: lớp Tauri mỏng, mỗi `#[tauri::command]` chuyển tiếp sang `asr-core`.
@@ -37,9 +37,9 @@ Draft { rows, pending } ──► ui/src/note.ts (sửa tại chỗ, nghe lại 
 ```
 
 Vị trí file trên máy (đặt trong `app/src/main.rs` `main`):
-- `Paths.data` = app data dir: `jobs.json`, `work/<id>/checkpoint.json`, `ai.json`, `api-keys.json` (mode 0600), `glossary.json`.
+- `Paths.data` = `~/Library/Application Support/vn.vmed.asr-studio`: `jobs.json`, `work/<id>/checkpoint.json`, `asr.json`, `ai.json`, `api-keys.json` (mode 0600), `glossary.json`.
 - `Paths.output` = `~/Documents/ASR Studio`: `.txt`, `.srt`, `_fixed.txt`, `_note.json`, `_note.html`.
-- Model: `~/Library/Application Support/asr-studio/models` (`ggml-large-v3-turbo.bin`, `ggml-silero-v5.1.2.bin`).
+- Model: `~/Library/Application Support/asr-studio/models` (`ggml-large-v3-turbo.bin`, `ggml-large-v3.bin`, `ggml-phowhisper-medium-q5_0.bin`, `qwen3-asr-1.7b/`, `ggml-silero-v5.1.2.bin`).
 
 ## 2. Từng file
 
@@ -48,17 +48,20 @@ Vị trí file trên máy (đặt trong `app/src/main.rs` `main`):
 | File | Sở hữu | `pub` chính |
 |---|---|---|
 | `lib.rs` | Khai báo module, re-export từ `jobs` | `pub use jobs::{Job, JobRunner, JobState, Paths, Queue, Rejected}`; `jobs` là module private |
-| `jobs.rs` | Hàng đợi: một worker thread, chia khúc theo im lặng, checkpoint/resume, pause, cancel, giữ/thả engine, đặt tên và ghi file kết quả | `JobState { Queued, Running{percent,eta_s}, Done{txt,srt}, Failed{message}, Cancelled }` + `is_active`; `Job { id, source, title, state }`; `Queue<'a> { jobs, paused, busy }`; `Rejected { AlreadyQueued(id), Unsupported }`; `Paths { data, output }`; `JobRunner::{start(paths, load, on_change), jobs, is_paused, is_busy, enqueue, enqueue_titled, transcript, set_paused, cancel, retry, remove}`. Private nhưng quan trọng: `process`, `run_worker`, `plan_chunks`, `silence_ends`, `output_name`, `write_outputs`, `fingerprint`, hằng `CHUNK_S`/`SEARCH_S`/`MAX_LAST_CHUNK_S`/`MIN_CHUNK_S` |
+| `jobs.rs` | Hàng đợi: một worker thread, chia khúc theo im lặng, checkpoint/resume gắn `model` theo job, pause, cancel, giữ/thả/đổi engine theo `model_id`, đặt tên và ghi file kết quả | `JobState { Queued, Running{percent,eta_s}, Done{txt,srt}, Failed{message}, Cancelled }` + `is_active`; `Job { id, source, title, model, state }`; `Queue<'a> { jobs, paused, busy }`; `Rejected { AlreadyQueued(id), Unsupported }`; `Paths { data, output }`; `JobRunner::{start(paths, default_model, load, on_change), default_model, set_default_model, jobs, is_paused, is_busy, enqueue, enqueue_titled, transcript, set_paused, cancel, retry, remove}`. Private nhưng quan trọng: `process`, `run_worker`, `plan_chunks`, `silence_ends`, `output_name`, `write_outputs`, `fingerprint`, hằng `CHUNK_S`/`SEARCH_S`/`MAX_LAST_CHUNK_S`/`MIN_CHUNK_S` |
 | `jobs/tests.rs` | Test của `jobs` (fake `Transcriber`, `Rig`) | (test) |
-| `transcript.rs` | Bản chép lời đã xong và file đi kèm (`_fixed.txt`, `_note.json`, `_note.html`); parser duy nhất của dòng TXT | `Line { start, text }`; `split_line`; `lines`; `Transcript::{source, text, lines, write_cleaned, note, save_note}` (`new` là `pub(crate)`, chỉ `JobRunner::transcript` tạo) |
-| `transcriber.rs` | Seam giữa jobs và engine; adapter whisper.cpp, VAD tự chạy | `SAMPLE_RATE = 16_000`; `Segment { start_ms, end_ms, text }`; `TranscribeError { Cancelled, Engine }`; `Control { cancel, on_progress }`; trait `Transcriber::transcribe`; `WhisperOptions` (mặc định `vi`, beam 1, VAD, pad 400 ms, không timestamp); `WhisperCpp::load` |
+| `transcript.rs` | Bản chép lời đã xong và file đi kèm (`_fixed.txt`, `_note.json`, `_note.html`); parser chuẩn cho dòng TXT | `Line { start, text }`; `split_line`; `lines`; `Transcript::{source, text, lines, write_cleaned, note, save_note}` (`new` là `pub(crate)`, chỉ `JobRunner::transcript` tạo) |
+| `transcriber.rs` | Seam giữa jobs và engine; adapter whisper.cpp, VAD tự chạy | `SAMPLE_RATE = 16_000`; `Segment { start_ms, end_ms, text }`; `TranscribeError { Cancelled, Engine }`; `Control { cancel, on_progress }`; trait `Transcriber::transcribe`; `WhisperOptions` (mặc định `vi`, giải mã greedy (beam 1), Silero VAD, pad 400 ms, mốc đoạn lấy từ VAD); `WhisperCpp::load` |
 | `audio.rs` | Mọi file âm thanh/video → 16 kHz mono f32 (Symphonia + rubato; fallback `afconvert` trên macOS) | `EXTENSIONS`; `is_supported`; `decode` |
 | `output.rs` | Định dạng TXT/SRT, ghi atomic, quy tắc tên không ghi đè | `to_txt`, `to_srt`; `pub(crate) save_atomic`, `pub(crate) candidates` (`name`, `name (2)`, ...) |
 | `clean.rs` | Làm sạch theo luật: bỏ dòng "ảo giác" kiểu kênh YouTube, sửa chính tả cố định, gộp từ lặp ≥5 | `clean_transcript`; hằng `SPELLING`, `PHANTOM_STARTS`, `MIN_REPEATS` |
-| `models.rs` | File model: kiểm tra, tải (resume bằng Range, kiểm SHA-256), nạp engine | `load_engine(dir)` (chính là `load` truyền vào `JobRunner::start`); `are_ready`; `download(dir, on_percent)`; hằng `WHISPER`, `VAD` (url, sha256, bytes) |
-| `ai.rs` | Giao tiếp nhà cung cấp AI: wire format từng provider, lỗi, cấu hình, file API key | `Provider { Claude, ChatGpt, Gemini }` + `ALL`, `default_model`; `AiError`; trait `LlmClient::complete(system, user, schema)`; `HttpClient::{new, ping, list_models}`; `AiSettings { default_provider, models }` + `load`, `save`, `model`; `ApiKeys::{at, get, set, remove, hints}`; `key_hint`. Private: `request` (body/header từng provider), `read_text` (đọc reply, truncated/refused), `check_status`, `is_chat_model`, `CLAUDE_WITH_FALLBACKS` |
-| `summary.rs` | Prompt, JSON schema, và chuyển câu trả lời thành `Draft` | `Evidence { time, quote, seconds }`; `Row { title, agreed, note, evidence, uncertain }`; `Pending { row, reason }`; `Draft { rows, pending }`; `summarize(&dyn LlmClient, transcript, terms)`. Private: `RULES` (system prompt), `schema()`, `prompt`, `glossary_lines`, `parse`, `seconds` |
-| `workspace.rs` | Cấu hình của người dùng trong data dir; cửa vào duy nhất cho AI settings, key, glossary, tóm tắt | `Workspace::{at, ai_settings, save_ai_settings, key_hints, set_key, delete_key, client, summarize, glossary, save_glossary, import_glossary, export_glossary}` |
+| `models.rs` | Danh mục model chép lời cục bộ (`CATALOG`) và `ModelStore`: kiểm tra, tải (single-flight lock, resume bằng Range, kiểm SHA-256), validate chọn/xoá, nạp engine theo `model_id` | `DEFAULT_MODEL_ID`, `ModelSpec`, `CATALOG`, `ModelStore::{new, is_ready, are_ready, validate_select, load, download, delete}`, `find`, `default_spec` |
+| `ai.rs` | Giao tiếp nhà cung cấp AI: wire format từng provider, lỗi, cấu hình (gồm văn phong tóm tắt nhúng offline từ `prompts/vietnamese-humanizer/skills/`), file API key | `Provider { Claude, ChatGpt, Gemini }` + `ALL`, `default_model`; `SummaryStyle` (`label`, `prompt_rules`, `skill_guide`, `preservation_rules`); `AiError`; trait `LlmClient::complete(system, user, schema)`; `HttpClient::{new, ping, list_models}`; `AiSettings { default_provider, models, summary_style }` + `load`, `save`, `model`; `ApiKeys::{at, get, set, remove, hints}`; `key_hint`. Private: `request` (body/header từng provider), `read_text` (đọc reply, truncated/refused), `check_status`, `is_chat_model`, `CLAUDE_WITH_FALLBACKS` |
+| `summary.rs` | Prompt, JSON schema theo BA-Kit + văn phong tóm tắt, và chuyển câu trả lời thành `Draft` | `Evidence { time, quote, seconds }`; `Row { title, agreed, note, evidence, uncertain, fields }`; `ActionItem { task, owner, deadline, missing, evidence }`; `Pending { row, reason }`; `Draft { discussion, rows, actions, pending }`; `summarize`, `summarize_with_style`, `summarize_with_options` |
+| `deliverable.rs` | Phần chung OOXML cho xuất biên bản Excel/Word: `TemplateFormat`, `MeetingRow`, `escape_xml`, `resolve_column_value`, `patch_zip_entry`, `validate_template`, `inspect_headers` | `TemplateFormat { Excel, Docx }`; `MeetingRow { title, agreed, note, fields }`; `validate_template`; `inspect_headers` |
+| `excel.rs` | Xuất biên bản `.xlsx` theo mẫu mặc định (`mau-bien-ban-hop.xlsx`) hoặc file `.xlsx` mẫu người dùng import; mọi ô ghi dạng `inlineStr` (text) | `DEFAULT_TEMPLATE`; `inspect_headers`; `validate_template`; `export` |
+| `docx.rs` | Xuất biên bản `.docx` theo bố cục mặc định hoặc file `.docx` mẫu người dùng import | `inspect_headers`; `validate_template`; `export` |
+| `workspace.rs` | Cấu hình của người dùng trong data dir; điểm vào cho model chép lời cục bộ, cấu hình AI, API key, glossary, mẫu biên bản (`TemplateFormat`) và tóm tắt | `Workspace::{at, asr_model, set_asr_model, resource_profile, set_resource_profile, template_name, template_columns, import_template, reset_template, active_template_columns, export_excel, export_docx, ai_settings, save_ai_settings, key_hints, set_key, delete_key, client, summarize, glossary, save_glossary, import_glossary, export_glossary}` |
 | `glossary.rs` | Danh sách thuật ngữ đúng (chỉ dùng khi tóm tắt), JSON + CSV có BOM, nhận cả `;` của Excel | `Term { correct, heard_as, note }`; `load`, `save`, `to_csv`, `from_csv`, `merge` |
 | `voice_memos.rs` | Đọc app Ghi âm của macOS: SQLite `CloudRecordings.db` (cột dò lúc chạy), fallback quét thư mục | `Recording { path, title, recorded_at, duration_s, on_disk }`; `ListError { NoPermission, Other }`; `folder(home)`; `list(dir)` |
 
@@ -66,7 +69,7 @@ Vị trí file trên máy (đặt trong `app/src/main.rs` `main`):
 
 | File | Dùng để |
 |---|---|
-| `bench.rs` | Đo engine: `bench <model> <vad> <wav> <reference.txt> <out.txt> [--beam N] [--no-vad] [--pad MS] [--ts]`, in tốc độ và độ lệch từ so với bản tham chiếu |
+| `bench.rs` | Đo engine: `bench <model> <vad> <wav> <reference.txt> <out.txt> [--beam N] [--no-vad] [--pad MS] [--ts]`, in tốc độ và độ lệch từ so với bản tham chiếu do engine cũ tạo |
 | `run_job.rs` | Chạy engine thật qua `JobRunner` thật: `run_job <models dir> <work dir> <audio file>` (env `HOLD_S` để giữ process đo RAM) |
 | `list_memos.rs` | In số bản ghi `voice_memos::list` thấy được |
 
@@ -94,13 +97,21 @@ Vị trí file trên máy (đặt trong `app/src/main.rs` `main`):
 | `import_glossary(terms, path)` / `export_glossary(terms, path)` | `workspace.import_glossary/export_glossary` |
 | `summarize_job(id, provider)` | `runner.transcript(id)?.text()` → `workspace.summarize` (off_thread) |
 | `save_note(id, draft, html)` / `load_note(id)` | `Transcript::save_note` / `Transcript::note` |
-| `allow_job_audio(id)` | `Transcript::source` + `asset_protocol_scope().allow_file` |
-| `download_models` | `models::download`, phát event `"model-progress"` (off_thread) |
+| `excel_template` / `import_excel_template(path)` / `reset_excel_template` / `export_note_excel(rows, path)` | `workspace.excel_template_name/import_excel_template/reset_excel_template/export_excel` |
+| `allow_job_audio(id)` | `Transcript::source` + kiểm tra quyền đọc file + đăng ký vào `audio_server::AudioServer` (`http://127.0.0.1:<port>/audio/<id>?token=...`, hỗ trợ HTTP Range 206 cho WKWebView) |
+| `download_models` | `models::download_model` (model đang chọn), phát event `"model-progress"` (off_thread) |
+| `local_models` | `models::CATALOG` + `models::is_ready` + `workspace.asr_model` → `LocalModelsView` |
+| `download_local_model(model_id)` | `models::download_model`, phát event `"local-model-progress"` (off_thread) |
+| `select_local_model(model_id)` | kiểm `models::is_ready` → `workspace.set_asr_model` + `runner.set_default_model` |
 
-Event phát ra: `"queue"` (payload `Queue`), `"model-progress"` (u8 percent).
+Event phát ra: `"queue"` (payload `Queue`), `"model-progress"` (u8 percent), `"local-model-progress"` (`{ modelId, percent }`).
 
 - `app/capabilities/default.json`: quyền plugin cho cửa sổ `main` (`core:default`, `dialog:allow-open/save/ask/message`, `clipboard-manager:allow-write-text/html`, `opener:allow-reveal-item-in-dir`). Command riêng của app không cần khai báo ở đây; chỉ quyền plugin.
 - `app/tauri.conf.json`: identifier, cửa sổ, CSP (`media-src asset:` cho trình phát), `assetProtocol.scope: []` (mở từng file lúc chạy qua `allow_job_audio`), lệnh build UI (`pnpm dev`/`pnpm build` ở `../ui`).
+
+### Preview giao diện
+
+Nếu checkout có `ui/mock/`, chạy `pnpm --dir ui preview:mock`. Cấu hình `ui/vite.preview.config.ts` thay các API Tauri bằng mock và phục vụ fixture giả lập trên trình duyệt. Dùng bản app macOS để kiểm tra xử lý âm thanh, quyền hệ điều hành và IPC thật.
 
 ### Gốc repo
 
@@ -112,8 +123,9 @@ Event phát ra: `"queue"` (payload `Queue`), `"model-progress"` (u8 percent).
 |---|---|---|---|
 | `main.ts` | Entry: state toàn cục, layout hai cột (hàng đợi + pane phải), màn tải model, chọn từ Ghi âm, đọc bản chép lời, kéo thả | `main` (snapshot + `listen("queue")`, `listen("model-progress")`, `onDragDropEvent`), `render`, `queuePane`, `jobRow`, `select`, `addFiles`, `enqueue`, `reportSkipped`, `openMemos`, `memosPane`, `memoRow`, `refreshMemoControls`, `readerPane`, `firstRun`, `startDownload`, `rightPane` (chọn `reader`/`memos`/`settings`/`note`) | `snapshot`, `enqueue`, `cancel`, `retry`, `remove`, `set_paused`, `list_voice_memos`, `enqueue_voice_memos`, `open_full_disk_settings`, `relaunch`, `read_transcript`, `clean_transcript`, `download_models` |
 | `note.ts` | Pane bảng tóm tắt: form tạo, bảng sửa tại chỗ (contentEditable), mục "Cần xác nhận", nghe lại evidence, tự lưu, HTML email | `notePane(id, name, links)` (bên trong: `showForm`, `drawForm`, `showNote`, `draw`, `save`, `play`), `emailHtml` (bảng gửi đi, style inline), `cleanHtml` (whitelist b/i/br/a http), `plainText`, `fromModelText` (`**bold**`, xuống dòng), `handlePaste`, `editable`; hằng `DEFAULT_INTRO`, `SAVE_DELAY_MS` | `ai_settings`, `summarize_job`, `save_note`, `load_note`, `allow_job_audio` |
-| `settings.ts` | Pane Cấu hình: nhà cung cấp AI, key, model, glossary | `settingsPane`, `aiSection`, `providerBlock`, `glossarySection`; export `Provider`, `PROVIDERS`, `PROVIDER_NAME`, `AiView` | `ai_settings`, `get_glossary`, `save_ai_settings`, `set_api_key`, `delete_api_key`, `list_models`, `test_provider`, `save_glossary`, `import_glossary`, `export_glossary` |
+| `settings.ts` | Pane Cấu hình chia 3 tab (Chép lời, Nhà cung cấp AI, Thuật ngữ), tải lỗi độc lập theo tab, bộ chọn model AI tải lười theo API key | `settingsPane`, `speechSection`, `aiSection`, `providerBlock`, `glossarySection`; export `Provider`, `PROVIDERS`, `PROVIDER_NAME`, `AiView` | `local_models`, `download_local_model`, `select_local_model`, `ai_settings`, `get_glossary`, `save_ai_settings`, `set_api_key`, `delete_api_key`, `list_models`, `test_provider`, `save_glossary`, `import_glossary`, `export_glossary` |
 | `dom.ts` | Helper tạo element, mọi text qua `textContent` | `el(tag, props, ...children)` | - |
+| `ipc.ts` | Kiểu DTO IPC dùng chung (`Provider`, `AiView`, `SummaryStyleOption`, `MeetingTemplates`) và thanh tiến độ `progressBar` | `PROVIDERS`, `PROVIDER_NAME`, `progressBar` | - |
 | `style.css` | Toàn bộ CSS (biến màu/font ở `:root`; khối Queue, Reader, Invite, Memos, Settings, Note) | - | - |
 
 Type phía UI viết tay, phải khớp serde của Rust: `JobState`/`Job`/`Recording`/`MemoList`/`Snapshot` trong `main.ts`, `Draft`/`Row`/`Evidence` trong `note.ts`, `AiView`/`Term`/`Provider` trong `settings.ts`.
@@ -147,14 +159,4 @@ Type phía UI viết tay, phải khớp serde của Rust: `JobState`/`Job`/`Reco
 - `LlmClient` (`ai.rs`): adapter thật `HttpClient`; fake là `Fake` trong `summary.rs` tests. Test của `HttpClient` dùng server TCP một lần (`serve`, `serve_many`) qua `with_base_url`.
 - Test (đều là `#[cfg(test)] mod tests` trong file, trừ jobs): `jobs/tests.rs`, `transcript.rs`, `transcriber.rs` (`merge_spans`), `audio.rs`, `output.rs`, `clean.rs`, `models.rs` (server HTTP giả cho resume/hash), `ai.rs`, `summary.rs`, `workspace.rs`, `glossary.rs`, `voice_memos.rs` (SQLite giả).
 - Chạy: `cargo test -p asr-core`; UI: `pnpm --dir ui build` (chạy `tsc --noEmit` rồi `vite build`).
-- Không có test: `ui/src/*` và `app/src/main.rs`. Engine thật chỉ được thử qua `examples/run_job.rs` và `examples/bench.rs`.
-
-## 5. Tài liệu khác
-
-- `ai/GLOSSARY.md`: thuật ngữ domain.
-- `ai/domain.md`: cách dùng tài liệu domain.
-- `ai/issue-tracker.md`: issue nằm ở `.scratch/<feature>/`.
-- `ai/triage-labels.md`: năm nhãn triage.
-- `ai/adr/`: ADR (có thể chưa tồn tại).
-- `README.md` (gốc repo): cách build, nơi lưu model và kết quả.
-- `AGENTS.md` (gốc repo): điểm vào cho agent.
+- Kiểm tra UI và lớp Tauri qua app macOS. Hai example `run_job.rs` và `bench.rs` hỗ trợ kiểm tra riêng engine thật.

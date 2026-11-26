@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite --port 5174 --strictPort",
-    "build": "tsc --noEmit && vite build"
+    "build": "node scripts/lint-ui-rules.mjs && tsc --noEmit && vite build",
+    "preview:mock": "vite --config vite.preview.config.ts --port 5180 --strictPort"
   },
   "dependencies": {
     "@fontsource/be-vietnam-pro": "^5.3.0",

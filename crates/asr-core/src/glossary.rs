@@ -28,7 +28,7 @@ pub fn load(path: &Path) -> Vec<Term> {
 
 pub fn save(path: &Path, terms: &[Term]) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(&tidy(terms)).map_err(|e| e.to_string())?;
-    fs::write(path, bytes).map_err(|e| e.to_string())
+    crate::output::save_atomic(path, &bytes).map_err(|e| e.to_string())
 }
 
 /// Drops rows with no correct term, which say nothing.

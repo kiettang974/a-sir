@@ -39,6 +39,12 @@ pub struct Job {
     /// Names the transcript instead of the source file, whose own name may mean nothing.
     #[serde(default)]
     pub title: Option<String>,
+    /// Local transcription model pinned to this job so resuming never mixes chunks across models.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Optional user group / subfolder name under the output directory.
+    #[serde(default)]
+    pub group: Option<String>,
     pub state: JobState,
 }
 
@@ -47,6 +53,7 @@ pub struct Job {
 #[serde(rename_all = "camelCase")]
 pub struct Queue<'a> {
     pub jobs: &'a [Job],
+    pub groups: &'a [String],
     pub paused: bool,
     /// Work is waiting or running and the queue isn't paused: keep the machine awake.
     pub busy: bool,
@@ -56,6 +63,7 @@ impl<'a> Queue<'a> {
     fn of(state: &'a State) -> Self {
         Queue {
             jobs: &state.jobs,
+            groups: &state.groups,
             paused: state.paused,
             busy: !state.paused && state.jobs.iter().any(|j| j.state.is_active()),
         }
@@ -90,14 +98,18 @@ pub struct Paths {
 #[derive(Serialize, Deserialize)]
 struct Checkpoint {
     fingerprint: String,
+    #[serde(default)]
+    model: Option<String>,
     chunks: Vec<(usize, usize)>,
     done: Vec<Vec<Segment>>,
 }
 
 struct State {
     jobs: Vec<Job>,
+    groups: Vec<String>,
     paused: bool,
     next_id: u64,
+    default_model: String,
 }
 
 struct Shared {
@@ -115,7 +127,7 @@ impl Shared {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Saves the job list and tells the watcher.
+    /// Saves the job & group lists and tells the watcher.
     fn publish(&self, state: &State) {
         let saved = save_atomic(
             &self.paths.data.join("jobs.json"),
@@ -123,6 +135,13 @@ impl Shared {
         );
         if let Err(e) = saved {
             eprintln!("không lưu được danh sách việc: {e}");
+        }
+        let saved_groups = save_atomic(
+            &self.paths.data.join("groups.json"),
+            &serde_json::to_vec(&state.groups).unwrap_or_default(),
+        );
+        if let Err(e) = saved_groups {
+            eprintln!("không lưu được danh sách nhóm: {e}");
         }
         self.notify(state);
     }
@@ -152,13 +171,18 @@ pub struct JobRunner {
 
 impl JobRunner {
     /// Reloads earlier jobs and starts the worker. Jobs that were running when the app last
-    /// closed are queued again. `load` runs when a job needs an engine and none is loaded: the
-    /// engine is dropped whenever the queue runs empty, and a failed load is retried on the next
-    /// job. `on_change` runs with the queue locked, so it must be quick and must not call back
-    /// into this runner.
-    pub fn start<L, C>(paths: Paths, load: L, on_change: C) -> std::io::Result<Self>
+    /// closed are queued again. `load` runs when a job needs an engine (identified by model ID)
+    /// and a different model or none is loaded: the engine is dropped whenever the queue runs
+    /// empty, and a failed load is retried on the next job. `on_change` runs with the queue
+    /// locked, so it must be quick and must not call back into this runner.
+    pub fn start<L, C>(
+        paths: Paths,
+        default_model: String,
+        load: L,
+        on_change: C,
+    ) -> std::io::Result<Self>
     where
-        L: Fn() -> Result<Box<dyn Transcriber>, TranscribeError> + Send + 'static,
+        L: Fn(&str) -> Result<Box<dyn Transcriber>, TranscribeError> + Send + 'static,
         C: Fn(&Queue) + Send + Sync + 'static,
     {
         fs::create_dir_all(&paths.data)?;
@@ -167,17 +191,28 @@ impl JobRunner {
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
+        let mut groups: Vec<String> = fs::read(paths.data.join("groups.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
         for job in &mut jobs {
             if matches!(job.state, JobState::Running { .. }) {
                 job.state = JobState::Queued;
+            }
+            if let Some(ref g) = job.group
+                && !groups.contains(g)
+            {
+                groups.push(g.clone());
             }
         }
         let next_id = jobs.iter().map(|j| j.id + 1).max().unwrap_or(1);
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
                 jobs,
+                groups,
                 paused: false,
                 next_id,
+                default_model,
             }),
             wake: Condvar::new(),
             interrupt: Arc::default(),
@@ -190,8 +225,103 @@ impl JobRunner {
         Ok(Self { shared })
     }
 
+    pub fn default_model(&self) -> String {
+        self.shared.lock().default_model.clone()
+    }
+
+    /// Sets the model used for newly enqueued jobs. Existing jobs keep their own pinned model.
+    pub fn set_default_model(&self, model_id: String) {
+        self.shared.lock().default_model = model_id;
+    }
+
     pub fn jobs(&self) -> Vec<Job> {
         self.shared.lock().jobs.clone()
+    }
+
+    pub fn groups(&self) -> Vec<String> {
+        self.shared.lock().groups.clone()
+    }
+
+    /// Creates a named group in the sidebar and its matching folder inside `paths.output`.
+    pub fn create_group(&self, name: &str) -> Result<String, String> {
+        let clean = sanitize_group_name(name)?;
+        let dir = self.shared.paths.output.join(&clean);
+        fs::create_dir_all(&dir).map_err(|e| format!("không tạo được thư mục nhóm: {e}"))?;
+        let mut state = self.shared.lock();
+        if !state.groups.contains(&clean) {
+            state.groups.push(clean.clone());
+            self.shared.publish(&state);
+        }
+        Ok(clean)
+    }
+
+    /// Returns the output folder path for a group, creating it if needed.
+    pub fn group_dir(&self, name: &str) -> Result<PathBuf, String> {
+        let clean = sanitize_group_name(name)?;
+        let dir = self.shared.paths.output.join(&clean);
+        fs::create_dir_all(&dir).map_err(|e| format!("không mở được thư mục nhóm: {e}"))?;
+        Ok(dir)
+    }
+
+    /// Removes a group, moving any finished transcripts back to the root output folder.
+    /// Non-empty folders are never force-deleted.
+    pub fn delete_group(&self, name: &str) -> Result<(), String> {
+        let mut state = self.shared.lock();
+        state.groups.retain(|g| g != name);
+        let root_out = self.shared.paths.output.clone();
+        for job in &mut state.jobs {
+            if job.group.as_deref() == Some(name) {
+                if let JobState::Done { txt, srt } = &job.state
+                    && txt.parent() != Some(root_out.as_path())
+                    && let Ok((new_txt, new_srt)) = move_done_outputs(txt, srt, &root_out)
+                {
+                    job.state = JobState::Done {
+                        txt: new_txt,
+                        srt: new_srt,
+                    };
+                }
+                job.group = None;
+            }
+        }
+        fs::remove_dir(root_out.join(name)).ok();
+        self.shared.publish(&state);
+        Ok(())
+    }
+
+    /// Assigns (or unassigns) a job's group, creating the group folder and moving finished
+    /// output files into that folder so disk layout stays in sync with the sidebar.
+    pub fn set_job_group(&self, id: u64, group: Option<String>) -> Result<(), String> {
+        let clean = match group.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(raw) => Some(sanitize_group_name(raw)?),
+            None => None,
+        };
+        let target_dir = match &clean {
+            Some(g) => self.shared.paths.output.join(g),
+            None => self.shared.paths.output.clone(),
+        };
+        fs::create_dir_all(&target_dir).map_err(|e| format!("không tạo được thư mục nhóm: {e}"))?;
+
+        let mut state = self.shared.lock();
+        if let Some(ref g) = clean
+            && !state.groups.contains(g)
+        {
+            state.groups.push(g.clone());
+        }
+        let Some(job) = state.jobs.iter_mut().find(|j| j.id == id) else {
+            return Err("không tìm thấy bản ghi này".into());
+        };
+        if let JobState::Done { txt, srt } = &job.state
+            && txt.parent() != Some(target_dir.as_path())
+        {
+            let (new_txt, new_srt) = move_done_outputs(txt, srt, &target_dir)?;
+            job.state = JobState::Done {
+                txt: new_txt,
+                srt: new_srt,
+            };
+        }
+        job.group = clean;
+        self.shared.publish(&state);
+        Ok(())
     }
 
     pub fn is_paused(&self) -> bool {
@@ -209,8 +339,23 @@ impl JobRunner {
     /// Refuses a file whose format can't be read, and a file that is already waiting or
     /// running. A finished, failed or cancelled file may be added again.
     pub fn enqueue_titled(&self, source: PathBuf, title: Option<String>) -> Result<u64, Rejected> {
+        self.enqueue_in_group(source, title, None)
+    }
+
+    pub fn enqueue_in_group(
+        &self,
+        source: PathBuf,
+        title: Option<String>,
+        group: Option<String>,
+    ) -> Result<u64, Rejected> {
         if !audio::is_supported(&source) {
             return Err(Rejected::Unsupported);
+        }
+        let clean_group = group
+            .as_deref()
+            .and_then(|g| sanitize_group_name(g).ok());
+        if let Some(ref g) = clean_group {
+            fs::create_dir_all(self.shared.paths.output.join(g)).ok();
         }
         let mut state = self.shared.lock();
         if let Some(job) = state
@@ -220,12 +365,20 @@ impl JobRunner {
         {
             return Err(Rejected::AlreadyQueued(job.id));
         }
+        if let Some(ref g) = clean_group
+            && !state.groups.contains(g)
+        {
+            state.groups.push(g.clone());
+        }
         let id = state.next_id;
         state.next_id += 1;
+        let model = Some(state.default_model.clone());
         state.jobs.push(Job {
             id,
             source,
             title,
+            model,
+            group: clean_group,
             state: JobState::Queued,
         });
         self.shared.publish(&state);
@@ -294,6 +447,19 @@ impl JobRunner {
         }
     }
 
+    /// Enqueues a fresh job for the same recording using the current default model,
+    /// keeping the previous job and its transcript files intact for comparison.
+    pub fn rerun(&self, id: u64) -> Result<u64, Rejected> {
+        let (source, title, group) = {
+            let state = self.shared.lock();
+            let Some(job) = state.jobs.iter().find(|j| j.id == id) else {
+                return Err(Rejected::Unsupported);
+            };
+            (job.source.clone(), job.title.clone(), job.group.clone())
+        };
+        self.enqueue_in_group(source, title, group)
+    }
+
     /// Removes a job that isn't running from the list. Transcripts stay on disk.
     pub fn remove(&self, id: u64) {
         let mut state = self.shared.lock();
@@ -306,13 +472,34 @@ impl JobRunner {
             self.shared.publish(&state);
         }
     }
+
+    /// Removes every non-running job in a single lock + publish cycle and returns their IDs.
+    pub fn clear_removable(&self) -> Vec<u64> {
+        let mut state = self.shared.lock();
+        let mut removed = Vec::new();
+        state.jobs.retain(|j| {
+            if matches!(j.state, JobState::Running { .. }) {
+                true
+            } else {
+                removed.push(j.id);
+                false
+            }
+        });
+        if !removed.is_empty() {
+            for &id in &removed {
+                fs::remove_dir_all(self.shared.work_dir(id)).ok();
+            }
+            self.shared.publish(&state);
+        }
+        removed
+    }
 }
 
 fn run_worker<L>(shared: &Arc<Shared>, load: L)
 where
-    L: Fn() -> Result<Box<dyn Transcriber>, TranscribeError>,
+    L: Fn(&str) -> Result<Box<dyn Transcriber>, TranscribeError>,
 {
-    let mut engine: Option<Box<dyn Transcriber>> = None;
+    let mut loaded: Option<(String, Box<dyn Transcriber>)> = None;
     loop {
         let job = {
             let mut state = shared.lock();
@@ -323,7 +510,7 @@ where
                     Some(_) => {}
                     // The model takes about 1.8 GB and reloads in about a second, so
                     // an idle app shouldn't hold on to it. A paused queue keeps it.
-                    None => engine = None,
+                    None => loaded = None,
                 }
                 state = shared.wake.wait(state).unwrap_or_else(|e| e.into_inner());
             }
@@ -337,11 +524,27 @@ where
             },
         );
 
-        let outcome = match &engine {
-            Some(_) => Ok(()),
-            None => load().map(|e| engine = Some(e)).map_err(|e| e.to_string()),
+        let job_model = job
+            .model
+            .as_deref()
+            .unwrap_or(crate::models::DEFAULT_MODEL_ID);
+        if loaded.as_ref().is_some_and(|(id, _)| id != job_model) {
+            loaded = None;
         }
-        .and_then(|()| process(shared, engine.as_deref().expect("loaded above"), &job));
+        let outcome = match &loaded {
+            Some(_) => Ok(()),
+            None => load(job_model)
+                .map(|e| loaded = Some((job_model.to_owned(), e)))
+                .map_err(|e| e.to_string()),
+        }
+        .and_then(|()| {
+            process(
+                shared,
+                loaded.as_ref().expect("loaded above").1.as_ref(),
+                &job,
+                job_model,
+            )
+        });
         finish_current(shared);
         match outcome {
             Ok(done) => shared.set_state(job.id, done),
@@ -367,7 +570,12 @@ fn is_cancelled(shared: &Shared, id: u64) -> bool {
         .is_none_or(|j| j.state == JobState::Cancelled)
 }
 
-fn process(shared: &Arc<Shared>, engine: &dyn Transcriber, job: &Job) -> Result<JobState, String> {
+fn process(
+    shared: &Arc<Shared>,
+    engine: &dyn Transcriber,
+    job: &Job,
+    job_model: &str,
+) -> Result<JobState, String> {
     let samples = audio::decode(&job.source)?;
     let fingerprint = fingerprint(&job.source)?;
     let work = shared.work_dir(job.id);
@@ -377,9 +585,13 @@ fn process(shared: &Arc<Shared>, engine: &dyn Transcriber, job: &Job) -> Result<
     let mut checkpoint = fs::read(&checkpoint_path)
         .ok()
         .and_then(|b| serde_json::from_slice::<Checkpoint>(&b).ok())
-        .filter(|c| c.fingerprint == fingerprint)
+        .filter(|c| {
+            c.fingerprint == fingerprint
+                && c.model.as_deref().unwrap_or(crate::models::DEFAULT_MODEL_ID) == job_model
+        })
         .unwrap_or_else(|| Checkpoint {
             fingerprint,
+            model: Some(job_model.to_owned()),
             chunks: plan_chunks(&silence_ends(&samples), samples.len()),
             done: Vec::new(),
         });
@@ -440,7 +652,15 @@ fn process(shared: &Arc<Shared>, engine: &dyn Transcriber, job: &Job) -> Result<
     }
 
     let segments: Vec<Segment> = checkpoint.done.into_iter().flatten().collect();
-    let (txt, srt) = write_outputs(&shared.paths.output, &output_name(job), &segments)
+    let out_dir = match &job.group {
+        Some(g) => {
+            let dir = shared.paths.output.join(g);
+            fs::create_dir_all(&dir).map_err(|e| format!("không tạo được thư mục nhóm: {e}"))?;
+            dir
+        }
+        None => shared.paths.output.clone(),
+    };
+    let (txt, srt) = write_outputs(&out_dir, &output_name(job), &segments)
         .map_err(|e| format!("không ghi được file kết quả: {e}"))?;
     fs::remove_dir_all(&work).ok();
     Ok(JobState::Done { txt, srt })
@@ -519,6 +739,62 @@ fn output_name(job: &Job) -> String {
     } else {
         name
     }
+}
+
+/// Sanitizes a user group name so it is safe as a single folder name under `paths.output`.
+fn sanitize_group_name(raw: &str) -> Result<String, String> {
+    let clean: String = raw
+        .chars()
+        .map(|c| {
+            if matches!(c, '/' | ':' | '\\') || c.is_control() {
+                '-'
+            } else {
+                c
+            }
+        })
+        .collect::<String>()
+        .trim()
+        .trim_start_matches('.')
+        .to_owned();
+    if clean.is_empty() {
+        Err("tên nhóm không hợp lệ".into())
+    } else {
+        Ok(clean)
+    }
+}
+
+/// Moves a finished job's transcript and any sibling notes/exports into `target_dir`.
+fn move_done_outputs(txt: &Path, srt: &Path, target_dir: &Path) -> Result<(PathBuf, PathBuf), String> {
+    let old_stem = txt
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "transcript".into());
+    let (new_txt, new_srt) = candidates(target_dir, &old_stem, &["txt", "srt"])
+        .find(|paths| paths.iter().all(|p| !p.exists()))
+        .map(|mut paths| (paths.remove(0), paths.remove(0)))
+        .expect("candidates never run out");
+    let new_stem = new_txt
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or(old_stem.clone());
+
+    if txt.exists() {
+        fs::rename(txt, &new_txt).map_err(|e| format!("không chuyển được file txt: {e}"))?;
+    }
+    if srt.exists() {
+        fs::rename(srt, &new_srt).map_err(|e| format!("không chuyển được file srt: {e}"))?;
+    }
+    if let Some(old_dir) = txt.parent() {
+        for suffix in ["note.json", "note.md", "xlsx", "docx"] {
+            let old_sibling = old_dir.join(format!("{old_stem}.{suffix}"));
+            if old_sibling.exists() {
+                let new_sibling = target_dir.join(format!("{new_stem}.{suffix}"));
+                let _ = fs::rename(&old_sibling, &new_sibling);
+            }
+        }
+    }
+    Ok((new_txt, new_srt))
 }
 
 /// Never overwrites: a second "meeting" becomes "meeting (2).txt".

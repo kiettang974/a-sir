@@ -9,6 +9,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::clean;
+use crate::glossary::Term;
 use crate::output::{candidates, save_atomic};
 
 /// One transcript line. `start` is "HH:MM:SS", or empty for a line without a timestamp.
@@ -83,7 +84,12 @@ impl Transcript {
     /// transcript file it never overwrites: an identical earlier copy is reused, and a
     /// different one (perhaps edited by hand) is kept and the new copy becomes "_fixed (2)".
     pub fn write_cleaned(&self) -> Result<PathBuf, String> {
-        let cleaned = clean::clean_transcript(&self.text()?);
+        self.write_cleaned_with_glossary(&[])
+    }
+
+    /// Writes "<name>_fixed.txt" applying both built-in cleanup and user glossary replacements.
+    pub fn write_cleaned_with_glossary(&self, terms: &[Term]) -> Result<PathBuf, String> {
+        let cleaned = clean::clean_transcript_with_glossary(&self.text()?, terms);
         let dir = self.txt.parent().unwrap_or(Path::new("."));
         let stem = format!(
             "{}_fixed",

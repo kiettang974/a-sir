@@ -1,5 +1,5 @@
 {
-  "productName": "ASR Studio",
+  "productName": "A-Sir",
   "version": "0.1.0",
   "identifier": "vn.vmed.asr-studio",
   "build": {
@@ -10,12 +10,23 @@
   },
   "app": {
     "windows": [
-      { "label": "main", "title": "ASR Studio", "width": 1120, "height": 760, "minWidth": 720, "minHeight": 480 }
+      { "label": "main", "title": "A-Sir", "width": 1120, "height": 760, "minWidth": 720, "minHeight": 480 }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; media-src asset: http://asset.localhost; connect-src ipc: http://ipc.localhost",
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; media-src asset: http://asset.localhost http://127.0.0.1:*; connect-src ipc: http://ipc.localhost",
       "assetProtocol": { "enable": true, "scope": [] }
     }
   },
-  "bundle": { "active": true, "targets": ["app"], "icon": ["icons/icon.png"], "macOS": { "minimumSystemVersion": "13.3" } }
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": { "minimumSystemVersion": "13.3" }
+  }
 }

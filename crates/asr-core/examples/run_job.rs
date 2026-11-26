@@ -2,11 +2,13 @@
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
-use asr_core::{JobRunner, JobState, Paths, Queue, models};
+use asr_core::models::{DEFAULT_MODEL_ID, ModelStore};
+use asr_core::transcriber::ResourceProfile;
+use asr_core::{JobRunner, JobState, Paths, Queue};
 
 fn main() {
     let a: Vec<String> = std::env::args().collect();
-    let dir = PathBuf::from(&a[1]);
+    let store = ModelStore::new(PathBuf::from(&a[1]));
     let work = Path::new(&a[2]);
     let (tx, rx) = mpsc::channel();
     let tx = std::sync::Mutex::new(tx);
@@ -15,7 +17,8 @@ fn main() {
             data: work.join("data"),
             output: work.join("out"),
         },
-        move || models::load_engine(&dir),
+        DEFAULT_MODEL_ID.to_owned(),
+        move |id| store.load(id, ResourceProfile::default(), None),
         move |queue: &Queue| {
             tx.lock()
                 .unwrap()

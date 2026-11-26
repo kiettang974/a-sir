@@ -3,3 +3,7 @@ node_modules/
 dist/
 .DS_Store
 bench-out/
+.scratch/
+outputs/
+benchmarks/
+.codegraph/

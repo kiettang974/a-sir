@@ -6,9 +6,52 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+
 use crate::ai::{AiError, AiSettings, ApiKeys, HttpClient, Provider};
+use crate::deliverable::{self, MeetingRow, TemplateFormat};
+use crate::docx;
+use crate::excel;
 use crate::glossary::{self, Term};
+use crate::models;
+use crate::output::save_atomic;
 use crate::summary::{self, Draft};
+use crate::transcriber::ResourceProfile;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AsrSettings {
+    #[serde(default = "default_model_id")]
+    model_id: String,
+    #[serde(default)]
+    resource_profile: ResourceProfile,
+}
+
+fn default_model_id() -> String {
+    models::DEFAULT_MODEL_ID.to_owned()
+}
+
+impl Default for AsrSettings {
+    fn default() -> Self {
+        Self {
+            model_id: default_model_id(),
+            resource_profile: ResourceProfile::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TemplateMeta {
+    name: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TemplateToggle {
+    #[serde(default)]
+    enabled: bool,
+}
 
 #[derive(Debug, Clone)]
 pub struct Workspace {
@@ -22,6 +65,10 @@ impl Workspace {
         }
     }
 
+    fn asr_settings_path(&self) -> PathBuf {
+        self.dir.join("asr.json")
+    }
+
     fn settings_path(&self) -> PathBuf {
         self.dir.join("ai.json")
     }
@@ -30,8 +77,140 @@ impl Workspace {
         self.dir.join("glossary.json")
     }
 
+    fn template_path(&self, format: TemplateFormat) -> PathBuf {
+        self.dir.join(format.storage_filename())
+    }
+
+    fn template_meta_path(&self, format: TemplateFormat) -> PathBuf {
+        self.dir.join(format.meta_filename())
+    }
+
+    fn template_toggle_path(&self) -> PathBuf {
+        self.dir.join("meeting-templates-toggle.json")
+    }
+
+    pub fn templates_enabled(&self) -> bool {
+        fs::read(self.template_toggle_path())
+            .ok()
+            .and_then(|b| serde_json::from_slice::<TemplateToggle>(&b).ok())
+            .is_some_and(|t| t.enabled)
+    }
+
+    pub fn set_templates_enabled(&self, enabled: bool) -> Result<(), String> {
+        let body = serde_json::to_vec(&TemplateToggle { enabled }).map_err(|e| e.to_string())?;
+        save_atomic(&self.template_toggle_path(), &body)
+            .map_err(|e| format!("không lưu được trạng thái template: {e}"))
+    }
+
     fn keys(&self) -> ApiKeys {
         ApiKeys::at(&self.dir.join("api-keys.json"))
+    }
+
+    /// Original filename of the imported custom template for `format`, if one is set.
+    pub fn template_name(&self, format: TemplateFormat) -> Option<String> {
+        if !self.template_path(format).exists() {
+            return None;
+        }
+        fs::read(self.template_meta_path(format))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<TemplateMeta>(&b).ok())
+            .map(|m| m.name)
+            .or_else(|| Some(format.storage_filename().to_owned()))
+    }
+
+    /// Validates and saves a user-provided `.xlsx` or `.docx` file as the meeting export template.
+    pub fn import_template(&self, path: &Path) -> Result<(TemplateFormat, String), String> {
+        let format = TemplateFormat::from_path(path)?;
+        let bytes = fs::read(path).map_err(|e| format!("không đọc được file mẫu: {e}"))?;
+        deliverable::validate_template(format, &bytes)?;
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| format.storage_filename().to_owned());
+        save_atomic(&self.template_path(format), &bytes)
+            .map_err(|e| format!("không lưu được file mẫu: {e}"))?;
+        let meta = serde_json::to_vec(&TemplateMeta { name: name.clone() })
+            .map_err(|e| e.to_string())?;
+        save_atomic(&self.template_meta_path(format), &meta)
+            .map_err(|e| format!("không lưu được thông tin file mẫu: {e}"))?;
+        let _ = self.set_templates_enabled(true);
+        Ok((format, name))
+    }
+
+    /// Removes the custom template for `format` so exports fall back to the built-in layout.
+    pub fn reset_template(&self, format: TemplateFormat) -> Result<(), String> {
+        let _ = fs::remove_file(self.template_path(format));
+        let _ = fs::remove_file(self.template_meta_path(format));
+        Ok(())
+    }
+
+    /// Exports confirmed rows to `.xlsx`, using the imported custom template when enabled.
+    pub fn export_excel(&self, rows: &[MeetingRow], out_path: &Path) -> Result<(), String> {
+        let custom = self
+            .templates_enabled()
+            .then(|| fs::read(self.template_path(TemplateFormat::Excel)).ok())
+            .flatten();
+        excel::export(custom.as_deref(), rows, out_path)
+    }
+
+    /// Exports confirmed rows to `.docx`, using the imported custom Word template when enabled.
+    pub fn export_docx(
+        &self,
+        title: &str,
+        greeting: &str,
+        intro: &str,
+        rows: &[MeetingRow],
+        out_path: &Path,
+    ) -> Result<(), String> {
+        let custom = self
+            .templates_enabled()
+            .then(|| fs::read(self.template_path(TemplateFormat::Docx)).ok())
+            .flatten();
+        docx::export(custom.as_deref(), title, greeting, intro, rows, out_path)
+    }
+
+    fn load_asr_settings(&self) -> AsrSettings {
+        fs::read(self.asr_settings_path())
+            .ok()
+            .and_then(|b| serde_json::from_slice::<AsrSettings>(&b).ok())
+            .unwrap_or_default()
+    }
+
+    fn save_asr_settings(&self, settings: &AsrSettings) -> Result<(), String> {
+        let body = serde_json::to_vec(settings).map_err(|e| e.to_string())?;
+        save_atomic(&self.asr_settings_path(), &body)
+            .map_err(|e| format!("không lưu được cấu hình chép lời: {e}"))
+    }
+
+    /// The selected local transcription model ID; falls back to the default catalog model.
+    pub fn asr_model(&self) -> String {
+        let id = self.load_asr_settings().model_id;
+        if id.trim().is_empty() {
+            models::DEFAULT_MODEL_ID.to_owned()
+        } else {
+            id
+        }
+    }
+
+    pub fn set_asr_model(&self, model_id: &str) -> Result<(), String> {
+        let trimmed = model_id.trim();
+        if trimmed.is_empty() {
+            return Err("mã model chép lời không được để trống".into());
+        }
+        let mut settings = self.load_asr_settings();
+        settings.model_id = trimmed.to_owned();
+        self.save_asr_settings(&settings)
+    }
+
+    pub fn resource_profile(&self) -> ResourceProfile {
+        self.load_asr_settings().resource_profile
+    }
+
+    pub fn set_resource_profile(&self, profile: ResourceProfile) -> Result<(), String> {
+        let mut settings = self.load_asr_settings();
+        settings.resource_profile = profile;
+        self.save_asr_settings(&settings)
     }
 
     /// The settings in effect: a provider whose model was left blank shows its default,
@@ -73,9 +252,40 @@ impl Workspace {
         Ok(HttpClient::new(provider, &model, &key))
     }
 
-    /// Sends the transcript to `provider`, and only that one, with the user's glossary.
+    pub fn template_columns(&self, format: TemplateFormat) -> Vec<String> {
+        fs::read(self.template_path(format))
+            .ok()
+            .and_then(|b| deliverable::inspect_headers(format, &b).ok())
+            .unwrap_or_default()
+    }
+
+    /// Combines unique column headers from any imported custom Excel/Word template when
+    /// templates are enabled; returns empty when toggled off so AI runs pure BA-Open-Kit + Humanizer.
+    pub fn active_template_columns(&self) -> Vec<String> {
+        if !self.templates_enabled() {
+            return Vec::new();
+        }
+        let mut cols = self.template_columns(TemplateFormat::Excel);
+        for c in self.template_columns(TemplateFormat::Docx) {
+            if !cols.iter().any(|existing| existing.eq_ignore_ascii_case(&c)) {
+                cols.push(c);
+            }
+        }
+        cols
+    }
+
+    /// Sends the transcript to `provider`, and only that one, with the user's glossary,
+    /// summary writing style, and any custom template columns saved at invocation time.
     pub fn summarize(&self, provider: Provider, transcript: &str) -> Result<Draft, AiError> {
-        summary::summarize(&self.client(provider, None)?, transcript, &self.glossary())
+        let style = self.ai_settings().summary_style;
+        let columns = self.active_template_columns();
+        summary::summarize_with_options(
+            &self.client(provider, None)?,
+            transcript,
+            &self.glossary(),
+            style,
+            &columns,
+        )
     }
 
     pub fn glossary(&self) -> Vec<Term> {
@@ -176,5 +386,45 @@ mod tests {
         let ws = Workspace::at(dir.path());
         let error = ws.import_glossary(&[], &dir.path().join("không có.csv")).unwrap_err();
         assert!(error.contains("không đọc được"));
+    }
+
+    #[test]
+    fn asr_model_persists_across_reloads_and_rejects_blank_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = Workspace::at(dir.path());
+        assert_eq!(ws.asr_model(), models::DEFAULT_MODEL_ID);
+        assert!(ws.set_asr_model("   ").is_err());
+        ws.set_asr_model("phowhisper-medium-q5_0").unwrap();
+        assert_eq!(Workspace::at(dir.path()).asr_model(), "phowhisper-medium-q5_0");
+    }
+
+    #[test]
+    fn templates_import_inspect_and_reset_for_both_formats() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = Workspace::at(dir.path());
+
+        let xlsx = dir.path().join("custom.xlsx");
+        excel::export(None, &[], &xlsx).unwrap();
+        let (fmt, name) = ws.import_template(&xlsx).unwrap();
+        assert_eq!(fmt, TemplateFormat::Excel);
+        assert_eq!(name, "custom.xlsx");
+        assert_eq!(ws.template_name(TemplateFormat::Excel).as_deref(), Some("custom.xlsx"));
+        assert!(!ws.template_columns(TemplateFormat::Excel).is_empty());
+
+        let docx_path = dir.path().join("custom.docx");
+        docx::export(None, "Họp", "", "", &[], &docx_path).unwrap();
+        let (fmt, name) = ws.import_template(&docx_path).unwrap();
+        assert_eq!(fmt, TemplateFormat::Docx);
+        assert_eq!(name, "custom.docx");
+        assert_eq!(ws.template_name(TemplateFormat::Docx).as_deref(), Some("custom.docx"));
+        assert!(!ws.template_columns(TemplateFormat::Docx).is_empty());
+
+        ws.reset_template(TemplateFormat::Excel).unwrap();
+        assert_eq!(ws.template_name(TemplateFormat::Excel), None);
+        assert_eq!(ws.template_name(TemplateFormat::Docx).as_deref(), Some("custom.docx"));
+
+        let bad = dir.path().join("notes.txt");
+        fs::write(&bad, "hi").unwrap();
+        assert!(ws.import_template(&bad).is_err());
     }
 }

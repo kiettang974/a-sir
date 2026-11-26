@@ -9,6 +9,8 @@ import "@fontsource/literata/latin-400.css";
 import "./style.css";
 
 import { el } from "./dom";
+import { icon } from "./icons";
+import { type LocalModelProgress, overflowMenu, progressBar } from "./ipc";
 import { notePane } from "./note";
 import { settingsPane } from "./settings";
 
@@ -16,7 +18,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { message, open } from "@tauri-apps/plugin-dialog";
+import { ask, message, open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 
 type JobState =
@@ -25,7 +27,14 @@ type JobState =
   | { kind: "done"; txt: string; srt: string }
   | { kind: "failed"; message: string }
   | { kind: "cancelled" };
-type Job = { id: number; source: string; title: string | null; state: JobState };
+type Job = {
+  id: number;
+  source: string;
+  title: string | null;
+  model?: string | null;
+  group?: string | null;
+  state: JobState;
+};
 type Recording = {
   path: string;
   title: string;
@@ -37,20 +46,32 @@ type MemoList =
   | { status: "ok"; recordings: Recording[] }
   | { status: "noPermission" }
   | { status: "failed"; message: string };
-type Queue = { jobs: Job[]; paused: boolean; busy: boolean };
-type Snapshot = Queue & { modelsReady: boolean; outputDir: string; audioExtensions: string[] };
+type Queue = { jobs: Job[]; groups: string[]; paused: boolean; busy: boolean };
+type Snapshot = Queue & {
+  modelsReady: boolean;
+  outputDir: string;
+  audioExtensions: string[];
+  modelLabels: Record<string, string>;
+};
 type Line = { start: string; text: string };
 
 /** Formats the core can read; it refuses anything else, so the picker and drop zone match. */
 let audioExtensions: string[] = [];
+let modelLabels: Record<string, string> = {};
 const root = document.querySelector<HTMLDivElement>("#app")!;
 
 let jobs: Job[] = [];
+let groups: string[] = [];
 let paused = false;
 /** Work is waiting or running and not paused, as the core reports it. */
 let busy = false;
 let modelsReady = false;
 let selected: number | null = null;
+let openMenuJobId: number | null = null;
+let creatingGroup = false;
+let newGroupName = "";
+const collapsedGroups = new Set<string>();
+let dragJobId: number | null = null;
 let transcript: { id: number; text: string; lines: Line[] } | null = null;
 let readerNote = "";
 let view: "reader" | "memos" | "settings" | "note" = "reader";
@@ -58,12 +79,6 @@ let memos: MemoList | null = null;
 let memoFilter = "";
 const memoChosen = new Set<string>();
 let download: { percent: number } | { error: string } | null = null;
-
-function bar(percent: number): HTMLElement {
-  const fill = el("i");
-  fill.style.width = `${percent}%`;
-  return el("div", { className: "bar" }, fill);
-}
 
 const jobName = (job: Job) => job.title ?? baseName(job.source);
 
@@ -94,30 +109,115 @@ function statusText(state: JobState): string {
   }
 }
 
+function jobStatusLine(job: Job): string {
+  const base = statusText(job.state);
+  const tag = job.model ? modelLabels[job.model] ?? job.model : "";
+  return tag ? `${base} · ${tag}` : base;
+}
+
+async function rerunJob(id: number) {
+  try {
+    const newId = await invoke<number>("rerun", { id });
+    select(newId);
+  } catch (e) {
+    await message(String(e), { title: "Chưa chạy lại được", kind: "warning" });
+  }
+}
+
 function jobRow(job: Job): HTMLElement {
   const { state } = job;
   const open = el(
     "button",
     { className: "job-open", onclick: () => select(job.id) },
     el("span", { className: "job-name", textContent: jobName(job) }),
-    el("span", { className: "job-status", textContent: statusText(state) }),
+    el("span", { className: "job-status", textContent: jobStatusLine(job) }),
     state.kind === "running"
-      ? bar(state.percent)
+      ? progressBar(state.percent)
       : null,
   );
-  const action =
-    state.kind === "queued" || state.kind === "running"
-      ? { label: "Huỷ", run: () => invoke("cancel", { id: job.id }) }
-      : state.kind === "failed" || state.kind === "cancelled"
-        ? { label: "Thử lại", run: () => invoke("retry", { id: job.id }) }
-        : { label: "Bỏ", run: () => forget(job.id) };
+  const menuItems: { label: string; danger?: boolean; run: () => void }[] = [];
+  if (state.kind === "running") {
+    menuItems.push({ label: "Huỷ", danger: true, run: () => invoke("cancel", { id: job.id }) });
+  } else if (state.kind === "queued") {
+    menuItems.push({ label: "Xoá", danger: true, run: () => forget(job.id) });
+  } else if (state.kind === "failed" || state.kind === "cancelled") {
+    menuItems.push({ label: "Thử lại", run: () => invoke("retry", { id: job.id }) });
+    menuItems.push({ label: "Xoá", danger: true, run: () => forget(job.id) });
+  } else {
+    menuItems.push({ label: "Chép lời lại", run: () => rerunJob(job.id) });
+    menuItems.push({ label: "Xoá", danger: true, run: () => forget(job.id) });
+  }
+  if (groups.length > 0) {
+    for (const g of groups) {
+      if (g !== (job.group ?? null)) {
+        menuItems.push({
+          label: `Vào nhóm: ${g}`,
+          run: () => moveJobToGroup(job.id, g),
+        });
+      }
+    }
+    if (job.group) {
+      menuItems.push({
+        label: "Bỏ khỏi nhóm",
+        run: () => moveJobToGroup(job.id, null),
+      });
+    }
+  }
+
+  const isOpen = openMenuJobId === job.id;
+  const menuBtn = el(
+    "button",
+    {
+      className: `job-more${isOpen ? " open" : ""}`,
+      title: "Thao tác",
+      ariaLabel: `Thao tác cho ${jobName(job)}`,
+      onclick: (e: MouseEvent) => {
+        e.stopPropagation();
+        openMenuJobId = isOpen ? null : job.id;
+        const q = root.querySelector(".queue");
+        if (q) q.replaceWith(queuePane());
+      },
+    },
+    icon("more", 15),
+  );
+  menuBtn.setAttribute("aria-expanded", String(isOpen));
+
+  const menu = isOpen
+    ? el(
+        "div",
+        { className: "job-menu", role: "menu" },
+        ...menuItems.map((item) =>
+          el("button", {
+            className: `job-menu-item${item.danger ? " danger" : ""}`,
+            role: "menuitem",
+            textContent: item.label,
+            onclick: (e: MouseEvent) => {
+              e.stopPropagation();
+              openMenuJobId = null;
+              item.run();
+            },
+          }),
+        ),
+      )
+    : null;
+
   return el(
     "li",
     {
       className: `job${job.id === selected ? " selected" : ""}${state.kind === "failed" ? " failed" : ""}`,
+      draggable: true,
+      ondragstart: (e: DragEvent) => {
+        dragJobId = job.id;
+        e.dataTransfer?.setData("text/plain", String(job.id));
+        if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+      },
+      ondragend: () => {
+        dragJobId = null;
+        root.querySelectorAll(".drag-over").forEach((n) => n.classList.remove("drag-over"));
+      },
     },
     open,
-    el("button", { className: "job-action", textContent: action.label, onclick: action.run }),
+    el("div", { className: "job-menu-wrap" }, menuBtn, menu),
   );
 }
 
@@ -146,26 +246,224 @@ async function select(id: number) {
   render();
 }
 
-async function addFiles() {
+async function addFiles(group?: string) {
   const picked = await open({
     multiple: true,
     filters: [{ name: "Âm thanh và video", extensions: audioExtensions }],
   });
-  if (picked) await enqueue(picked);
+  if (picked) await enqueue(picked, group);
 }
 
 /** The core refuses files already waiting or in a format it can't read, and says why. */
 async function reportSkipped(skipped: string[]) {
   if (skipped.length) {
-    await message(skipped.join("\n"), { title: "Có file không được thêm", kind: "warning" });
+    await message(skipped.join("\n"), { title: "Vài file chưa thêm được", kind: "warning" });
   }
 }
 
-async function enqueue(paths: string[]) {
-  await reportSkipped(await invoke<string[]>("enqueue", { paths }));
+async function enqueue(paths: string[], group?: string) {
+  await reportSkipped(await invoke<string[]>("enqueue", { paths, group: group ?? null }));
+}
+
+function refreshQueueOnly() {
+  const q = root.querySelector(".queue");
+  if (q) q.replaceWith(queuePane());
+}
+
+async function submitNewGroup() {
+  const trimmed = newGroupName.trim();
+  if (!trimmed) return;
+  try {
+    await invoke<string>("create_group", { name: trimmed });
+    creatingGroup = false;
+    newGroupName = "";
+  } catch (e) {
+    await message(String(e), { title: "Chưa tạo được nhóm", kind: "warning" });
+  }
+}
+
+async function moveJobToGroup(id: number, group: string | null) {
+  try {
+    await invoke("set_job_group", { id, group });
+  } catch (e) {
+    await message(String(e), { title: "Chưa chuyển nhóm được", kind: "warning" });
+  }
+}
+
+async function removeGroup(name: string) {
+  const yes = await ask(
+    `Xoá nhóm "${name}"? Các bản ghi bên trong sẽ chuyển về mục Chưa phân nhóm; file đã lưu trên máy vẫn được giữ nguyên.`,
+    { title: "Xoá nhóm?", kind: "warning", okLabel: "Xoá nhóm", cancelLabel: "Giữ lại" },
+  );
+  if (!yes) return;
+  try {
+    await invoke("delete_group", { name });
+    collapsedGroups.delete(name);
+  } catch (e) {
+    await message(String(e), { title: "Chưa xoá được nhóm", kind: "warning" });
+  }
+}
+
+async function clearQueue() {
+  const removable = jobs.filter((j) => j.state.kind !== "running");
+  if (removable.length === 0) return;
+  const yes = await ask(
+    `Xoá ${removable.length} bản ghi khỏi danh sách? File bản chép lời đã lưu trên máy vẫn được giữ nguyên.`,
+    { title: "Dọn danh sách bản ghi?", kind: "warning", okLabel: "Xoá", cancelLabel: "Giữ lại" },
+  );
+  if (!yes) return;
+  const removed = await invoke<number[]>("clear_queue");
+  if (selected !== null && removed.includes(selected)) {
+    selected = null;
+    transcript = null;
+  }
+}
+
+function bindGroupDrop(node: HTMLElement, targetGroup: string | null) {
+  node.addEventListener("dragover", (e) => {
+    if (dragJobId === null) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    node.classList.add("drag-over");
+  });
+  node.addEventListener("dragleave", (e) => {
+    if (!node.contains(e.relatedTarget as Node | null)) {
+      node.classList.remove("drag-over");
+    }
+  });
+  node.addEventListener("drop", (e) => {
+    e.preventDefault();
+    node.classList.remove("drag-over");
+    const id = dragJobId;
+    dragJobId = null;
+    if (id !== null) moveJobToGroup(id, targetGroup);
+  });
+}
+
+function queueList(): HTMLElement {
+  if (groups.length === 0) {
+    return el("ul", { className: "jobs" }, ...jobs.map(jobRow));
+  }
+
+  const container = el("div", { className: "jobs grouped-jobs" });
+
+  for (const name of groups) {
+    const groupJobs = jobs.filter((j) => j.group === name);
+    const collapsed = collapsedGroups.has(name);
+    const block = el(
+      "div",
+      { className: "group-block" },
+      el(
+        "div",
+        { className: "group-head" },
+        el(
+          "button",
+          {
+            className: "group-toggle",
+            onclick: () => {
+              if (collapsed) collapsedGroups.delete(name);
+              else collapsedGroups.add(name);
+              refreshQueueOnly();
+            },
+          },
+          icon(collapsed ? "chevronRight" : "chevronDown", 13),
+          icon("folder", 14),
+          el("span", { className: "group-name", textContent: name }),
+          el("span", { className: "group-count", textContent: String(groupJobs.length) }),
+        ),
+        el(
+          "div",
+          { className: "group-actions" },
+          el(
+            "button",
+            {
+              className: "icon-btn-sm",
+              title: `Thêm file vào nhóm "${name}"`,
+              ariaLabel: `Thêm file vào nhóm ${name}`,
+              onclick: () => addFiles(name),
+            },
+            icon("plus", 13),
+          ),
+          el(
+            "button",
+            {
+              className: "icon-btn-sm",
+              title: `Mở thư mục "${name}" trong Finder`,
+              ariaLabel: `Mở thư mục ${name}`,
+              onclick: () => invoke("open_group_dir", { name }),
+            },
+            icon("folder", 13),
+          ),
+          el(
+            "button",
+            {
+              className: "icon-btn-sm danger",
+              title: `Xoá nhóm "${name}"`,
+              ariaLabel: `Xoá nhóm ${name}`,
+              onclick: () => removeGroup(name),
+            },
+            icon("trash", 13),
+          ),
+        ),
+      ),
+      collapsed
+        ? null
+        : groupJobs.length > 0
+          ? el("ul", { className: "group-jobs" }, ...groupJobs.map(jobRow))
+          : el("p", { className: "group-empty", textContent: "Kéo bản ghi vào đây hoặc chọn từ ⋯" }),
+    );
+    bindGroupDrop(block, name);
+    container.append(block);
+  }
+
+  const ungrouped = jobs.filter((j) => !j.group || !groups.includes(j.group));
+  if (ungrouped.length > 0 || jobs.length > 0) {
+    const ungroupedBlock = el(
+      "div",
+      { className: "group-block ungrouped" },
+      el(
+        "div",
+        { className: "group-head ungrouped-head" },
+        el("span", { className: "group-name", textContent: "Chưa phân nhóm" }),
+        el("span", { className: "group-count", textContent: String(ungrouped.length) }),
+      ),
+      ungrouped.length > 0
+        ? el("ul", { className: "group-jobs" }, ...ungrouped.map(jobRow))
+        : null,
+    );
+    bindGroupDrop(ungroupedBlock, null);
+    container.append(ungroupedBlock);
+  }
+
+  return container;
 }
 
 function queuePane(): HTMLElement {
+  const hasRemovable = jobs.some((j) => j.state.kind !== "running");
+  let groupInput: HTMLInputElement | null = null;
+  if (creatingGroup) {
+    groupInput = el("input", {
+      className: "field group-input",
+      placeholder: "Tên nhóm / thư mục…",
+      value: newGroupName,
+      ariaLabel: "Tên nhóm hoặc thư mục mới",
+      oninput: (e: Event) => {
+        newGroupName = (e.target as HTMLInputElement).value;
+      },
+      onkeydown: (e: KeyboardEvent) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          submitNewGroup();
+        } else if (e.key === "Escape") {
+          creatingGroup = false;
+          newGroupName = "";
+          refreshQueueOnly();
+        }
+      },
+    });
+    queueMicrotask(() => groupInput?.focus());
+  }
+
   return el(
     "section",
     { className: "queue" },
@@ -173,29 +471,96 @@ function queuePane(): HTMLElement {
       "header",
       { className: "queue-head" },
       el("h1", { textContent: "Bản ghi âm" }),
+      el(
+        "button",
+        {
+          className: `icon-btn${creatingGroup ? " active" : ""}`,
+          title: "Tạo nhóm / thư mục mới",
+          ariaLabel: "Tạo nhóm hoặc thư mục mới",
+          onclick: () => {
+            creatingGroup = !creatingGroup;
+            if (!creatingGroup) newGroupName = "";
+            refreshQueueOnly();
+          },
+        },
+        icon("folderPlus", 15),
+      ),
       busy || paused
-        ? el("button", {
-            className: "link",
-            textContent: paused ? "Tiếp tục" : "Tạm dừng",
-            onclick: () => invoke("set_paused", { paused: !paused }),
-          })
+        ? el(
+            "button",
+            {
+              className: "icon-btn",
+              title: paused ? "Tiếp tục" : "Tạm dừng",
+              ariaLabel: paused ? "Tiếp tục hàng chờ" : "Tạm dừng hàng chờ",
+              onclick: () => invoke("set_paused", { paused: !paused }),
+            },
+            icon(paused ? "play" : "pause", 15),
+          )
+        : null,
+      hasRemovable
+        ? el(
+            "button",
+            {
+              className: "icon-btn danger",
+              title: "Xoá hàng chờ",
+              ariaLabel: "Xoá hàng chờ bản ghi",
+              onclick: clearQueue,
+            },
+            icon("trash", 15),
+          )
         : null,
     ),
-    el("ul", { className: "jobs" }, ...jobs.map(jobRow)),
+    creatingGroup && groupInput
+      ? el(
+          "div",
+          { className: "group-create" },
+          groupInput,
+          el("button", { className: "link", textContent: "Tạo", onclick: submitNewGroup }),
+          el("button", {
+            className: "link",
+            textContent: "Huỷ",
+            onclick: () => {
+              creatingGroup = false;
+              newGroupName = "";
+              refreshQueueOnly();
+            },
+          }),
+        )
+      : null,
+    queueList(),
     el(
       "footer",
       { className: "queue-foot" },
-      el("button", { className: "add", textContent: "Thêm file", onclick: addFiles }),
-      el("button", { className: "link", textContent: "Từ app Ghi âm", onclick: openMemos }),
-      el("button", {
-        className: "link",
-        textContent: "Cấu hình",
-        onclick: () => {
-          view = "settings";
-          selected = null;
-          render();
+      el(
+        "button",
+        { className: "add", onclick: () => addFiles() },
+        icon("plus", 15),
+        el("span", { textContent: "Thêm file" }),
+      ),
+      el(
+        "button",
+        {
+          className: `icon-btn${view === "memos" ? " active" : ""}`,
+          title: "Từ app Ghi âm",
+          ariaLabel: "Mở danh sách từ app Ghi âm",
+          onclick: openMemos,
         },
-      }),
+        icon("mic", 16),
+      ),
+      el(
+        "button",
+        {
+          className: `icon-btn push-right${view === "settings" ? " active" : ""}`,
+          title: "Cấu hình",
+          ariaLabel: "Mở Cấu hình",
+          onclick: () => {
+            view = "settings";
+            selected = null;
+            render();
+          },
+        },
+        icon("sliders", 16),
+      ),
     ),
   );
 }
@@ -289,13 +654,13 @@ function memosPane(): HTMLElement {
         el("h2", { textContent: "Cho phép app đọc bản ghi của Ghi âm" }),
         el("p", {
           textContent:
-            "macOS chỉ cho đọc thư mục của app Ghi âm khi có quyền Truy cập toàn bộ ổ đĩa. Quyền này cho ASR Studio đọc được gần như mọi dữ liệu trên máy. App chỉ dùng nó để đọc bản ghi bạn chọn, và âm thanh không rời khỏi máy.",
+            "Hệ thống yêu cầu quyền Truy cập toàn bộ ổ đĩa để đọc bản ghi từ app Ghi âm. Ứng dụng chỉ đọc các bản ghi bạn chọn và xử lý hoàn toàn trên máy.",
         }),
         el(
           "ol",
           { className: "steps" },
           el("li", { textContent: "Mở Cài đặt hệ thống bằng nút bên dưới." }),
-          el("li", { textContent: "Bật ASR Studio trong danh sách. Nếu chưa có, bấm dấu + và chọn app." }),
+          el("li", { textContent: "Bật A-Sir trong danh sách. Nếu chưa có, bấm dấu + và chọn app." }),
           el("li", { textContent: "Quay lại đây và mở lại app." }),
         ),
         el(
@@ -331,8 +696,8 @@ function memosPane(): HTMLElement {
       el(
         "div",
         {},
-        el("h2", { textContent: "App Ghi âm chưa có bản ghi nào trên máy này" }),
-        el("p", { textContent: "Bản ghi mới sẽ hiện ở đây sau khi đồng bộ về máy." }),
+        el("h2", { textContent: "Chưa có bản ghi nào trong app Ghi âm" }),
+        el("p", { textContent: "Bản ghi mới sẽ hiện ở đây sau khi đồng bộ." }),
       ),
     );
   }
@@ -428,41 +793,60 @@ function readerPane(): HTMLElement {
       "header",
       { className: "reader-head" },
       el("h2", { textContent: jobName(job) }),
-      el("button", {
-        className: "link",
-        textContent: "Bảng tóm tắt",
-        onclick: () => {
-          view = "note";
-          render();
-        },
-      }),
-      el("button", {
-        className: "link",
-        textContent: "Chép toàn bộ",
-        disabled: text === null,
-        onclick: async () => {
-          await writeText(text ?? "");
-          note("Đã chép toàn bộ vào bộ nhớ tạm.");
-        },
-      }),
-      el("button", {
-        className: "link",
-        textContent: "Tạo bản đã làm sạch",
-        title: "Bỏ dòng quảng cáo kênh mà máy nghe nhầm, gộp từ lặp lại nhiều lần",
-        onclick: async () => {
-          try {
-            const path = await invoke<string>("clean_transcript", { id: job.id });
-            note(`Đã tạo ${baseName(path)}, cùng thư mục với bản gốc.`);
-          } catch (e) {
-            note(String(e));
-          }
-        },
-      }),
-      el("button", {
-        className: "link",
-        textContent: "Mở trong Finder",
-        onclick: () => revealItemInDir(state.txt),
-      }),
+      el(
+        "div",
+        { className: "reader-actions" },
+        el(
+          "button",
+          {
+            className: "btn-primary",
+            title: "Mở bảng tóm tắt biên bản",
+            onclick: () => {
+              view = "note";
+              render();
+            },
+          },
+          icon("summary", 15),
+          el("span", { textContent: "Tóm tắt" }),
+        ),
+        el(
+          "button",
+          {
+            className: "btn-ghost",
+            title: "Chép toàn bộ bản chép lời",
+            disabled: text === null,
+            onclick: async () => {
+              await writeText(text ?? "");
+              note("Đã chép toàn bộ bản chép lời.");
+            },
+          },
+          icon("copy", 15),
+          el("span", { textContent: "Chép" }),
+        ),
+        overflowMenu("Thao tác khác cho bản chép lời", [
+          {
+            label: "Chép lời lại",
+            title: "Chép lời lại bằng model đang chọn, vẫn giữ bản cũ",
+            onClick: () => rerunJob(job.id),
+          },
+          {
+            label: "Làm sạch bản chép",
+            title: "Bỏ câu rác, gộp từ lặp và sửa từ nghe nhầm theo danh sách từ vựng riêng",
+            onClick: async () => {
+              try {
+                const path = await invoke<string>("clean_transcript", { id: job.id });
+                note(`Đã tạo ${baseName(path)} cùng thư mục với bản gốc.`);
+              } catch (e) {
+                note(String(e));
+              }
+            },
+          },
+          {
+            label: "Mở trong Finder",
+            onClick: () => revealItemInDir(state.txt),
+          },
+        ]),
+      ),
     ),
     readerNote ? el("p", { className: "note", textContent: readerNote }) : null,
     el("article", { className: "transcript" }, ...(shown === null ? [] : transcriptLines(shown.lines))),
@@ -484,9 +868,9 @@ function invite(): HTMLElement {
       el("h2", { textContent: jobs.length ? "Chọn một file để đọc" : "Thả file ghi âm vào đây" }),
       el("p", {
         textContent:
-          "Chép lời tiếng Việt ngay trên máy này, không gửi âm thanh đi đâu. Mỗi file cho ra một bản .txt và một bản phụ đề .srt.",
+          "Chép lời tiếng Việt ngay trên máy, không cần mạng. Mỗi bản ghi cho ra một file chữ (.txt) và một file phụ đề (.srt).",
       }),
-      el("button", { className: "add", textContent: "Thêm file", onclick: addFiles }),
+      el("button", { className: "add", textContent: "Thêm file", onclick: () => addFiles() }),
     ),
   );
 }
@@ -500,10 +884,10 @@ function firstRun(): HTMLElement {
     el(
       "div",
       {},
-      el("h2", { textContent: "Tải model nhận dạng giọng nói" }),
+      el("h2", { textContent: "Tải gói nhận dạng giọng nói" }),
       el("p", {
         textContent:
-          "App cần tải 1,6 GB một lần duy nhất. Sau đó mọi thứ chạy trên máy, không cần mạng. Nếu mất mạng giữa chừng, lần tải sau sẽ chạy tiếp.",
+          "Cần tải dữ liệu một lần đầu để máy tự chép lời không cần mạng. Nếu rớt mạng giữa chừng, lần sau sẽ tải tiếp.",
       }),
       failed ? el("p", { className: "problem problem-text", textContent: failed }) : null,
       running === null
@@ -516,7 +900,7 @@ function firstRun(): HTMLElement {
             "div",
             {},
             el("p", { textContent: `Đang tải: ${running}%` }),
-            bar(running),
+            progressBar(running),
           ),
     ),
   );
@@ -526,7 +910,7 @@ async function startDownload() {
   download = { percent: 0 };
   render();
   try {
-    await invoke("download_models");
+    await invoke("download_local_model", { modelId: null });
     modelsReady = true;
     download = null;
   } catch (e) {
@@ -578,15 +962,18 @@ function render() {
 async function main() {
   const initial = await invoke<Snapshot>("snapshot");
   jobs = initial.jobs;
+  groups = initial.groups ?? [];
   paused = initial.paused;
   busy = initial.busy;
   modelsReady = initial.modelsReady;
   audioExtensions = initial.audioExtensions;
+  modelLabels = initial.modelLabels ?? {};
   render();
 
   await listen<Queue>("queue", ({ payload }) => {
     const wasDone = jobs.find((j) => j.id === selected)?.state.kind === "done";
     jobs = payload.jobs;
+    groups = payload.groups ?? [];
     paused = payload.paused;
     busy = payload.busy;
     if (view !== "reader" && modelsReady) {
@@ -602,9 +989,9 @@ async function main() {
       render();
     }
   });
-  await listen<number>("model-progress", ({ payload }) => {
-    if (download && "percent" in download && download.percent !== payload) {
-      download = { percent: payload };
+  await listen<LocalModelProgress>("local-model-progress", ({ payload }) => {
+    if (download && "percent" in download && download.percent !== payload.percent) {
+      download = { percent: payload.percent };
       render();
     }
   });
@@ -620,4 +1007,27 @@ async function main() {
   });
 }
 
-main();
+  document.addEventListener("click", () => {
+    if (openMenuJobId !== null) {
+      openMenuJobId = null;
+      const q = root.querySelector(".queue");
+      if (q) q.replaceWith(queuePane());
+    }
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && openMenuJobId !== null) {
+      openMenuJobId = null;
+      const q = root.querySelector(".queue");
+      if (q) q.replaceWith(queuePane());
+    }
+  });
+  window.addEventListener("asr-model-label", (e) => {
+    const detail = (e as CustomEvent<{ id: string; label: string }>).detail;
+    if (detail?.id && detail?.label) {
+      modelLabels[detail.id] = detail.label;
+      const q = root.querySelector(".queue");
+      if (q) q.replaceWith(queuePane());
+    }
+  });
+
+  main();

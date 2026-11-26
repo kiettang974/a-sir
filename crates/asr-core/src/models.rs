@@ -306,6 +306,8 @@ pub struct ModelSummary {
     pub bytes: u64,
     pub ready: bool,
     pub custom: bool,
+    /// Operating systems this model runs on: "mac", "windows", "linux".
+    pub platforms: Vec<&'static str>,
 }
 
 /// Candidate GGML model returned when refreshing/searching Hugging Face Hub.
@@ -392,6 +394,12 @@ impl ModelEntry {
                 bytes: m.total_bytes(),
                 ready: self.is_ready(dir),
                 custom: false,
+                // Qwen3-ASR needs POSIX mmap, so it has no Windows build.
+                platforms: if m.engine_kind == EngineKind::QwenAsr {
+                    vec!["mac", "linux"]
+                } else {
+                    vec!["mac", "windows", "linux"]
+                },
             },
             Self::Custom(c) => ModelSummary {
                 id: c.id.clone(),
@@ -403,6 +411,7 @@ impl ModelEntry {
                 bytes: c.bytes,
                 ready: self.is_ready(dir),
                 custom: true,
+                platforms: vec!["mac", "windows", "linux"],
             },
         }
     }

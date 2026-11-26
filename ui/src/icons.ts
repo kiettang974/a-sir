@@ -17,7 +17,10 @@ export type IconName =
   | "folder"
   | "folderPlus"
   | "chevronDown"
-  | "chevronRight";
+  | "chevronRight"
+  | "mac"
+  | "windows"
+  | "linux";
 
 const PATHS: Record<IconName, string> = {
   plus: '<path d="M8 3.2v9.6M3.2 8h9.6"/>',
@@ -36,6 +39,9 @@ const PATHS: Record<IconName, string> = {
   folderPlus: '<path d="M2.2 4.4a1.2 1.2 0 0 1 1.2-1.2h3l1.4 1.5h4.8a1.2 1.2 0 0 1 1.2 1.2v5.7a1.2 1.2 0 0 1-1.2 1.2H3.4a1.2 1.2 0 0 1-1.2-1.2Z"/><path d="M8 7v3.6M6.2 8.8h3.6"/>',
   chevronDown: '<path d="M4.2 6.2 8 10l3.8-3.8"/>',
   chevronRight: '<path d="M6.2 4.2 10 8l-3.8 3.8"/>',
+  mac: '<rect x="2.6" y="3.2" width="10.8" height="7.2" rx="1.2"/><path d="M1.8 13h12.4M6.2 10.4v2.6M9.8 10.4v2.6"/>',
+  windows: '<rect x="2.6" y="2.8" width="4.7" height="4.7" rx=".5"/><rect x="8.7" y="2.8" width="4.7" height="4.7" rx=".5"/><rect x="2.6" y="8.9" width="4.7" height="4.7" rx=".5"/><rect x="8.7" y="8.9" width="4.7" height="4.7" rx=".5"/>',
+  linux: '<rect x="2.2" y="3" width="11.6" height="10" rx="1.6"/><path d="m5 6.6 2 1.6-2 1.6M8.6 10.2h2.4"/>',
 };
 
 export function icon(name: IconName, size = 15): SVGSVGElement {

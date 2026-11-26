@@ -753,6 +753,10 @@ select.field { appearance: auto; }
 .note-status { font-size: 12.5px; color: var(--ink-soft); margin: 0; }
 .note-status.status-bad { color: var(--fail); }
 
+.os-chips { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+.os-chip { display: inline-flex; color: var(--ink-soft); }
+.os-chip.off { opacity: 0.28; text-decoration: line-through; }
+
 .profile-list {
   display: flex;
   flex-direction: column;
@@ -948,6 +952,10 @@ select.field { appearance: auto; }
 .tpl-preview-table tbody tr:nth-child(even) { background: var(--row-alt); }
 
 .status-bad { color: var(--fail); }
+
+.os-chips { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+.os-chip { display: inline-flex; color: var(--ink-soft); }
+.os-chip.off { opacity: 0.28; text-decoration: line-through; }
 
 .profile-list {
   display: flex;

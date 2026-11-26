@@ -41,6 +41,31 @@ function persistAiSettings(ai: AiView): Promise<unknown> {
 
 type Term = { correct: string; heardAs: string; note: string };
 
+type OsId = "mac" | "windows" | "linux";
+const OS_LABEL: Record<OsId, string> = { mac: "macOS", windows: "Windows", linux: "Linux" };
+
+/** Small OS icons showing where a model runs; a dimmed icon means it does not. */
+function platformChips(platforms?: string[]): HTMLElement {
+  const supported = new Set(platforms ?? ["mac", "windows", "linux"]);
+  return el(
+    "span",
+    { className: "os-chips", title: "Hệ điều hành chạy được model này" },
+    ...(["mac", "windows", "linux"] as OsId[]).map((os) => {
+      const ok = supported.has(os);
+      const chip = el(
+        "span",
+        {
+          className: `os-chip${ok ? "" : " off"}`,
+          title: ok ? `Chạy được trên ${OS_LABEL[os]}` : `Chưa hỗ trợ ${OS_LABEL[os]}`,
+        },
+        icon(os, 14),
+      );
+      chip.setAttribute("aria-label", chip.title);
+      return chip;
+    }),
+  );
+}
+
 type LocalModelView = {
   id: string;
   name: string;
@@ -51,6 +76,7 @@ type LocalModelView = {
   ready: boolean;
   selected: boolean;
   custom?: boolean;
+  platforms?: string[];
 };
 
 type DiscoveredModel = {
@@ -688,6 +714,7 @@ function speechSection(
             "div",
             { className: "model-meta" },
             el("span", { textContent: `Dung lượng: ${formatBytes(m.bytes)}` }),
+            platformChips(m.platforms),
           ),
           progress !== undefined ? progressBar(progress) : null,
           error ? el("p", { className: "provider-status status-inline bad", textContent: error }) : null,

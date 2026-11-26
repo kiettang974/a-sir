@@ -1711,6 +1711,11 @@ function providerBlock(
         onclick: async () => {
           show("Đang thử kết nối…");
           try {
+            if (key.value.trim()) {
+              await invoke("set_api_key", { provider, key: key.value });
+              invalidateProviderCache(provider);
+              key.value = "";
+            }
             await invoke("test_provider", { provider, model: modelName });
             show(`Kết nối được với ${name} bằng model này.`);
           } catch (e) {

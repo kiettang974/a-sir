@@ -128,9 +128,8 @@ fn handle_connection(
         return write_status(&mut stream, "404 Not Found");
     };
 
-    let mut file = match File::open(&file_path) {
-        Ok(f) => f,
-        Err(_) => return write_status(&mut stream, "404 Not Found"),
+    let Ok(mut file) = File::open(&file_path) else {
+        return write_status(&mut stream, "404 Not Found");
     };
     let total_len = file.metadata()?.len();
     let mime = mime_for(&file_path);

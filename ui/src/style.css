@@ -1008,65 +1008,6 @@ select.field { appearance: auto; }
 
 .status-bad { color: var(--fail); }
 
-.os-chips { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
-.os-chip { display: inline-flex; color: var(--ink-soft); }
-.os-chip.off { opacity: 0.28; text-decoration: line-through; }
-
-.profile-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 10px;
-}
-.profile-item {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 10px 12px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--rule);
-  background: var(--sheet);
-}
-.profile-item.active {
-  border-color: var(--accent-line);
-  background: var(--accent-soft);
-}
-.profile-pick {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  flex: 1;
-  min-width: 0;
-  cursor: pointer;
-}
-.profile-pick input { margin-top: 3px; }
-.profile-info {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  min-width: 0;
-}
-.profile-name-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  font-size: 13.5px;
-  color: var(--ink);
-}
-.update-notes {
-  margin: 10px 0 0;
-  padding: 10px 12px;
-  border-radius: var(--radius-sm);
-  background: var(--paper);
-  border: 1px solid var(--rule);
-  font-size: 12.5px;
-  line-height: 1.55;
-  color: var(--ink-soft);
-  white-space: pre-wrap;
-}
-
 /* Audio Playback Dock */
 .player {
   display: flex;

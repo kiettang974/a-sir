@@ -250,7 +250,7 @@ fn several_queued_jobs_share_one_loaded_engine() {
     let source = write_wav(&dir.path().join("a.wav"), 1);
     let live = Arc::new(AtomicUsize::new(0));
     let loads = Arc::new(AtomicUsize::new(0));
-    let (live_in, loads_in) = (live.clone(), loads.clone());
+    let (live_in, loads_in) = (live, loads.clone());
     let runner = JobRunner::start(
         Paths {
             data: dir.path().join("data"),

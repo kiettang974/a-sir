@@ -115,49 +115,6 @@ fn open_group_dir(app: State<App>, name: String) -> Result<(), String> {
     open_in_os(dir)
 }
 
-#[tauri::command]
-fn open_voice_recorder() -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        let ok = Command::new("open")
-            .args(["-b", "com.apple.VoiceMemos"])
-            .status()
-            .is_ok_and(|s| s.success());
-        if ok {
-            return Ok(());
-        }
-        Command::new("open")
-            .args(["-a", "Voice Memos"])
-            .status()
-            .map_err(|e| format!("không mở được app Ghi âm: {e}"))
-            .and_then(|s| {
-                if s.success() {
-                    Ok(())
-                } else {
-                    Err("không tìm thấy app Ghi âm (Voice Memos)".into())
-                }
-            })
-    }
-    #[cfg(target_os = "windows")]
-    {
-        Command::new("cmd")
-            .args(["/C", "start", "", "ms-soundrecorder:"])
-            .status()
-            .map_err(|e| format!("không mở được ứng dụng Sound Recorder: {e}"))
-            .and_then(|s| {
-                if s.success() {
-                    Ok(())
-                } else {
-                    Err("không mở được ứng dụng ghi âm mặc định của Windows".into())
-                }
-            })
-    }
-    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
-    {
-        Err("mở ứng dụng ghi âm mặc định hiện chỉ hỗ trợ macOS và Windows".into())
-    }
-}
-
 #[derive(Serialize)]
 #[serde(tag = "status", rename_all = "camelCase")]
 enum MemoList {
@@ -906,7 +863,6 @@ fn main() {
             delete_group,
             set_job_group,
             open_group_dir,
-            open_voice_recorder,
             cancel,
             retry,
             rerun,

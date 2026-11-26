@@ -223,8 +223,9 @@ function formatBytes(bytes: number): string {
 }
 
 /** Fills itself in and keeps its own tab & data state, so the rest of the app can leave it alone. */
-export function settingsPane(): HTMLElement {
-  let activeTab: TabId = lastActiveTab;
+export function settingsPane(initialTab?: TabId): HTMLElement {
+  let activeTab: TabId = initialTab ?? lastActiveTab;
+  if (initialTab) lastActiveTab = initialTab;
   let speechState: LoadState<LocalModelsView> = { kind: "idle" };
   let aiState: LoadState<AiView> = { kind: "idle" };
   let glossaryState: LoadState<Term[]> = { kind: "idle" };

@@ -71,10 +71,23 @@ let openMenuJobId: number | null = null;
 let creatingGroup = false;
 let newGroupName = "";
 const collapsedGroups = new Set<string>();
-let dragJobId: number | null = null;
+type PointerDrag = {
+  jobId: number;
+  label: string;
+  startX: number;
+  startY: number;
+  active: boolean;
+  sourceEl: HTMLElement;
+  ghost: HTMLElement | null;
+  targetGroup: string | null | undefined;
+};
+let pointerDrag: PointerDrag | null = null;
+let suppressClickOnce = false;
+let pendingQueueRender = false;
 let transcript: { id: number; text: string; lines: Line[] } | null = null;
 let readerNote = "";
 let view: "reader" | "memos" | "settings" | "note" = "reader";
+let pendingSettingsTab: "speech" | "ai" | "minutes" | "glossary" | "update" | undefined;
 let memos: MemoList | null = null;
 let memoFilter = "";
 const memoChosen = new Set<string>();
@@ -128,7 +141,13 @@ function jobRow(job: Job): HTMLElement {
   const { state } = job;
   const open = el(
     "button",
-    { className: "job-open", onclick: () => select(job.id) },
+    {
+      className: "job-open",
+      onclick: () => {
+        if (suppressClickOnce) return;
+        select(job.id);
+      },
+    },
     el("span", { className: "job-name", textContent: jobName(job) }),
     el("span", { className: "job-status", textContent: jobStatusLine(job) }),
     state.kind === "running"
@@ -146,22 +165,6 @@ function jobRow(job: Job): HTMLElement {
   } else {
     menuItems.push({ label: "Chép lời lại", run: () => rerunJob(job.id) });
     menuItems.push({ label: "Xoá", danger: true, run: () => forget(job.id) });
-  }
-  if (groups.length > 0) {
-    for (const g of groups) {
-      if (g !== (job.group ?? null)) {
-        menuItems.push({
-          label: `Vào nhóm: ${g}`,
-          run: () => moveJobToGroup(job.id, g),
-        });
-      }
-    }
-    if (job.group) {
-      menuItems.push({
-        label: "Bỏ khỏi nhóm",
-        run: () => moveJobToGroup(job.id, null),
-      });
-    }
   }
 
   const isOpen = openMenuJobId === job.id;
@@ -201,24 +204,29 @@ function jobRow(job: Job): HTMLElement {
       )
     : null;
 
-  return el(
+  const row = el(
     "li",
     {
       className: `job${job.id === selected ? " selected" : ""}${state.kind === "failed" ? " failed" : ""}`,
-      draggable: true,
-      ondragstart: (e: DragEvent) => {
-        dragJobId = job.id;
-        e.dataTransfer?.setData("text/plain", String(job.id));
-        if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
-      },
-      ondragend: () => {
-        dragJobId = null;
-        root.querySelectorAll(".drag-over").forEach((n) => n.classList.remove("drag-over"));
+      onpointerdown: (e: PointerEvent) => {
+        if (e.button !== 0 || groups.length === 0) return;
+        if ((e.target as Element | null)?.closest(".job-menu-wrap")) return;
+        pointerDrag = {
+          jobId: job.id,
+          label: jobName(job),
+          startX: e.clientX,
+          startY: e.clientY,
+          active: false,
+          sourceEl: row,
+          ghost: null,
+          targetGroup: undefined,
+        };
       },
     },
     open,
     el("div", { className: "job-menu-wrap" }, menuBtn, menu),
   );
+  return row;
 }
 
 function forget(id: number) {
@@ -319,25 +327,15 @@ async function clearQueue() {
   }
 }
 
-function bindGroupDrop(node: HTMLElement, targetGroup: string | null) {
-  node.addEventListener("dragover", (e) => {
-    if (dragJobId === null) return;
-    e.preventDefault();
-    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-    node.classList.add("drag-over");
+function clearDragHighlight() {
+  root.querySelectorAll(".group-block.drag-over").forEach((n) => n.classList.remove("drag-over"));
+}
+
+function setDragHighlight(target: HTMLElement | null) {
+  root.querySelectorAll(".group-block.drag-over").forEach((n) => {
+    if (n !== target) n.classList.remove("drag-over");
   });
-  node.addEventListener("dragleave", (e) => {
-    if (!node.contains(e.relatedTarget as Node | null)) {
-      node.classList.remove("drag-over");
-    }
-  });
-  node.addEventListener("drop", (e) => {
-    e.preventDefault();
-    node.classList.remove("drag-over");
-    const id = dragJobId;
-    dragJobId = null;
-    if (id !== null) moveJobToGroup(id, targetGroup);
-  });
+  if (target) target.classList.add("drag-over");
 }
 
 function queueList(): HTMLElement {
@@ -410,9 +408,9 @@ function queueList(): HTMLElement {
         ? null
         : groupJobs.length > 0
           ? el("ul", { className: "group-jobs" }, ...groupJobs.map(jobRow))
-          : el("p", { className: "group-empty", textContent: "Kéo bản ghi vào đây hoặc chọn từ ⋯" }),
+          : el("p", { className: "group-empty", textContent: "Kéo bản ghi hoặc thả file vào đây" }),
     );
-    bindGroupDrop(block, name);
+    block.dataset.dropGroup = name;
     container.append(block);
   }
 
@@ -431,7 +429,7 @@ function queueList(): HTMLElement {
         ? el("ul", { className: "group-jobs" }, ...ungrouped.map(jobRow))
         : null,
     );
-    bindGroupDrop(ungroupedBlock, null);
+    ungroupedBlock.dataset.dropGroup = "";
     container.append(ungroupedBlock);
   }
 
@@ -470,7 +468,21 @@ function queuePane(): HTMLElement {
     el(
       "header",
       { className: "queue-head" },
-      el("h1", { textContent: "Bản ghi âm" }),
+      el(
+        "div",
+        { className: "queue-title" },
+        el("h1", { textContent: "Bản ghi âm" }),
+        el(
+          "button",
+          {
+            className: "icon-btn-sm",
+            title: "Thêm file âm thanh",
+            ariaLabel: "Thêm file âm thanh",
+            onclick: () => addFiles(),
+          },
+          icon("plus", 15),
+        ),
+      ),
       el(
         "button",
         {
@@ -533,19 +545,29 @@ function queuePane(): HTMLElement {
       { className: "queue-foot" },
       el(
         "button",
-        { className: "add", onclick: () => addFiles() },
-        icon("plus", 15),
-        el("span", { textContent: "Thêm file" }),
+        {
+          className: "add",
+          title: "Mở ứng dụng Ghi âm mặc định của máy",
+          onclick: async () => {
+            try {
+              await invoke("open_voice_recorder");
+            } catch (e) {
+              await message(String(e), { title: "Chưa mở được app Ghi âm", kind: "warning" });
+            }
+          },
+        },
+        icon("mic", 15),
+        el("span", { textContent: "Mở app Ghi âm" }),
       ),
       el(
         "button",
         {
           className: `icon-btn${view === "memos" ? " active" : ""}`,
-          title: "Từ app Ghi âm",
-          ariaLabel: "Mở danh sách từ app Ghi âm",
+          title: "Nhập từ thư viện Ghi âm",
+          ariaLabel: "Mở danh sách từ thư viện Ghi âm",
           onclick: openMemos,
         },
-        icon("mic", 16),
+        icon("folder", 16),
       ),
       el(
         "button",
@@ -921,13 +943,18 @@ async function startDownload() {
 
 function rightPane(): HTMLElement {
   if (view === "memos") return memosPane();
-  if (view === "settings") return settingsPane();
+  if (view === "settings") {
+    const tab = pendingSettingsTab;
+    pendingSettingsTab = undefined;
+    return settingsPane(tab);
+  }
   const job = jobs.find((j) => j.id === selected);
   if (view === "note" && job) {
     return notePane(job.id, jobName(job), {
       openSettings: () => {
         view = "settings";
         selected = null;
+        pendingSettingsTab = "ai";
         render();
       },
       back: () => select(job.id),
@@ -976,6 +1003,10 @@ async function main() {
     groups = payload.groups ?? [];
     paused = payload.paused;
     busy = payload.busy;
+    if (pointerDrag?.active) {
+      pendingQueueRender = true;
+      return;
+    }
     if (view !== "reader" && modelsReady) {
       // Leave the right pane alone: rebuilding it would lose what is being typed there.
       root.querySelector(".queue")?.replaceWith(queuePane());
@@ -995,17 +1026,85 @@ async function main() {
       render();
     }
   });
+  const groupBlockAtPoint = (pos?: { x: number; y: number }): HTMLElement | null => {
+    if (!pos) return null;
+    const dpr = window.devicePixelRatio || 1;
+    return (
+      document.elementFromPoint(pos.x / dpr, pos.y / dpr)?.closest<HTMLElement>("[data-drop-group]") ??
+      document.elementFromPoint(pos.x, pos.y)?.closest<HTMLElement>("[data-drop-group]") ??
+      null
+    );
+  };
   await getCurrentWebview().onDragDropEvent(({ payload }) => {
-    document.body.classList.toggle("dropping", payload.type === "enter" || payload.type === "over");
-    if (payload.type === "drop" && modelsReady) {
+    const hovering = payload.type === "enter" || payload.type === "over";
+    document.body.classList.toggle("dropping", hovering);
+    if (hovering && modelsReady) {
+      setDragHighlight(groupBlockAtPoint(payload.position));
+    } else if (payload.type === "leave") {
+      clearDragHighlight();
+    } else if (payload.type === "drop" && modelsReady) {
+      const hit = groupBlockAtPoint(payload.position);
+      const targetGroup = hit?.dataset.dropGroup || undefined;
+      clearDragHighlight();
       // Folders and stray files dropped along with recordings are left out quietly.
       const paths = payload.paths.filter((p) =>
         audioExtensions.includes(p.split(".").pop()?.toLowerCase() ?? ""),
       );
-      if (paths.length) enqueue(paths);
+      if (paths.length) enqueue(paths, targetGroup);
     }
   });
 }
+
+  window.addEventListener("pointermove", (e: PointerEvent) => {
+    if (!pointerDrag) return;
+    if (!pointerDrag.active) {
+      if (Math.hypot(e.clientX - pointerDrag.startX, e.clientY - pointerDrag.startY) < 6) return;
+      pointerDrag.active = true;
+      pointerDrag.sourceEl.classList.add("is-dragging");
+      document.body.classList.add("dragging-job");
+      const ghost = el("div", { className: "drag-ghost", textContent: pointerDrag.label });
+      document.body.append(ghost);
+      pointerDrag.ghost = ghost;
+    }
+    if (pointerDrag.ghost) {
+      pointerDrag.ghost.style.transform = `translate(${e.clientX + 12}px, ${e.clientY + 12}px)`;
+    }
+    const hit = document.elementFromPoint(e.clientX, e.clientY)?.closest<HTMLElement>("[data-drop-group]") ?? null;
+    setDragHighlight(hit);
+    pointerDrag.targetGroup = hit ? (hit.dataset.dropGroup || null) : undefined;
+  });
+
+  const finishPointerDrag = (applyDrop: boolean) => {
+    if (!pointerDrag) return;
+    const drag = pointerDrag;
+    pointerDrag = null;
+    if (!drag.active) return;
+    suppressClickOnce = true;
+    setTimeout(() => {
+      suppressClickOnce = false;
+    }, 0);
+    drag.sourceEl.classList.remove("is-dragging");
+    drag.ghost?.remove();
+    document.body.classList.remove("dragging-job");
+    clearDragHighlight();
+    if (applyDrop && drag.targetGroup !== undefined) {
+      const current = jobs.find((j) => j.id === drag.jobId);
+      if ((current?.group ?? null) !== drag.targetGroup) {
+        moveJobToGroup(drag.jobId, drag.targetGroup);
+      }
+    }
+    if (pendingQueueRender) {
+      pendingQueueRender = false;
+      if (view !== "reader" && modelsReady) {
+        refreshQueueOnly();
+        refreshMemoControls();
+      } else {
+        render();
+      }
+    }
+  };
+  window.addEventListener("pointerup", () => finishPointerDrag(true));
+  window.addEventListener("pointercancel", () => finishPointerDrag(false));
 
   document.addEventListener("click", () => {
     if (openMenuJobId !== null) {

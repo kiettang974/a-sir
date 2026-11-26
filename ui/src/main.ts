@@ -952,6 +952,19 @@ function readerPane(): HTMLElement {
           "button",
           {
             className: "btn-ghost",
+            title: "Lọc câu rác, từ lặp và sửa tên riêng/thuật ngữ (tại máy → AI theo ngữ cảnh)",
+            onclick: () => {
+              view = "aiClean";
+              render();
+            },
+          },
+          icon("fileText", 15),
+          el("span", { textContent: "Làm sạch" }),
+        ),
+        el(
+          "button",
+          {
+            className: "btn-ghost",
             title: "Chép toàn bộ bản chép lời",
             disabled: text === null,
             onclick: async () => {
@@ -967,14 +980,6 @@ function readerPane(): HTMLElement {
             label: "Chép lời lại",
             title: "Chép lời lại bằng model đang chọn, vẫn giữ bản cũ",
             onClick: () => rerunJob(job.id),
-          },
-          {
-            label: "Làm sạch bản chép",
-            title: "Lọc câu rác, từ lặp và sửa tên riêng/thuật ngữ (tại máy hoặc bằng AI theo ngữ cảnh)",
-            onClick: () => {
-              view = "aiClean";
-              render();
-            },
           },
           {
             label: "Mở trong Finder",

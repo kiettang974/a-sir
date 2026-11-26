@@ -323,16 +323,71 @@ export function aiCleanPane(jobId: number, title: string, cb: AiCleanCallbacks):
     );
   };
 
+  let activeRun = 0;
+  let elapsedTimer: number | undefined;
+  const stopTimer = () => {
+    if (elapsedTimer !== undefined) {
+      window.clearInterval(elapsedTimer);
+      elapsedTimer = undefined;
+    }
+  };
+
+  const showError = (heading: string, errText: string) => {
+    stopTimer();
+    renderHead(false);
+    body.replaceChildren(
+      el("h3", { textContent: heading }),
+      el("p", { className: "problem problem-text", textContent: errText }),
+      el(
+        "div",
+        { className: "actions wrap" },
+        el("button", { className: "add", textContent: "Thử lại", onclick: runAuto }),
+        el("button", { className: "link", textContent: "Chỉ làm sạch tại máy", onclick: runLocalOnly }),
+        el("button", { className: "link", textContent: "Mở Cấu hình AI", onclick: cb.openSettings }),
+      ),
+    );
+  };
+
   const runAuto = async () => {
+    const runId = ++activeRun;
+    stopTimer();
     renderHead(true);
-    body.replaceChildren(el("h3", { textContent: "Đang làm sạch bản chép lời…" }));
+    let secs = 0;
+    const statusHeading = el("h3", { textContent: "Đang làm sạch bản chép lời…" });
+    const cancelBtn = el("button", {
+      className: "link",
+      textContent: "Dừng chờ",
+      onclick: () => {
+        activeRun++;
+        showError(
+          "Đã dừng chờ phản hồi từ AI",
+          "Yêu cầu mất quá lâu hoặc bị treo. Bạn có thể bấm Thử lại, đổi model AI khác, hoặc chọn Chỉ làm sạch tại máy.",
+        );
+      },
+    });
+    const elapsedLine = el("p", { className: "hint", textContent: "0 giây" });
+    body.replaceChildren(statusHeading, elapsedLine, el("div", { className: "actions wrap" }, cancelBtn));
+    elapsedTimer = window.setInterval(() => {
+      if (runId !== activeRun || !body.isConnected) {
+        stopTimer();
+        return;
+      }
+      secs += 1;
+      elapsedLine.textContent =
+        secs >= 30
+          ? `${secs} giây — AI đang xử lý khá lâu (có thể đang bị giới hạn tốc độ hoặc file dài).`
+          : `${secs} giây`;
+    }, 1000);
+
     try {
       const [ai, ctx] = await Promise.all([
         invoke<AiView>("ai_settings"),
         invoke<MeetingContextView>("get_meeting_context", { id: jobId }),
       ]);
+      if (runId !== activeRun) return;
       const usable = PROVIDERS.filter((p) => ai.keys[p]);
       if (usable.length === 0) {
+        stopTimer();
         await runLocalOnly();
         return;
       }
@@ -344,6 +399,7 @@ export function aiCleanPane(jobId: number, title: string, cb: AiCleanCallbacks):
         provider,
         useContext,
       });
+      if (runId !== activeRun) return;
       const saved: SavedAiClean = {
         edits: proposal.edits,
         savedFileName: "",
@@ -355,6 +411,7 @@ export function aiCleanPane(jobId: number, title: string, cb: AiCleanCallbacks):
         cleanedText: proposal.cleanedText,
         meta: saved,
       });
+      if (runId !== activeRun) return;
       saved.savedFileName = savedPath.split(/[/\\]/).pop() ?? savedPath;
       // Persist resolved filename in meta too.
       invoke("save_ai_clean", {
@@ -362,20 +419,12 @@ export function aiCleanPane(jobId: number, title: string, cb: AiCleanCallbacks):
         cleanedText: proposal.cleanedText,
         meta: saved,
       }).catch(() => {});
+      stopTimer();
       savedCleanCache.set(jobId, saved);
       renderSaved(saved);
     } catch (e) {
-      renderHead(false);
-      body.replaceChildren(
-        el("h3", { textContent: "Chưa hoàn tất bước rà soát bằng AI" }),
-        el("p", { className: "problem problem-text", textContent: String(e) }),
-        el(
-          "div",
-          { className: "actions wrap" },
-          el("button", { className: "link", textContent: "Chỉ làm sạch tại máy", onclick: runLocalOnly }),
-          el("button", { className: "link", textContent: "Mở Cấu hình AI", onclick: cb.openSettings }),
-        ),
-      );
+      if (runId !== activeRun) return;
+      showError("AI báo lỗi khi làm sạch", String(e));
     }
   };
 

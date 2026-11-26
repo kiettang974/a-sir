@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 const MAX_OUTPUT_TOKENS: u32 = 16_000;
-const SUMMARY_TIMEOUT: Duration = Duration::from_secs(600);
+const SUMMARY_TIMEOUT: Duration = Duration::from_secs(180);
 const PING_TIMEOUT: Duration = Duration::from_secs(12);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(4);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -79,7 +79,7 @@ impl Provider {
 pub enum AiError {
     #[error("API key không đúng hoặc không có quyền dùng model này ({0})")]
     Unauthorized(String),
-    #[error("Nhà cung cấp đang giới hạn lượt gọi hoặc đã hết hạn mức ({0})")]
+    #[error("Nhà cung cấp đang giới hạn lượt gọi hoặc đã hết hạn mức / token ({0})")]
     RateLimited(String),
     #[error("Nhà cung cấp báo lỗi {status}: {message}")]
     Rejected { status: u16, message: String },
@@ -488,8 +488,18 @@ impl HttpClient {
         body: &Value,
         timeout: Duration,
     ) -> Result<Value, AiError> {
-        let network = |e: reqwest::Error| AiError::Network(e.without_url().to_string());
+        let network = |e: reqwest::Error| {
+            if e.is_timeout() {
+                AiError::Network(
+                    "quá thời gian chờ phản hồi từ máy chủ AI. Hãy thử lại hoặc đổi model khác."
+                        .into(),
+                )
+            } else {
+                AiError::Network(e.without_url().to_string())
+            }
+        };
         let client = reqwest::blocking::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
             .timeout(timeout)
             .build()
             .map_err(network)?;
@@ -503,7 +513,16 @@ impl HttpClient {
         headers: &[(&'static str, String)],
         body: &Value,
     ) -> Result<Value, AiError> {
-        let network = |e: reqwest::Error| AiError::Network(e.without_url().to_string());
+        let network = |e: reqwest::Error| {
+            if e.is_timeout() {
+                AiError::Network(
+                    "quá thời gian chờ phản hồi từ máy chủ AI. Hãy thử lại hoặc đổi model khác."
+                        .into(),
+                )
+            } else {
+                AiError::Network(e.without_url().to_string())
+            }
+        };
         let mut request = client
             .post(url)
             .header("content-type", "application/json")
@@ -632,6 +651,7 @@ fn check_status(status: u16, text: &str) -> Result<Value, AiError> {
     let message = error_message(text);
     Err(match status {
         401 | 403 => AiError::Unauthorized(message),
+        402 => AiError::RateLimited(format!("tài khoản AI đã hết số dư / hết token: {message}")),
         429 if message.contains("limit: 0") => AiError::RateLimited(
             "gói hiện tại không có hạn mức cho model này (limit: 0). Mở \"Chọn model\" để xem các model đã thử thành công.".into(),
         ),

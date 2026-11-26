@@ -16,3 +16,10 @@
 - Đo trước bằng `crates/asr-core/examples/bench.rs` trên cùng máy, cùng audio, cùng cấu hình VAD và gắn kết quả với đúng tệp model.
 - Dùng bản chép đã đối chiếu với audio nếu muốn tính WER. Benchmark sẵn có báo độ lệch từ với bản do engine cũ tạo và dùng cách chuẩn hoá riêng. Khi cần so với VietAudio, dùng cùng định nghĩa O-WER và N-WER với bảng xếp hạng.
 - Chạy ít nhất một file họp dài qua `examples/run_job.rs` hoặc app. Kiểm tra thời gian xử lý, tên riêng, thuật ngữ, số liệu, file TXT/SRT và khả năng nghe lại từ mốc trích dẫn.
+
+## Quy ước đánh version phát hành
+
+Cập nhật đồng bộ trong `app/tauri.conf.json` và `app/Cargo.toml` trước khi push nhánh `release`:
+
+- **Bản cập nhật nhỏ** (sửa lỗi, tinh chỉnh UI/UX): tăng phần patch `0.Y.X` (`X` từ `1` đến tối đa `10`; vượt `10` thì chuyển lên `0.(Y+1).0`).
+- **Bản cập nhật lớn** (tính năng mới đáng kể): tăng phần minor `0.Y.0` (`Y` từ `1` đến tối đa `10`; vượt `10` thì chuyển lên `1.0.0`).

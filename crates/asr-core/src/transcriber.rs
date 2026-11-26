@@ -318,7 +318,6 @@ impl QwenAsr {
 }
 
 #[cfg(not(unix))]
-#[cfg(unix)]
 impl Transcriber for QwenAsr {
     fn transcribe(&self, _: &[f32], _: &Control) -> Result<Vec<Segment>, TranscribeError> {
         Err(TranscribeError::Engine("Qwen3-ASR chưa chạy được trên Windows.".into()))

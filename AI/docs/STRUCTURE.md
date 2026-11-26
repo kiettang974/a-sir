@@ -37,7 +37,7 @@ Draft { rows, pending } ──► ui/src/note.ts (sửa tại chỗ, nghe lại 
 ```
 
 Vị trí file trên máy (đặt trong `app/src/main.rs` `main`):
-- `Paths.data` = `~/Library/Application Support/vn.vmed.asr-studio`: `jobs.json`, `work/<id>/checkpoint.json`, `asr.json`, `ai.json`, `api-keys.json` (mode 0600), `glossary.json`.
+- `Paths.data` = `~/Library/Application Support/com.asir.app`: `jobs.json`, `work/<id>/checkpoint.json`, `asr.json`, `ai.json`, `api-keys.json` (mode 0600), `glossary.json`.
 - `Paths.output` = `~/Documents/ASR Studio`: `.txt`, `.srt`, `_fixed.txt`, `_note.json`, `_note.html`.
 - Model: `~/Library/Application Support/asr-studio/models` (`ggml-large-v3-turbo.bin`, `ggml-large-v3.bin`, `ggml-phowhisper-medium-q5_0.bin`, `qwen3-asr-1.7b/`, `ggml-silero-v5.1.2.bin`).
 

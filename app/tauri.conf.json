@@ -1,7 +1,7 @@
 {
   "productName": "A-Sir",
   "version": "0.2.0",
-  "identifier": "vn.vmed.asr-studio",
+  "identifier": "com.asir.app",
   "build": {
     "beforeDevCommand": { "script": "pnpm dev", "cwd": "../ui" },
     "beforeBuildCommand": { "script": "pnpm build", "cwd": "../ui" },

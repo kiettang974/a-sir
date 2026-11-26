@@ -7,3 +7,5 @@ bench-out/
 outputs/
 benchmarks/
 .codegraph/
+.caro/
+.github/workflows/

@@ -107,7 +107,7 @@ Bộ cài sau khi build nằm tại:
 | Dữ liệu | macOS | Windows |
 | --- | --- | --- |
 | Model chép lời đã tải | `~/Library/Application Support/asr-studio/models/` | `%APPDATA%\asr-studio\models\` |
-| Cài đặt, hàng đợi, thuật ngữ | `~/Library/Application Support/vn.vmed.asr-studio/` | `%APPDATA%\vn.vmed.asr-studio\` |
+| Cài đặt, hàng đợi, thuật ngữ | `~/Library/Application Support/com.asir.app/` | `%APPDATA%\com.asir.app\` |
 | Bản chép lời & biên bản xuất | `~/Documents/ASR Studio/` | `%USERPROFILE%\Documents\ASR Studio\` |
 
 Bạn có thể mở nhanh thư mục lưu model ngay trong ứng dụng tại **Cài đặt → Giọng nói → Mở thư mục model**.

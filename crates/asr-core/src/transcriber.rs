@@ -427,11 +427,11 @@ mod tests {
                 note: String::new(),
             },
             Term {
-                correct: "VMED".into(),
+                correct: "VNPay".into(),
                 heard_as: String::new(),
                 note: String::new(),
             },
         ];
-        assert_eq!(glossary_prompt(&terms).as_deref(), Some("Thuật ngữ: VietQR, VMED"));
+        assert_eq!(glossary_prompt(&terms).as_deref(), Some("Thuật ngữ: VietQR, VNPay"));
     }
 }

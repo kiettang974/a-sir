@@ -849,7 +849,7 @@ function minutesSection(ai: AiView): HTMLElement {
       const updated = await setTemplatesEnabled(next);
       tplStatus.textContent = next
         ? "Đã bật chế độ dùng template xuất biên bản."
-        : "Đã tắt template cố định — quay về thuần BA-Open-Kit + Humanizer.";
+        : "Đã tắt template cố định — dùng theo profile BA và văn phong đã chọn.";
       tplStatus.className = "provider-status status-inline";
       drawTemplateBox(updated);
     } catch (e) {
@@ -974,7 +974,7 @@ function minutesSection(ai: AiView): HTMLElement {
     tplLabel.textContent = !enabled
       ? activeParts.length
         ? `Đang tắt (đã lưu sẵn ${activeParts.join(" · ")}, bật công tắc để dùng lại)`
-        : "Đang tắt — mặc định dùng thuần BA-Open-Kit + Humanizer."
+        : "Đang tắt — mặc định dùng profile BA và văn phong đã chọn."
       : activeParts.length
         ? `Đang bật — ${activeParts.join(" · ")}`
         : "Đang bật — đang dùng mẫu mặc định (Word & Excel). Chọn file riêng bên dưới nếu muốn thay.";
@@ -1053,7 +1053,7 @@ function minutesSection(ai: AiView): HTMLElement {
     .then(drawTemplateBox)
     .catch(() => drawTemplateBox({ excel: null, docx: null }));
 
-  // Summary profile selector (default: BA-Open-Kit, toggleable, plus user-uploaded .md profiles).
+  // Summary profile selector (default: BA, toggleable, plus user-uploaded .md profiles).
   const profSwitch = el("input", {
     type: "checkbox",
     className: "switch-input",
@@ -1106,7 +1106,7 @@ function minutesSection(ai: AiView): HTMLElement {
     profSwitchText.textContent = cfg.enabled ? "Đang bật" : "Đang tắt";
     profDesc.textContent = cfg.enabled
       ? "Khi tóm tắt, AI sẽ bám sát hướng dẫn của profile đang chọn. Bạn có thể tải file .md riêng để AI tự đặt tên và áp dụng."
-      : "Đang tắt profile — AI tóm tắt gọn gàng theo văn phong bên dưới mà không ép theo khung BA-Open-Kit.";
+      : "Đang tắt profile — AI tóm tắt gọn gàng theo văn phong bên dưới mà không ép theo khung profile BA.";
 
     if (!cfg.enabled) {
       profList.replaceChildren();
@@ -1176,7 +1176,7 @@ function minutesSection(ai: AiView): HTMLElement {
     const nodes: HTMLElement[] = [
       row(
         "ba-open-kit",
-        "BA-Open-Kit (/meet)",
+        "BA",
         "Bố cục chuẩn 4 phần: Trao đổi chính · Quyết định chốt · Việc cần làm · Điểm cần xác nhận.",
         "Mặc định",
         false,

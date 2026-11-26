@@ -516,7 +516,7 @@ async fn summarize_job(
     profile_id: Option<String>,
     use_context: Option<bool>,
 ) -> Result<Draft, String> {
-    let transcript = app.runner.transcript(id)?.text()?;
+    let transcript = app.runner.transcript(id)?.text_for_summary()?;
     let workspace = app.workspace.clone();
     let include_context = use_context.unwrap_or(false);
     off_thread(move || {

@@ -226,64 +226,62 @@ type AiCleanCallbacks = {
 };
 
 export function aiCleanPane(jobId: number, title: string, cb: AiCleanCallbacks): HTMLElement {
-  const head = el(
-    "header",
-    { className: "reader-head" },
-    el("h2", { textContent: `Làm sạch bản chép — ${title}` }),
-    el("button", { className: "link", textContent: "Về bản chép lời", onclick: cb.back }),
-  );
+  const head = el("header", { className: "reader-head" });
   const scroll = el("div", { className: "note-scroll" });
   const body = el("div", { className: "note-form" });
   scroll.append(body);
 
-  const runLocalOnly = async () => {
-    body.replaceChildren(
-      el("h3", { textContent: "Đang làm sạch tại máy…" }),
-      el("p", { className: "hint", textContent: "Lọc câu ảo giác, gộp từ lặp và thay theo Từ vựng riêng." }),
+  const renderHead = (busy = false) => {
+    head.replaceChildren(
+      el("h2", { textContent: `Làm sạch bản chép — ${title}` }),
+      el(
+        "div",
+        { className: "reader-actions" },
+        el("button", {
+          className: "btn-ghost",
+          textContent: "Chạy lại",
+          disabled: busy,
+          onclick: runAuto,
+        }),
+        el("button", {
+          className: "btn-ghost",
+          textContent: "Mở tab Ngữ cảnh",
+          disabled: busy,
+          onclick: cb.openContext,
+        }),
+        el("button", { className: "link", textContent: "Về bản chép lời", onclick: cb.back }),
+      ),
     );
+  };
+
+  const runLocalOnly = async () => {
+    renderHead(true);
+    body.replaceChildren(el("h3", { textContent: "Đang làm sạch bản chép lời…" }));
     try {
       const path = await invoke<string>("clean_transcript", { id: jobId });
       cb.onSaved(path);
     } catch (e) {
+      renderHead(false);
       body.replaceChildren(
         el("h3", { textContent: "Chưa làm sạch được" }),
         el("p", { className: "problem problem-text", textContent: String(e) }),
-        el("button", { className: "add", textContent: "Thử lại", onclick: runAuto }),
       );
     }
   };
 
   const renderDiff = (
     proposal: AiCleanProposal,
+    savedFileName: string,
     providerName: string,
     usedContext: boolean,
   ) => {
-    const saveStatus = el("span", { className: "provider-status status-inline" });
-    const saveBtn = el("button", {
-      className: "add",
-      textContent: "Lưu bản sạch riêng",
-      onclick: async () => {
-        saveBtn.disabled = true;
-        try {
-          const path = await invoke<string>("save_ai_clean", {
-            id: jobId,
-            cleanedText: proposal.cleanedText,
-          });
-          cb.onSaved(path);
-        } catch (e) {
-          saveStatus.className = "provider-status status-inline bad";
-          saveStatus.textContent = String(e);
-          saveBtn.disabled = false;
-        }
-      },
-    });
-
+    renderHead(false);
     const diffNodes =
       proposal.edits.length === 0
         ? el("p", {
             className: "hint",
             textContent:
-              "Đã lọc xong theo quy tắc tại máy và AI không phát hiện thêm lỗi tên riêng hay thuật ngữ nào. Bạn vẫn có thể bấm Lưu bản sạch riêng để lưu kết quả đã lọc tại máy.",
+              "Không phát hiện thêm lỗi tên riêng hay thuật ngữ nào. Đã lưu bản làm sạch tại máy.",
           })
         : el(
             "div",
@@ -311,37 +309,19 @@ export function aiCleanPane(jobId: number, title: string, cb: AiCleanCallbacks):
 
     body.replaceChildren(
       el("h3", {
-        textContent: `Đề xuất chỉnh sửa (${proposal.edits.length} đoạn thay đổi)`,
+        textContent: `Đã lưu bản sạch (${proposal.edits.length} đoạn thay đổi)`,
       }),
       el("p", {
         className: "hint",
-        textContent: `Đã lọc tại máy và rà soát bằng ${providerName}${usedContext ? " (có dùng Ngữ cảnh cuộc họp)" : ""}.`,
+        textContent: `${savedFileName} · ${providerName}${usedContext ? " · có dùng Ngữ cảnh" : ""}`,
       }),
       diffNodes,
-      el(
-        "div",
-        { className: "actions wrap" },
-        saveBtn,
-        el("button", {
-          className: "link",
-          textContent: "Chạy lại",
-          onclick: runAuto,
-        }),
-        el("button", {
-          className: "link",
-          textContent: "Mở tab Ngữ cảnh",
-          onclick: cb.openContext,
-        }),
-        saveStatus,
-      ),
     );
   };
 
   const runAuto = async () => {
-    body.replaceChildren(
-      el("h3", { textContent: "Đang làm sạch bản chép lời…" }),
-      el("p", { className: "hint", textContent: "Đang lọc tại máy trước, sau đó rà soát bằng AI." }),
-    );
+    renderHead(true);
+    body.replaceChildren(el("h3", { textContent: "Đang làm sạch bản chép lời…" }));
     try {
       const [ai, ctx] = await Promise.all([
         invoke<AiView>("ai_settings"),
@@ -355,27 +335,25 @@ export function aiCleanPane(jobId: number, title: string, cb: AiCleanCallbacks):
       const provider = usable.includes(ai.defaultProvider) ? ai.defaultProvider : usable[0];
       const useContext = describeContext(ctx).hasAny;
       const pName = PROVIDER_NAME[provider];
-      body.replaceChildren(
-        el("h3", { textContent: "Đang làm sạch bản chép lời…" }),
-        el("p", {
-          className: "hint",
-          textContent: `Đang lọc tại máy và rà soát tiếp bằng ${pName}${useContext ? " (kèm Ngữ cảnh cuộc họp)" : ""}…`,
-        }),
-      );
       const proposal = await invoke<AiCleanProposal>("preview_ai_clean", {
         id: jobId,
         provider,
         useContext,
       });
-      renderDiff(proposal, pName, useContext);
+      const savedPath = await invoke<string>("save_ai_clean", {
+        id: jobId,
+        cleanedText: proposal.cleanedText,
+      });
+      const savedName = savedPath.split(/[/\\]/).pop() ?? savedPath;
+      renderDiff(proposal, savedName, pName, useContext);
     } catch (e) {
+      renderHead(false);
       body.replaceChildren(
         el("h3", { textContent: "Chưa hoàn tất bước rà soát bằng AI" }),
         el("p", { className: "problem problem-text", textContent: String(e) }),
         el(
           "div",
           { className: "actions wrap" },
-          el("button", { className: "add", textContent: "Thử lại", onclick: runAuto }),
           el("button", { className: "link", textContent: "Chỉ làm sạch tại máy", onclick: runLocalOnly }),
           el("button", { className: "link", textContent: "Mở Cấu hình AI", onclick: cb.openSettings }),
         ),

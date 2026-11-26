@@ -70,6 +70,20 @@ impl Transcript {
             .map_err(|e| format!("không đọc được {}: {e}", self.txt.display()))
     }
 
+    /// Returns the cleaned transcript (`_ai_fixed.txt`, then `_fixed.txt`) when present,
+    /// falling back to the raw transcript.
+    pub fn text_for_summary(&self) -> Result<String, String> {
+        for suffix in ["_ai_fixed", "_fixed"] {
+            let candidate = self.sidecar(suffix, "txt");
+            if let Ok(content) = fs::read_to_string(&candidate)
+                && !content.trim().is_empty()
+            {
+                return Ok(content);
+            }
+        }
+        self.text()
+    }
+
     pub fn lines(&self) -> Result<Vec<Line>, String> {
         Ok(lines(&self.text()?))
     }
@@ -93,9 +107,13 @@ impl Transcript {
         self.write_variant("_fixed", &cleaned)
     }
 
-    /// Writes an AI-cleaned copy as "<name>_ai_fixed.txt" without overwriting existing copies.
+    /// Writes (or overwrites on re-run) the AI-cleaned copy as "<name>_ai_fixed.txt"
+    /// without touching the original transcript.
     pub fn write_ai_cleaned(&self, cleaned: &str) -> Result<PathBuf, String> {
-        self.write_variant("_ai_fixed", cleaned)
+        let path = self.sidecar("_ai_fixed", "txt");
+        save_atomic(&path, cleaned.as_bytes())
+            .map_err(|e| format!("không ghi được {}: {e}", path.display()))?;
+        Ok(path)
     }
 
     fn write_variant(&self, suffix: &str, content: &str) -> Result<PathBuf, String> {
@@ -210,5 +228,19 @@ mod tests {
         assert_eq!(page, dir.path().join("họp_note.html"));
         assert_eq!(fs::read_to_string(page).unwrap(), "<p>bảng</p>");
         assert_eq!(t.note().unwrap(), Some(draft));
+    }
+
+    #[test]
+    fn summary_prefers_ai_cleaned_then_local_cleaned_then_raw() {
+        let dir = tempfile::tempdir().unwrap();
+        let t = transcript(dir.path(), "[00:00:00 --> 00:00:01] bản gốc\n");
+        assert!(t.text_for_summary().unwrap().contains("bản gốc"));
+
+        t.write_cleaned().unwrap();
+        fs::write(dir.path().join("họp_fixed.txt"), "[00:00:00 --> 00:00:01] bản lọc máy\n").unwrap();
+        assert!(t.text_for_summary().unwrap().contains("bản lọc máy"));
+
+        t.write_ai_cleaned("[00:00:00 --> 00:00:01] bản lọc AI\n").unwrap();
+        assert!(t.text_for_summary().unwrap().contains("bản lọc AI"));
     }
 }

@@ -108,12 +108,22 @@ impl Transcript {
     }
 
     /// Writes (or overwrites on re-run) the AI-cleaned copy as "<name>_ai_fixed.txt"
-    /// without touching the original transcript.
+    /// and optional diff metadata as "<name>_ai_fixed.json" without touching the original transcript.
     pub fn write_ai_cleaned(&self, cleaned: &str) -> Result<PathBuf, String> {
         let path = self.sidecar("_ai_fixed", "txt");
         save_atomic(&path, cleaned.as_bytes())
             .map_err(|e| format!("không ghi được {}: {e}", path.display()))?;
         Ok(path)
+    }
+
+    pub fn save_ai_clean_meta(&self, meta: &Value) -> Result<(), String> {
+        save_atomic(&self.sidecar("_ai_fixed", "json"), meta.to_string().as_bytes())
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn load_ai_clean_meta(&self) -> Option<Value> {
+        let bytes = fs::read(self.sidecar("_ai_fixed", "json")).ok()?;
+        serde_json::from_slice(&bytes).ok()
     }
 
     fn write_variant(&self, suffix: &str, content: &str) -> Result<PathBuf, String> {

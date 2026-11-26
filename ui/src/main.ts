@@ -72,6 +72,42 @@ let openMenuJobId: number | null = null;
 let creatingGroup = false;
 let newGroupName = "";
 const collapsedGroups = new Set<string>();
+let selectedGroup: string | null = null;
+let openColorGroup: string | null = null;
+
+type GroupColor = "none" | "blue" | "gray" | "green" | "orange" | "purple" | "red" | "yellow";
+const GROUP_COLORS: { id: GroupColor; label: string }[] = [
+  { id: "blue", label: "Xanh dương" },
+  { id: "gray", label: "Xám" },
+  { id: "green", label: "Xanh lá" },
+  { id: "orange", label: "Cam" },
+  { id: "purple", label: "Tím" },
+  { id: "red", label: "Đỏ" },
+  { id: "yellow", label: "Vàng" },
+  { id: "none", label: "Không màu" },
+];
+const GROUP_COLOR_KEY = "asr-group-colors";
+function loadGroupColors(): Record<string, GroupColor> {
+  try {
+    const raw = localStorage.getItem(GROUP_COLOR_KEY);
+    return raw ? (JSON.parse(raw) as Record<string, GroupColor>) : {};
+  } catch {
+    return {};
+  }
+}
+const groupColors: Record<string, GroupColor> = loadGroupColors();
+function setGroupColor(name: string, color: GroupColor) {
+  if (color === "none") delete groupColors[name];
+  else groupColors[name] = color;
+  try {
+    localStorage.setItem(GROUP_COLOR_KEY, JSON.stringify(groupColors));
+  } catch {
+    // Ignore storage quota issues.
+  }
+}
+function groupColorOf(name: string): GroupColor {
+  return groupColors[name] ?? "none";
+}
 type PointerDrag = {
   jobId: number;
   label: string;
@@ -310,6 +346,9 @@ async function removeGroup(name: string) {
   try {
     await invoke("delete_group", { name });
     collapsedGroups.delete(name);
+    if (selectedGroup === name) selectedGroup = null;
+    if (openColorGroup === name) openColorGroup = null;
+    setGroupColor(name, "none");
   } catch (e) {
     await message(String(e), { title: "Chưa xoá được nhóm", kind: "warning" });
   }
@@ -343,32 +382,100 @@ function setDragHighlight(target: HTMLElement | null) {
 
 function queueList(): HTMLElement {
   if (groups.length === 0) {
+    selectedGroup = null;
     return el("ul", { className: "jobs" }, ...jobs.map(jobRow));
+  }
+  if (selectedGroup && !groups.includes(selectedGroup)) {
+    selectedGroup = null;
   }
 
   const container = el("div", { className: "jobs grouped-jobs" });
+  const visibleGroups = selectedGroup ? [selectedGroup] : groups;
 
-  for (const name of groups) {
+  for (const name of visibleGroups) {
     const groupJobs = jobs.filter((j) => j.group === name);
-    const collapsed = collapsedGroups.has(name);
+    const isActive = selectedGroup === name;
+    const collapsed = !isActive && collapsedGroups.has(name);
+    const color = groupColorOf(name);
+    const colorDot = el("span", {
+      className: `group-dot${color === "none" ? "" : ` ${color}`}`,
+    });
+    const colorPicker =
+      openColorGroup === name
+        ? el(
+            "div",
+            {
+              className: "group-color-picker",
+              onclick: (e: MouseEvent) => e.stopPropagation(),
+            },
+            ...GROUP_COLORS.map((c) =>
+              el(
+                "button",
+                {
+                  className: `group-color-opt${color === c.id ? " active" : ""}`,
+                  title: c.label,
+                  ariaLabel: `Đổi màu nhóm ${name} thành ${c.label}`,
+                  onclick: (e: MouseEvent) => {
+                    e.stopPropagation();
+                    setGroupColor(name, c.id);
+                    openColorGroup = null;
+                    refreshQueueOnly();
+                  },
+                },
+                el("span", { className: `group-dot${c.id === "none" ? "" : ` ${c.id}`}` }),
+              ),
+            ),
+          )
+        : null;
+
     const block = el(
       "div",
       { className: "group-block" },
       el(
         "div",
-        { className: "group-head" },
+        { className: `group-head${isActive ? " group-active" : ""}` },
+        !isActive
+          ? el(
+              "button",
+              {
+                className: "group-chevron",
+                title: collapsed ? "Mở rộng nhóm" : "Thu gọn nhóm",
+                ariaLabel: collapsed ? `Mở rộng nhóm ${name}` : `Thu gọn nhóm ${name}`,
+                onclick: (e: MouseEvent) => {
+                  e.stopPropagation();
+                  if (collapsed) collapsedGroups.delete(name);
+                  else collapsedGroups.add(name);
+                  refreshQueueOnly();
+                },
+              },
+              icon(collapsed ? "chevronRight" : "chevronDown", 13),
+            )
+          : null,
+        el(
+          "button",
+          {
+            className: "group-dot-btn",
+            title: `Chọn màu nhãn cho nhóm "${name}"`,
+            ariaLabel: `Chọn màu nhãn cho nhóm ${name}`,
+            onclick: (e: MouseEvent) => {
+              e.stopPropagation();
+              openColorGroup = openColorGroup === name ? null : name;
+              refreshQueueOnly();
+            },
+          },
+          colorDot,
+        ),
         el(
           "button",
           {
             className: "group-toggle",
+            title: isActive ? "Bấm để xem lại tất cả nhóm" : `Lọc xem riêng nhóm "${name}"`,
             onclick: () => {
-              if (collapsed) collapsedGroups.delete(name);
-              else collapsedGroups.add(name);
+              selectedGroup = isActive ? null : name;
+              openColorGroup = null;
               refreshQueueOnly();
             },
           },
-          icon(collapsed ? "chevronRight" : "chevronDown", 13),
-          icon("folder", 14),
           el("span", { className: "group-name", textContent: name }),
           el("span", { className: "group-count", textContent: String(groupJobs.length) }),
         ),
@@ -407,6 +514,7 @@ function queueList(): HTMLElement {
           ),
         ),
       ),
+      colorPicker,
       collapsed
         ? null
         : groupJobs.length > 0
@@ -418,7 +526,7 @@ function queueList(): HTMLElement {
   }
 
   const ungrouped = jobs.filter((j) => !j.group || !groups.includes(j.group));
-  if (ungrouped.length > 0 || jobs.length > 0) {
+  if (!selectedGroup && (ungrouped.length > 0 || jobs.length > 0)) {
     const ungroupedBlock = el(
       "div",
       { className: "group-block ungrouped" },
@@ -479,9 +587,9 @@ function queuePane(): HTMLElement {
           "button",
           {
             className: "icon-btn-sm",
-            title: "Thêm file âm thanh",
+            title: selectedGroup ? `Thêm file vào nhóm "${selectedGroup}"` : "Thêm file âm thanh",
             ariaLabel: "Thêm file âm thanh",
-            onclick: () => addFiles(),
+            onclick: () => addFiles(selectedGroup ?? undefined),
           },
           icon("plus", 15),
         ),
@@ -537,6 +645,28 @@ function queuePane(): HTMLElement {
             onclick: () => {
               creatingGroup = false;
               newGroupName = "";
+              refreshQueueOnly();
+            },
+          }),
+        )
+      : null,
+    selectedGroup && groups.includes(selectedGroup)
+      ? el(
+          "div",
+          { className: "group-filter-bar" },
+          el(
+            "span",
+            { className: "group-filter-label" },
+            el("span", {
+              className: `group-dot${groupColorOf(selectedGroup) === "none" ? "" : ` ${groupColorOf(selectedGroup)}`}`,
+            }),
+            el("span", { textContent: selectedGroup }),
+          ),
+          el("button", {
+            className: "link",
+            textContent: "Xem tất cả",
+            onclick: () => {
+              selectedGroup = null;
               refreshQueueOnly();
             },
           }),
@@ -1151,15 +1281,17 @@ async function main() {
   window.addEventListener("pointercancel", () => finishPointerDrag(false));
 
   document.addEventListener("click", () => {
-    if (openMenuJobId !== null) {
+    if (openMenuJobId !== null || openColorGroup !== null) {
       openMenuJobId = null;
+      openColorGroup = null;
       const q = root.querySelector(".queue");
       if (q) q.replaceWith(queuePane());
     }
   });
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && openMenuJobId !== null) {
+    if (e.key === "Escape" && (openMenuJobId !== null || openColorGroup !== null)) {
       openMenuJobId = null;
+      openColorGroup = null;
       const q = root.querySelector(".queue");
       if (q) q.replaceWith(queuePane());
     }

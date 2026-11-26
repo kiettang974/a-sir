@@ -225,6 +225,15 @@ type AiCleanCallbacks = {
   onSaved: (path: string) => void;
 };
 
+type SavedAiClean = {
+  edits: AiCleanEdit[];
+  savedFileName: string;
+  providerName: string;
+  usedContext: boolean;
+};
+
+const savedCleanCache = new Map<number, SavedAiClean>();
+
 export function aiCleanPane(jobId: number, title: string, cb: AiCleanCallbacks): HTMLElement {
   const head = el("header", { className: "reader-head" });
   const scroll = el("div", { className: "note-scroll" });
@@ -269,15 +278,10 @@ export function aiCleanPane(jobId: number, title: string, cb: AiCleanCallbacks):
     }
   };
 
-  const renderDiff = (
-    proposal: AiCleanProposal,
-    savedFileName: string,
-    providerName: string,
-    usedContext: boolean,
-  ) => {
+  const renderSaved = (saved: SavedAiClean) => {
     renderHead(false);
     const diffNodes =
-      proposal.edits.length === 0
+      saved.edits.length === 0
         ? el("p", {
             className: "hint",
             textContent:
@@ -286,7 +290,7 @@ export function aiCleanPane(jobId: number, title: string, cb: AiCleanCallbacks):
         : el(
             "div",
             { className: "clean-diff-list" },
-            ...proposal.edits.map((edit) =>
+            ...saved.edits.map((edit) =>
               el(
                 "div",
                 { className: "clean-diff-item" },
@@ -309,11 +313,11 @@ export function aiCleanPane(jobId: number, title: string, cb: AiCleanCallbacks):
 
     body.replaceChildren(
       el("h3", {
-        textContent: `Đã lưu bản sạch (${proposal.edits.length} đoạn thay đổi)`,
+        textContent: `Đã lưu bản sạch (${saved.edits.length} đoạn thay đổi)`,
       }),
       el("p", {
         className: "hint",
-        textContent: `${savedFileName} · ${providerName}${usedContext ? " · có dùng Ngữ cảnh" : ""}`,
+        textContent: `${saved.savedFileName} · ${saved.providerName}${saved.usedContext ? " · có dùng Ngữ cảnh" : ""}`,
       }),
       diffNodes,
     );
@@ -340,12 +344,26 @@ export function aiCleanPane(jobId: number, title: string, cb: AiCleanCallbacks):
         provider,
         useContext,
       });
+      const saved: SavedAiClean = {
+        edits: proposal.edits,
+        savedFileName: "",
+        providerName: pName,
+        usedContext: useContext,
+      };
       const savedPath = await invoke<string>("save_ai_clean", {
         id: jobId,
         cleanedText: proposal.cleanedText,
+        meta: saved,
       });
-      const savedName = savedPath.split(/[/\\]/).pop() ?? savedPath;
-      renderDiff(proposal, savedName, pName, useContext);
+      saved.savedFileName = savedPath.split(/[/\\]/).pop() ?? savedPath;
+      // Persist resolved filename in meta too.
+      invoke("save_ai_clean", {
+        id: jobId,
+        cleanedText: proposal.cleanedText,
+        meta: saved,
+      }).catch(() => {});
+      savedCleanCache.set(jobId, saved);
+      renderSaved(saved);
     } catch (e) {
       renderHead(false);
       body.replaceChildren(
@@ -361,6 +379,22 @@ export function aiCleanPane(jobId: number, title: string, cb: AiCleanCallbacks):
     }
   };
 
-  runAuto();
+  const cached = savedCleanCache.get(jobId);
+  if (cached) {
+    renderSaved(cached);
+  } else {
+    renderHead(true);
+    body.replaceChildren(el("h3", { textContent: "Đang kiểm tra bản làm sạch…" }));
+    invoke<SavedAiClean | null>("load_ai_clean", { id: jobId })
+      .then((diskSaved) => {
+        if (diskSaved && Array.isArray(diskSaved.edits)) {
+          savedCleanCache.set(jobId, diskSaved);
+          renderSaved(diskSaved);
+        } else {
+          runAuto();
+        }
+      })
+      .catch(() => runAuto());
+  }
   return el("section", { className: "reader" }, head, scroll);
 }

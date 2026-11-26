@@ -504,8 +504,23 @@ async fn preview_ai_clean(
 }
 
 #[tauri::command]
-fn save_ai_clean(app: State<App>, id: u64, cleaned_text: String) -> Result<PathBuf, String> {
-    app.runner.transcript(id)?.write_ai_cleaned(&cleaned_text)
+fn save_ai_clean(
+    app: State<App>,
+    id: u64,
+    cleaned_text: String,
+    meta: Option<serde_json::Value>,
+) -> Result<PathBuf, String> {
+    let transcript = app.runner.transcript(id)?;
+    let path = transcript.write_ai_cleaned(&cleaned_text)?;
+    if let Some(meta) = meta {
+        transcript.save_ai_clean_meta(&meta)?;
+    }
+    Ok(path)
+}
+
+#[tauri::command]
+fn load_ai_clean(app: State<App>, id: u64) -> Result<Option<serde_json::Value>, String> {
+    Ok(app.runner.transcript(id)?.load_ai_clean_meta())
 }
 
 #[tauri::command]
@@ -1032,6 +1047,7 @@ fn main() {
             remove_meeting_context_file,
             preview_ai_clean,
             save_ai_clean,
+            load_ai_clean,
             save_note,
             load_note,
             meeting_templates,

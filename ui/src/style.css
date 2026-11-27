@@ -1351,7 +1351,8 @@ select.field { appearance: auto; }
   padding: 20px;
   min-height: 68vh;
 }
-.diagram-svg {
+.diagram-svg,
+.diagram-stage svg.dg {
   display: block;
   margin: 0 auto;
   font-family: var(--hand);

@@ -2,17 +2,86 @@ import { invoke } from "@tauri-apps/api/core";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 
-import {
-  buildExcalidrawFile,
-  type LayoutDiagram,
-  layoutDiagram,
-  type ProcessDiagram,
-  renderDiagramPng,
-  renderDiagramSvg,
-} from "./diagram-render";
 import { el } from "./dom";
 import { icon } from "./icons";
 import { type AiView, overflowMenu, PROVIDER_NAME, PROVIDERS, type Provider } from "./ipc";
+
+export type NodeKind = "start" | "step" | "decision" | "end";
+
+export type DiagramNode = {
+  id: string;
+  kind: NodeKind;
+  label: string;
+  role: string;
+};
+
+export type DiagramEdge = {
+  from: string;
+  to: string;
+  label: string;
+};
+
+export type DiagramUncertainty = {
+  item: string;
+  reason: string;
+};
+
+export type ProcessDiagram = {
+  title: string;
+  summary: string;
+  nodes: DiagramNode[];
+  edges: DiagramEdge[];
+  veElements?: unknown[];
+  uncertainties: DiagramUncertainty[];
+  provider?: string;
+  model: string;
+};
+
+type RenderedDiagram = {
+  width: number;
+  height: number;
+  svg: string;
+  excalidrawJson: string;
+};
+
+function parseRustSvg(svgMarkup: string, zoom: number, width: number, height: number): SVGSVGElement {
+  const doc = new DOMParser().parseFromString(svgMarkup, "image/svg+xml");
+  const svg = doc.documentElement as unknown as SVGSVGElement;
+  svg.setAttribute("width", String(Math.round(width * zoom)));
+  svg.setAttribute("height", String(Math.round(height * zoom)));
+  return document.importNode(svg, true);
+}
+
+async function rasterizeSvgToPng(svgMarkup: string, width: number, height: number): Promise<Uint8Array> {
+  if (typeof document !== "undefined" && document.fonts?.ready) {
+    await document.fonts.ready;
+  }
+  const scale = 2;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.ceil(width * scale);
+  canvas.height = Math.ceil(height * scale);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Không khởi tạo được bộ dựng ảnh PNG.");
+
+  const blob = new Blob([svgMarkup], { type: "image/svg+xml;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error("Không nạp được SVG để xuất PNG."));
+      image.src = url;
+    });
+    ctx.scale(scale, scale);
+    ctx.drawImage(img, 0, 0, width, height);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+
+  const outBlob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+  if (!outBlob) throw new Error("Không xuất được dữ liệu ảnh PNG.");
+  return new Uint8Array(await outBlob.arrayBuffer());
+}
 
 type Links = {
   openSettings: () => void;
@@ -27,7 +96,7 @@ type JobDiagramState = {
   needsSettings: boolean;
   savedPath: string | null;
   diagram: ProcessDiagram | null;
-  layout: LayoutDiagram | null;
+  rendered: RenderedDiagram | null;
   exportError: { format: "png" | "excalidraw"; message: string } | null;
   exportNotice: string | null;
 };
@@ -45,7 +114,7 @@ function getState(id: number): JobDiagramState {
       needsSettings: false,
       savedPath: null,
       diagram: null,
-      layout: null,
+      rendered: null,
       exportError: null,
       exportNotice: null,
     };
@@ -67,7 +136,7 @@ export function isDiagramGenerating(id: number): boolean {
 export function getDiagramButtonState(id: number): "idle" | "running" | "ready" | "error" {
   const st = getState(id);
   if (st.running) return "running";
-  if (st.diagram && st.layout) return "ready";
+  if (st.diagram && st.rendered) return "ready";
   if (st.error) return "error";
   return "idle";
 }
@@ -99,7 +168,7 @@ export async function openOrGenerateDiagram(
 ): Promise<void> {
   const st = getState(id);
   if (st.running) return;
-  if ((st.diagram && st.layout) || st.error) {
+  if ((st.diagram && st.rendered) || st.error) {
     callbacks.onOpenDiagram(id);
     return;
   }
@@ -108,7 +177,7 @@ export async function openOrGenerateDiagram(
   try {
     const saved = await invoke<ProcessDiagram | null>("load_diagram", { id });
     if (saved) {
-      st.layout = layoutDiagram(saved);
+      st.rendered = await invoke<RenderedDiagram>("render_diagram", { diagram: saved });
       st.diagram = saved;
       callbacks.onOpenDiagram(id);
       return;
@@ -189,11 +258,9 @@ async function runGeneration(id: number, providerName: string, modelName: string
 
   try {
     const nextDiagram = await invoke<ProcessDiagram>("generate_diagram", { id });
-    let nextLayout: LayoutDiagram;
+    let nextRendered: RenderedDiagram;
     try {
-      nextLayout = layoutDiagram(nextDiagram);
-      // Dry-run SVG construction before persisting so renderer errors never overwrite the saved diagram.
-      renderDiagramSvg(nextLayout);
+      nextRendered = await invoke<RenderedDiagram>("render_diagram", { diagram: nextDiagram });
     } catch (renderErr) {
       throw new Error(
         `Dựng hình sơ đồ thất bại: ${renderErr instanceof Error ? renderErr.message : String(renderErr)}`,
@@ -210,7 +277,7 @@ async function runGeneration(id: number, providerName: string, modelName: string
     }
 
     st.diagram = nextDiagram;
-    st.layout = nextLayout;
+    st.rendered = nextRendered;
     st.savedPath = savedPath;
     st.error = null;
     st.needsSettings = false;
@@ -246,7 +313,7 @@ export function diagramPane(
 
   const exportFile = async (format: "png" | "excalidraw") => {
     const st = getState(id);
-    if (!st.layout || !st.diagram) return;
+    if (!st.rendered || !st.diagram) return;
     st.exportError = null;
     st.exportNotice = null;
     draw();
@@ -263,10 +330,9 @@ export function diagramPane(
     try {
       let bytes: Uint8Array;
       if (format === "png") {
-        bytes = await renderDiagramPng(st.layout);
+        bytes = await rasterizeSvgToPng(st.rendered.svg, st.rendered.width, st.rendered.height);
       } else {
-        const json = buildExcalidrawFile(st.layout);
-        bytes = new TextEncoder().encode(json);
+        bytes = new TextEncoder().encode(st.rendered.excalidrawJson);
       }
       await invoke<string>("export_diagram_file", {
         path: chosen,
@@ -374,8 +440,8 @@ export function diagramPane(
       return;
     }
 
-    if (st.diagram && st.layout) {
-      const layout = st.layout;
+    if (st.diagram && st.rendered) {
+      const rendered = st.rendered;
       const diagram = st.diagram;
 
       const picked = activeAi();
@@ -439,14 +505,14 @@ export function diagramPane(
         ),
       );
 
-      const svg = renderDiagramSvg(layout);
-      svg.setAttribute("width", String(Math.round(layout.width * zoom)));
-      svg.setAttribute("height", String(Math.round(layout.height * zoom)));
+      const svg = parseRustSvg(rendered.svg, zoom, rendered.width, rendered.height);
 
       const badgeParts = [
         diagram.provider || picked?.name || "AI",
         diagram.model || picked?.model || "",
-        `${diagram.nodes.length} bước`,
+        diagram.veElements && diagram.veElements.length > 0
+          ? `${diagram.veElements.length} phần tử`
+          : `${diagram.nodes.length} bước`,
       ].filter(Boolean);
 
       const zoomBar = el(
@@ -485,7 +551,7 @@ export function diagramPane(
               const stage = scroll.querySelector<HTMLElement>(".diagram-stage");
               const availW = Math.max(320, (stage?.clientWidth ?? 760) - 44);
               const availH = Math.max(320, (stage?.clientHeight ?? 580) - 44);
-              const fit = Math.min(1, availW / layout.width, availH / layout.height);
+              const fit = Math.min(1, availW / rendered.width, availH / rendered.height);
               zoom = Math.max(0.35, Math.round(fit * 100) / 100);
               draw();
             },
@@ -608,7 +674,7 @@ export function diagramPane(
       const st = getState(id);
       if (!st.diagram && saved) {
         try {
-          st.layout = layoutDiagram(saved);
+          st.rendered = await invoke<RenderedDiagram>("render_diagram", { diagram: saved });
           st.diagram = saved;
         } catch (e) {
           loadError = `Sơ đồ đã lưu không hợp lệ: ${e instanceof Error ? e.message : String(e)}`;

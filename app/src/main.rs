@@ -16,6 +16,7 @@ use asr_core::context::{
 };
 use asr_core::deliverable::{MeetingRow, TemplateFormat};
 use asr_core::diagram::ProcessDiagram;
+use asr_core::diagram_render::{self, RenderedDiagram};
 use asr_core::glossary::Term;
 use asr_core::models::{CustomModel, DiscoveredModel, ModelStore, ModelSummary};
 use asr_core::summary::Draft;
@@ -638,6 +639,11 @@ fn save_diagram(
 }
 
 #[tauri::command]
+fn render_diagram(diagram: ProcessDiagram) -> Result<RenderedDiagram, String> {
+    diagram_render::render_diagram(&diagram)
+}
+
+#[tauri::command]
 fn export_diagram_file(path: PathBuf, bytes: Vec<u8>) -> Result<PathBuf, String> {
     std::fs::write(&path, &bytes).map_err(|e| format!("không lưu được tệp xuất ({}): {e}", path.display()))?;
     Ok(path)
@@ -1128,6 +1134,7 @@ fn main() {
             generate_diagram,
             load_diagram,
             save_diagram,
+            render_diagram,
             export_diagram_file,
             meeting_templates,
             set_templates_enabled,

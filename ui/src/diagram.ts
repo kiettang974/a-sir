@@ -306,7 +306,107 @@ export function diagramPane(
   let ai: AiView | null = null;
   let loadedLocal = false;
   let loadError: string | null = null;
-  let zoom = 1;
+  let zoom = 0.75;
+
+  const openModal = (diagram: ProcessDiagram, rendered: RenderedDiagram) => {
+    let modalZoom = 1;
+    const stage = el("div", { className: "diagram-modal-stage" });
+    const zoomLabel = el("span", { className: "diagram-zoom-val" });
+
+    const renderModalSvg = () => {
+      zoomLabel.textContent = `${Math.round(modalZoom * 100)}%`;
+      stage.replaceChildren(parseRustSvg(rendered.svg, modalZoom, rendered.width, rendered.height));
+    };
+
+    const close = () => {
+      document.removeEventListener("keydown", onKey);
+      backdrop.remove();
+    };
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") close();
+    };
+    document.addEventListener("keydown", onKey);
+
+    const modalHead = el(
+      "header",
+      { className: "diagram-modal-head" },
+      el("h3", { textContent: diagram.title || name }),
+      el(
+        "div",
+        { className: "diagram-zoom-group" },
+        el("button", {
+          className: "btn-ghost diagram-zoom-btn",
+          title: "Thu nhỏ",
+          ariaLabel: "Thu nhỏ sơ đồ",
+          textContent: "−",
+          onclick: () => {
+            modalZoom = Math.max(0.35, Math.round((modalZoom - 0.15) * 100) / 100);
+            renderModalSvg();
+          },
+        }),
+        zoomLabel,
+        el("button", {
+          className: "btn-ghost diagram-zoom-btn",
+          title: "Phóng to",
+          ariaLabel: "Phóng to sơ đồ",
+          textContent: "+",
+          onclick: () => {
+            modalZoom = Math.min(2.5, Math.round((modalZoom + 0.15) * 100) / 100);
+            renderModalSvg();
+          },
+        }),
+        el("button", {
+          className: "link",
+          textContent: "Vừa khung",
+          onclick: () => {
+            const availW = Math.max(360, stage.clientWidth - 48);
+            const availH = Math.max(320, stage.clientHeight - 48);
+            const fit = Math.min(1.5, availW / rendered.width, availH / rendered.height);
+            modalZoom = Math.max(0.35, Math.round(fit * 100) / 100);
+            renderModalSvg();
+          },
+        }),
+        el("button", {
+          className: "link",
+          textContent: "100%",
+          onclick: () => {
+            modalZoom = 1;
+            renderModalSvg();
+          },
+        }),
+        el("span", { className: "diagram-stage-sep" }),
+        el("button", {
+          className: "btn-ghost",
+          textContent: "Xuất PNG",
+          onclick: () => void exportFile("png"),
+        }),
+        el("button", {
+          className: "btn-primary",
+          textContent: "Đóng",
+          onclick: close,
+        }),
+      ),
+    );
+
+    const dialog = el(
+      "div",
+      {
+        className: "diagram-modal",
+        role: "dialog",
+        ariaLabel: diagram.title || "Xem sơ đồ phóng to",
+        onclick: (ev: MouseEvent) => ev.stopPropagation(),
+      },
+      modalHead,
+      stage,
+    );
+    const backdrop = el(
+      "div",
+      { className: "diagram-modal-backdrop", onclick: close },
+      dialog,
+    );
+    document.body.append(backdrop);
+    renderModalSvg();
+  };
 
   const activeAi = () => pickConfiguredProvider(ai);
   const hasAnyAiKey = () => activeAi() !== null;
@@ -515,56 +615,71 @@ export function diagramPane(
           : `${diagram.nodes.length} bước`,
       ].filter(Boolean);
 
-      const zoomBar = el(
+      const metaBar = el(
         "div",
         { className: "diagram-toolbar" },
         el("span", { className: "diagram-model-tag", textContent: badgeParts.join(" · ") }),
-        el(
-          "div",
-          { className: "diagram-zoom-group" },
-          el("button", {
-            className: "btn-ghost diagram-zoom-btn",
-            title: "Thu nhỏ",
-            ariaLabel: "Thu nhỏ sơ đồ",
-            textContent: "−",
-            onclick: () => {
-              zoom = Math.max(0.35, Math.round((zoom - 0.15) * 100) / 100);
-              draw();
-            },
-          }),
-          el("span", { className: "diagram-zoom-val", textContent: `${Math.round(zoom * 100)}%` }),
-          el("button", {
-            className: "btn-ghost diagram-zoom-btn",
-            title: "Phóng to",
-            ariaLabel: "Phóng to sơ đồ",
-            textContent: "+",
-            onclick: () => {
-              zoom = Math.min(2.5, Math.round((zoom + 0.15) * 100) / 100);
-              draw();
-            },
-          }),
-          el("button", {
-            className: "link",
-            textContent: "Vừa khung",
-            title: "Thu phóng để xem trọn sơ đồ trong khung",
-            onclick: () => {
-              const stage = scroll.querySelector<HTMLElement>(".diagram-stage");
-              const availW = Math.max(320, (stage?.clientWidth ?? 760) - 44);
-              const availH = Math.max(320, (stage?.clientHeight ?? 580) - 44);
-              const fit = Math.min(1, availW / rendered.width, availH / rendered.height);
-              zoom = Math.max(0.35, Math.round(fit * 100) / 100);
-              draw();
-            },
-          }),
-          el("button", {
-            className: "link",
-            textContent: "100%",
-            onclick: () => {
-              zoom = 1;
-              draw();
-            },
-          }),
-        ),
+      );
+
+      const stageControls = el(
+        "div",
+        { className: "diagram-stage-controls" },
+        el("button", {
+          className: "btn-ghost diagram-zoom-btn",
+          title: "Thu nhỏ",
+          ariaLabel: "Thu nhỏ sơ đồ",
+          textContent: "−",
+          onclick: () => {
+            zoom = Math.max(0.35, Math.round((zoom - 0.15) * 100) / 100);
+            draw();
+          },
+        }),
+        el("span", { className: "diagram-zoom-val", textContent: `${Math.round(zoom * 100)}%` }),
+        el("button", {
+          className: "btn-ghost diagram-zoom-btn",
+          title: "Phóng to",
+          ariaLabel: "Phóng to sơ đồ",
+          textContent: "+",
+          onclick: () => {
+            zoom = Math.min(2.5, Math.round((zoom + 0.15) * 100) / 100);
+            draw();
+          },
+        }),
+        el("button", {
+          className: "link",
+          textContent: "Vừa khung",
+          title: "Thu phóng để xem trọn sơ đồ trong khung",
+          onclick: () => {
+            const stage = scroll.querySelector<HTMLElement>(".diagram-stage");
+            const availW = Math.max(300, (stage?.clientWidth ?? 720) - 36);
+            const availH = Math.max(220, (stage?.clientHeight ?? 360) - 66);
+            const fit = Math.min(1, availW / rendered.width, availH / rendered.height);
+            zoom = Math.max(0.35, Math.round(fit * 100) / 100);
+            draw();
+          },
+        }),
+        el("button", {
+          className: "link",
+          textContent: "100%",
+          onclick: () => {
+            zoom = 1;
+            draw();
+          },
+        }),
+        el("span", { className: "diagram-stage-sep" }),
+        el("button", {
+          className: "btn-ghost diagram-zoom-btn",
+          textContent: "Xem to",
+          title: "Mở cửa sổ xem sơ đồ phóng to",
+          onclick: () => openModal(diagram, rendered),
+        }),
+      );
+
+      const stageWrap = el(
+        "div",
+        { className: "diagram-stage-wrap" },
+        stageControls,
+        el("div", { className: "diagram-stage" }, svg),
       );
 
       const uncertaintiesSection =
@@ -591,8 +706,8 @@ export function diagramPane(
       const children = [
         renderNoticeBanner(st),
         diagram.summary ? el("p", { className: "diagram-summary", textContent: diagram.summary }) : null,
-        zoomBar,
-        el("div", { className: "diagram-stage" }, svg),
+        metaBar,
+        stageWrap,
         uncertaintiesSection,
       ].filter((node): node is HTMLElement => node !== null);
       scroll.replaceChildren(...children);

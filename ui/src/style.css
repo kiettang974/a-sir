@@ -29,6 +29,7 @@
   --rule-strong: #cbd5e1;
   --shadow-sm: 0 1px 2px rgb(15 23 42 / 0.05);
   --shadow-menu: 0 12px 30px -6px rgb(15 23 42 / 0.14), 0 2px 6px rgb(15 23 42 / 0.06);
+  --backdrop: rgb(15 23 42 / 0.52);
   --tag-blue: #3b82f6;
   --tag-gray: #94a3b8;
   --tag-green: #22c55e;
@@ -1342,20 +1343,92 @@ select.field { appearance: auto; }
   color: var(--ink-soft);
   font-variant-numeric: tabular-nums;
 }
-.diagram-stage {
-  flex: 1 0 auto;
-  overflow: auto;
-  background: var(--card);
+.diagram-stage-wrap {
+  position: relative;
   border: 1px solid var(--rule);
   border-radius: var(--radius-lg);
-  padding: 20px;
-  min-height: 68vh;
+  background: var(--card);
+  overflow: hidden;
+}
+.diagram-stage-controls {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: var(--card);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
+.diagram-stage-sep {
+  width: 1px;
+  height: 16px;
+  background: var(--rule);
+  margin: 0 2px;
+}
+.diagram-stage {
+  overflow: auto;
+  background: var(--card);
+  padding: 48px 18px 18px;
+  height: 44vh;
+  min-height: 300px;
+  max-height: 460px;
 }
 .diagram-svg,
-.diagram-stage svg.dg {
+.diagram-stage svg.dg,
+.diagram-modal-stage svg.dg {
   display: block;
   margin: 0 auto;
   font-family: var(--hand);
+}
+.diagram-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: var(--backdrop);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.diagram-modal {
+  width: 94vw;
+  height: 90vh;
+  background: var(--card);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-menu);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.diagram-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--rule);
+  background: var(--sheet);
+}
+.diagram-modal-head h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.diagram-modal-stage {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: 24px;
+  background: var(--card);
 }
 .dg-canvas-bg { fill: var(--card); }
 .dg-title {

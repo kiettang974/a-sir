@@ -20,7 +20,7 @@ jobs:
           - platform: macos-latest
             args: "--bundles dmg,app"
           - platform: windows-latest
-            args: "--bundles nsis,msi"
+            args: "--bundles nsis"
 
     runs-on: ${{ matrix.platform }}
 
@@ -46,14 +46,24 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
 
+      - name: Cache Vulkan SDK (Windows)
+        if: matrix.platform == 'windows-latest'
+        id: vulkan-cache
+        uses: actions/cache@v4
+        with:
+          path: C:\VulkanSDK
+          key: windows-vulkan-sdk-v1
+
       - name: Setup Vulkan SDK (Windows GPU acceleration)
         if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
           $sdkRoot = "C:\VulkanSDK"
-          $installer = "$env:TEMP\vulkan_sdk.exe"
-          Invoke-WebRequest -Uri "https://sdk.lunarg.com/sdk/download/latest/windows/vulkan_sdk.exe" -OutFile $installer
-          Start-Process -FilePath $installer -ArgumentList "--root", $sdkRoot, "--accept-licenses", "--default-answer", "--confirm-command", "install" -Wait -NoNewWindow
+          if (-not (Test-Path "$sdkRoot\Lib\vulkan-1.lib") -and -not (Get-ChildItem -Directory $sdkRoot -ErrorAction SilentlyContinue | Where-Object { Test-Path "$($_.FullName)\Lib\vulkan-1.lib" })) {
+            $installer = "$env:TEMP\vulkan_sdk.exe"
+            Invoke-WebRequest -Uri "https://sdk.lunarg.com/sdk/download/latest/windows/vulkan_sdk.exe" -OutFile $installer
+            Start-Process -FilePath $installer -ArgumentList "--root", $sdkRoot, "--accept-licenses", "--default-answer", "--confirm-command", "install" -Wait -NoNewWindow
+          }
           $sdkDir = if (Test-Path "$sdkRoot\Include\vulkan\vulkan.h") {
             $sdkRoot
           } else {
@@ -64,6 +74,7 @@ jobs:
           }
           Write-Host "Using VULKAN_SDK=$sdkDir"
           echo "VULKAN_SDK=$sdkDir" >> $env:GITHUB_ENV
+          echo "CMAKE_BUILD_PARALLEL_LEVEL=4" >> $env:GITHUB_ENV
           echo "$sdkDir\Bin" >> $env:GITHUB_PATH
 
       - name: Configure Windows build tools (LLVM / CMake)

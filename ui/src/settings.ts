@@ -1094,7 +1094,7 @@ function minutesSection(ai: AiView): HTMLElement {
     [
       "1",
       "Chốt phạm vi phát hành",
-      "Giữ luồng chép lời offline và thêm xuất biên bản Word/Excel.",
+      "Giữ luồng chép lời tại máy và thêm xuất biên bản Word/Excel.",
       "Phụ trách: Nhóm sản phẩm · Hạn: Thứ 6",
     ],
     [

@@ -1198,7 +1198,7 @@ function invite(): HTMLElement {
       el("h2", { textContent: jobs.length ? "Chọn một file để đọc" : "Thả file ghi âm vào đây" }),
       el("p", {
         textContent:
-          "Chép lời tiếng Việt ngay trên máy, không cần mạng. Mỗi bản ghi cho ra một file chữ (.txt) và một file phụ đề (.srt).",
+          "Chép lời tiếng Việt ngay trên máy. Mỗi bản ghi cho ra một file chữ (.txt) và một file phụ đề (.srt).",
       }),
       el("button", { className: "add", textContent: "Thêm file", onclick: () => addFiles() }),
     ),
@@ -1217,7 +1217,7 @@ function firstRun(): HTMLElement {
       el("h2", { textContent: "Tải gói nhận dạng giọng nói" }),
       el("p", {
         textContent:
-          "Cần tải dữ liệu một lần đầu để máy tự chép lời không cần mạng. Nếu rớt mạng giữa chừng, lần sau sẽ tải tiếp.",
+          "Cần tải dữ liệu một lần đầu để máy tự chép lời. Nếu rớt mạng giữa chừng, lần sau sẽ tải tiếp.",
       }),
       failed ? el("p", { className: "problem problem-text", textContent: failed }) : null,
       running === null

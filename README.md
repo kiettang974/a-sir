@@ -1,6 +1,6 @@
 # A-Sir
 
-A-Sir chép lời tiếng Việt ngay trên máy bạn, không cần mạng. Từ bản chép lời, app nhờ AI tạo biên bản cuộc họp và xuất ra Word hoặc Excel. Chạy trên macOS và Windows.
+A-Sir chép lời tiếng Việt ngay trên máy bạn. Từ bản chép lời, app nhờ AI tạo biên bản cuộc họp và xuất ra Word hoặc Excel. Chạy trên macOS và Windows.
 
 ## Cài đặt
 

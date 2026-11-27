@@ -1388,6 +1388,50 @@ fn m_tree(e: &Value) -> Result<Vec<Value>, String> {
         }
     }
 
+    fn compute_level_heights(
+        n: &Value,
+        lvl: usize,
+        nw: f64,
+        nh: f64,
+        def_size: f64,
+        level_h: &mut Vec<f64>,
+    ) {
+        let w = f64_at(n, "w", nw);
+        let sz = f64_at(n, "size", def_size);
+        let shape = str_at(n, "shape").unwrap_or("box");
+        let raw_txt = str_at(n, "text").unwrap_or("");
+        let max_inner_w = if shape == "diamond" {
+            (w * 0.54).max(48.0)
+        } else {
+            (w - 20.0).max(48.0)
+        };
+        let wrapped_txt = wrap_swimlane_text(raw_txt, sz, max_inner_w);
+        let min_h = if shape == "diamond" {
+            (cao_chu(&wrapped_txt, sz) * 1.85 + 24.0).max(nh)
+        } else {
+            (cao_chu(&wrapped_txt, sz) + 20.0).max(nh)
+        };
+        let h = f64_at(n, "h", min_h).max(min_h);
+        if level_h.len() <= lvl {
+            level_h.resize(lvl + 1, nh);
+        }
+        level_h[lvl] = level_h[lvl].max(h);
+        if let Some(children) = n.get("children").and_then(Value::as_array) {
+            for c in children {
+                compute_level_heights(c, lvl + 1, nw, nh, def_size, level_h);
+            }
+        }
+    }
+
+    let mut level_h: Vec<f64> = Vec::new();
+    compute_level_heights(root, 0, nw, nh, def_size, &mut level_h);
+    let mut level_y: Vec<f64> = Vec::with_capacity(level_h.len());
+    let mut cur_y = ey;
+    for &lh in &level_h {
+        level_y.push(cur_y);
+        cur_y += lh + dy;
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn dat(
         n: &Value,
@@ -1404,6 +1448,7 @@ fn m_tree(e: &Value) -> Result<Vec<Value>, String> {
         lines_only: bool,
         base_id: &str,
         def_size: f64,
+        level_y: &[f64],
         dem: &mut usize,
         out: &mut Vec<Value>,
     ) -> String {
@@ -1437,7 +1482,8 @@ fn m_tree(e: &Value) -> Result<Vec<Value>, String> {
         let (x, y) = if ngang {
             (ex + lvl as f64 * (nw + dy), ey + ctr - h / 2.0)
         } else {
-            (ex + ctr - w / 2.0, ey + lvl as f64 * (nh + dy))
+            let y_top = level_y.get(lvl).copied().unwrap_or(ey + lvl as f64 * (nh + dy));
+            (ex + ctr - w / 2.0, y_top)
         };
         let mut b = json!({
             "t": shape,
@@ -1462,7 +1508,7 @@ fn m_tree(e: &Value) -> Result<Vec<Value>, String> {
             for c in children {
                 let cid = dat(
                     c, lvl + 1, s, e, ex, ey, nw, nh, dx, dy, ngang, lines_only, base_id, def_size,
-                    dem, out,
+                    level_y, dem, out,
                 );
                 s += leaf_count(c) as f64 * o;
                 let mut a = json!({
@@ -1485,8 +1531,8 @@ fn m_tree(e: &Value) -> Result<Vec<Value>, String> {
     }
 
     dat(
-        root, 0, 0.0, e, ex, ey, nw, nh, dx, dy, ngang, lines_only, base_id, def_size, &mut dem,
-        &mut out,
+        root, 0, 0.0, e, ex, ey, nw, nh, dx, dy, ngang, lines_only, base_id, def_size, &level_y,
+        &mut dem, &mut out,
     );
     Ok(out)
 }
@@ -2276,7 +2322,7 @@ fn m_legend(e: &Value) -> Result<Vec<Value>, String> {
         }
         out.push(json!({
             "t": "text", "x": x + 44.0, "y": y - 1.0,
-            "text": str_at(it, "text").unwrap_or(""), "size": 15.0, "color": "muted"
+            "text": str_at(it, "text").or_else(|| str_at(it, "label")).unwrap_or(""), "size": 15.0, "color": "muted"
         }));
         y += 30.0;
     }
@@ -3601,12 +3647,21 @@ fn compile_scene(
                     let at = f64_at(e, "labelAt", 0.5);
                     let mut con = if at <= 1.0 { at * tong } else { at.min(tong) };
                     let (mut lx, mut ly, mut ngang) = (pts[0].0, pts[0].1, true);
-                    for &(p0, p1, l) in &segs {
-                        if con <= l || (p0 == segs.last().unwrap().0 && p1 == segs.last().unwrap().1) {
-                            let f = if l > 1e-6 { con / l } else { 0.5 };
+                    for (seg_idx, &(p0, p1, l)) in segs.iter().enumerate() {
+                        if con <= l || seg_idx + 1 == segs.len() {
+                            let f = if l > 1e-6 { (con / l).clamp(0.0, 1.0) } else { 0.5 };
                             lx = p0.0 + (p1.0 - p0.0) * f;
                             ly = p0.1 + (p1.1 - p0.1) * f;
                             ngang = (p1.0 - p0.0).abs() >= (p1.1 - p0.1).abs();
+                            // If a detached label lands on a horizontal segment right next to a vertical corner,
+                            // shift it past the corner so the vertical stub never crosses through the text.
+                            if tu_do && ngang && seg_idx > 0 && l > tw + 16.0 {
+                                let min_from_corner = tw / 2.0 + 10.0;
+                                if con < min_from_corner {
+                                    let dir = if p1.0 >= p0.0 { 1.0 } else { -1.0 };
+                                    lx = p0.0 + dir * min_from_corner.min(l / 2.0);
+                                }
+                            }
                             break;
                         }
                         con -= l;
@@ -5038,6 +5093,21 @@ fn xml_attr_escape(raw: &str) -> String {
     out
 }
 
+fn drawio_color(raw: &str, is_stroke: bool) -> String {
+    if raw.eq_ignore_ascii_case("transparent") {
+        return "none".into();
+    }
+    let resolved = resolve_svg_color(raw, ThemeMode::Light);
+    if is_stroke
+        && let Some(line_hex) = token_light("line")
+        && resolved.eq_ignore_ascii_case(line_hex)
+    {
+        // Upgrade pale divider lines so pool borders & lane dividers stay visible in both light & dark draw.io.
+        return "#8C98A9".into();
+    }
+    resolved
+}
+
 fn scene_to_drawio_xml(scene: &[SceneEl]) -> String {
     let (min_x, min_y, max_x, max_y) = scene_bounds(scene);
     let ox = min_x - 24.0;
@@ -5045,14 +5115,38 @@ fn scene_to_drawio_xml(scene: &[SceneEl]) -> String {
     let page_w = ((max_x - min_x) + 64.0).max(400.0).ceil() as i64;
     let page_h = ((max_y - min_y) + 64.0).max(300.0).ceil() as i64;
 
-    // Collect bound label text by container_id so draw.io shapes own their editable label natively.
-    let mut bound_labels: HashMap<&str, (&str, f64, &str)> = HashMap::new();
+    // Track all shape/arrow IDs that can natively own their editable text in draw.io.
+    let mut owner_ids: HashSet<&str> = HashSet::new();
     for e in scene {
-        if e.el_type == "text"
-            && let Some(cid) = e.container_id.as_deref()
-            && let Some(txt) = e.text.as_deref()
+        if matches!(
+            e.el_type.as_str(),
+            "rectangle" | "diamond" | "ellipse" | "arrow" | "line"
+        ) && !e.id.is_empty()
         {
-            bound_labels.insert(cid, (txt, e.font_size, e.stroke_color.as_str()));
+            owner_ids.insert(e.id.as_str());
+        }
+    }
+
+    // Collect bound label text by container_id (arrows) OR `{shape_id}~txt` (boxes/diamonds/ellipses)
+    // so draw.io shapes and arrows own their editable labels natively without losing any text.
+    let mut bound_labels: HashMap<&str, (&str, f64, &str, &str)> = HashMap::new();
+    let mut bound_text_ids: HashSet<&str> = HashSet::new();
+    for e in scene {
+        if e.el_type != "text" {
+            continue;
+        }
+        let Some(txt) = e.text.as_deref().filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        let owner = e.container_id.as_deref().or_else(|| {
+            e.id.strip_suffix("~txt")
+                .filter(|base| owner_ids.contains(*base))
+        });
+        if let Some(oid) = owner {
+            bound_labels.insert(oid, (txt, e.font_size, e.stroke_color.as_str(), e.text_align.as_str()));
+            if !e.id.is_empty() {
+                bound_text_ids.insert(e.id.as_str());
+            }
         }
     }
 
@@ -5062,26 +5156,25 @@ fn scene_to_drawio_xml(scene: &[SceneEl]) -> String {
 
     let mut cell_id = 2usize;
     for e in scene {
-        if e.el_type == "text" && e.container_id.is_some() {
+        if e.el_type == "text"
+            && (e.container_id.is_some() || (!e.id.is_empty() && bound_text_ids.contains(e.id.as_str())))
+        {
             continue;
         }
         let cid = cell_id;
         cell_id += 1;
 
-        let stroke = if e.stroke_color == "transparent" {
-            "none"
-        } else {
-            e.stroke_color.as_str()
-        };
-        let fill = if e.background_color == "transparent" {
-            "none"
-        } else {
-            e.background_color.as_str()
-        };
+        let stroke = drawio_color(&e.stroke_color, true);
+        let fill = drawio_color(&e.background_color, false);
         let dashed = if e.stroke_style == "dashed" || e.stroke_style == "dotted" {
             "dashed=1;"
         } else {
             ""
+        };
+        let opacity = if e.opacity < 99.5 {
+            format!("opacity={};", e.opacity.round() as i32)
+        } else {
+            String::new()
         };
 
         match e.el_type.as_str() {
@@ -5097,14 +5190,20 @@ fn scene_to_drawio_xml(scene: &[SceneEl]) -> String {
                         }
                     }
                 };
-                let (label, fs, fcolor) = bound_labels
+                let (label, fs, fcolor_raw, align) = bound_labels
                     .get(e.id.as_str())
                     .copied()
-                    .unwrap_or(("", 15.0, stroke));
-                let font_color = if fcolor == "none" { "#141C26" } else { fcolor };
+                    .unwrap_or(("", 15.0, e.stroke_color.as_str(), "center"));
+                let fcolor = drawio_color(fcolor_raw, false);
+                let font_color = if fcolor == "none" { "#141C26" } else { fcolor.as_str() };
+                let is_pool_outline = stroke == "#8C98A9" && fill == "none" && label.is_empty();
+                let sw = if is_pool_outline {
+                    2
+                } else {
+                    e.stroke_width.round().max(1.0) as i32
+                };
                 let style = format!(
-                    "{base_shape}fillColor={fill};strokeColor={stroke};strokeWidth={sw};{dashed}fontColor={font_color};fontSize={fs};",
-                    sw = e.stroke_width.round().max(1.0) as i32,
+                    "{base_shape}fillColor={fill};strokeColor={stroke};strokeWidth={sw};{dashed}{opacity}align={align};verticalAlign=middle;fontColor={font_color};fontSize={fs};",
                     fs = fs.round().max(11.0) as i32,
                 );
                 let gx = (e.x - ox).round();
@@ -5118,16 +5217,21 @@ fn scene_to_drawio_xml(scene: &[SceneEl]) -> String {
             }
             "text" => {
                 let txt = e.text.as_deref().unwrap_or("");
-                let font_color = if stroke == "none" { "#141C26" } else { stroke };
+                if txt.is_empty() {
+                    continue;
+                }
+                let font_color = if stroke == "none" { "#141C26" } else { stroke.as_str() };
                 let style = format!(
-                    "text;html=0;strokeColor=none;fillColor=none;align={};verticalAlign=middle;whiteSpace=wrap;fontColor={font_color};fontSize={};",
+                    "text;html=0;strokeColor=none;fillColor=none;align={};verticalAlign=middle;whiteSpace=wrap;{opacity}fontColor={font_color};fontSize={};",
                     e.text_align,
                     e.font_size.round().max(11.0) as i32,
                 );
-                let gx = (e.x - ox).round();
+                // Add slight horizontal padding so Helvetica in draw.io doesn't wrap short labels prematurely.
+                let pad_w = 18.0;
+                let gx = (e.x - ox - pad_w / 2.0).round();
                 let gy = (e.y - oy).round();
-                let gw = e.width.max(24.0).round();
-                let gh = e.height.max(18.0).round();
+                let gw = (e.width.max(24.0) + pad_w).round();
+                let gh = e.height.max(20.0).round();
                 xml.push_str(&format!(
                     "        <mxCell id=\"c{cid}\" value=\"{}\" style=\"{style}\" vertex=\"1\" parent=\"1\">\n          <mxGeometry x=\"{gx}\" y=\"{gy}\" width=\"{gw}\" height=\"{gh}\" as=\"geometry\"/>\n        </mxCell>\n",
                     xml_attr_escape(txt),
@@ -5147,22 +5251,47 @@ fn scene_to_drawio_xml(scene: &[SceneEl]) -> String {
                 } else {
                     "none"
                 };
+                let (label, fs, fcolor_raw, _) = bound_labels
+                    .get(e.id.as_str())
+                    .copied()
+                    .unwrap_or(("", 14.0, e.stroke_color.as_str(), "center"));
+                let fcolor = drawio_color(fcolor_raw, false);
+                let font_color = if fcolor == "none" { "#141C26" } else { fcolor.as_str() };
+                let is_divider = e.el_type == "line" && stroke == "#8C98A9";
+                let sw = if is_divider {
+                    2
+                } else {
+                    e.stroke_width.round().max(1.0) as i32
+                };
+                let rounded = if e.el_type == "line" && !e.closed { 0 } else { 1 };
+                let label_style = if label.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "fontColor={font_color};fontSize={};labelBackgroundColor=default;",
+                        fs.round().max(11.0) as i32,
+                    )
+                };
                 let style = format!(
-                    "endArrow={end_arrow};startArrow={start_arrow};html=0;rounded=1;strokeColor={stroke};strokeWidth={sw};{dashed}",
-                    sw = e.stroke_width.round().max(1.0) as i32,
+                    "endArrow={end_arrow};startArrow={start_arrow};html=0;rounded={rounded};strokeColor={stroke};strokeWidth={sw};{dashed}{opacity}{label_style}",
                 );
-                let p0 = e.points[0];
-                let pn = e.points[e.points.len() - 1];
+                let mut draw_pts = e.points.clone();
+                if e.closed && draw_pts.first() != draw_pts.last() {
+                    draw_pts.push(draw_pts[0]);
+                }
+                let p0 = draw_pts[0];
+                let pn = draw_pts[draw_pts.len() - 1];
                 let sx = (e.x + p0.0 - ox).round();
                 let sy = (e.y + p0.1 - oy).round();
                 let tx = (e.x + pn.0 - ox).round();
                 let ty = (e.y + pn.1 - oy).round();
                 xml.push_str(&format!(
-                    "        <mxCell id=\"c{cid}\" value=\"\" style=\"{style}\" edge=\"1\" parent=\"1\">\n          <mxGeometry relative=\"1\" as=\"geometry\">\n            <mxPoint x=\"{sx}\" y=\"{sy}\" as=\"sourcePoint\"/>\n            <mxPoint x=\"{tx}\" y=\"{ty}\" as=\"targetPoint\"/>\n"
+                    "        <mxCell id=\"c{cid}\" value=\"{}\" style=\"{style}\" edge=\"1\" parent=\"1\">\n          <mxGeometry relative=\"1\" as=\"geometry\">\n            <mxPoint x=\"{sx}\" y=\"{sy}\" as=\"sourcePoint\"/>\n            <mxPoint x=\"{tx}\" y=\"{ty}\" as=\"targetPoint\"/>\n",
+                    xml_attr_escape(label),
                 ));
-                if e.points.len() > 2 {
+                if draw_pts.len() > 2 {
                     xml.push_str("            <Array as=\"points\">\n");
-                    for &(px, py) in &e.points[1..e.points.len() - 1] {
+                    for &(px, py) in &draw_pts[1..draw_pts.len() - 1] {
                         let wx = (e.x + px - ox).round();
                         let wy = (e.y + py - oy).round();
                         xml.push_str(&format!("              <mxPoint x=\"{wx}\" y=\"{wy}\"/>\n"));

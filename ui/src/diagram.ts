@@ -357,6 +357,74 @@ function cacheKey(strategy: DiagramStrategyId, mode: UncertaintyDisplayMode): st
   return `${strategy}::${mode}`;
 }
 
+function findVeNodeText(val: unknown, targetId: string): string | null {
+  if (!val || typeof val !== "object") return null;
+  if (Array.isArray(val)) {
+    for (const item of val) {
+      const found = findVeNodeText(item, targetId);
+      if (found !== null) return found;
+    }
+    return null;
+  }
+  const obj = val as Record<string, unknown>;
+  if (obj.id === targetId && obj.t !== "arrow" && obj.t !== "line" && obj.t !== "legend") {
+    if (typeof obj.text === "string") return obj.text;
+    if (typeof obj.label === "string") return obj.label;
+    return "";
+  }
+  if (obj.t === "swimlane" && Array.isArray(obj.nodes)) {
+    return findVeNodeText(obj.nodes, targetId);
+  }
+  if (obj.t === "tree" && obj.root) {
+    return findVeNodeText(obj.root, targetId);
+  }
+  if (Array.isArray(obj.children)) {
+    return findVeNodeText(obj.children, targetId);
+  }
+  return null;
+}
+
+function updateVeNodeText(val: unknown, targetId: string, nextText: string): boolean {
+  if (!val || typeof val !== "object") return false;
+  if (Array.isArray(val)) {
+    for (const item of val) {
+      if (updateVeNodeText(item, targetId, nextText)) return true;
+    }
+    return false;
+  }
+  const obj = val as Record<string, unknown>;
+  if (obj.id === targetId && obj.t !== "arrow" && obj.t !== "line" && obj.t !== "legend") {
+    if ("label" in obj && !("text" in obj)) {
+      obj.label = nextText;
+    } else {
+      obj.text = nextText;
+    }
+    return true;
+  }
+  if (obj.t === "swimlane" && Array.isArray(obj.nodes)) {
+    return updateVeNodeText(obj.nodes, targetId, nextText);
+  }
+  if (obj.t === "tree" && obj.root) {
+    return updateVeNodeText(obj.root, targetId, nextText);
+  }
+  if (Array.isArray(obj.children)) {
+    return updateVeNodeText(obj.children, targetId, nextText);
+  }
+  return false;
+}
+
+function findEditableNodeText(diagram: ProcessDiagram, rawId: string): { id: string; text: string } | null {
+  const baseId = rawId.endsWith("~txt") ? rawId.slice(0, -4) : rawId;
+  if (!baseId || baseId.startsWith("_") || baseId === "uncertainties_footer") return null;
+  if (diagram.veElements && diagram.veElements.length > 0) {
+    const found = findVeNodeText(diagram.veElements, baseId);
+    if (found !== null) return { id: baseId, text: found };
+  }
+  const legacy = diagram.nodes.find((n) => n.id === baseId);
+  if (legacy) return { id: baseId, text: legacy.label };
+  return null;
+}
+
 function stripVariants(raw: SavedDiagramPayload): ProcessDiagram {
   const { variants: _v, activeKey: _k, ...clean } = raw;
   return clean;
@@ -945,21 +1013,26 @@ export function diagramPane(
       );
     };
 
-    const queryWords = new Set(normalizeWords(`${u.item} ${u.reason}`));
+    const queryWords = new Set(normalizeWords(u.item));
+    if (queryWords.size === 0) return null;
+    const minOverlap = queryWords.size === 1 ? 1 : 2;
     let best: SVGTextElement | null = null;
     let bestScore = 0;
 
     for (const t of texts) {
       const content = (t.textContent ?? "").trim();
       if (!content || isLegendLabel(content)) continue;
+      // Legacy fallback only matches warn-styled or question-marked nodes, never unrelated black steps.
+      if (!isWarnStyled(t) && !content.includes("?")) continue;
       const words = normalizeWords(content);
       let overlap = 0;
       for (const w of words) {
         if (queryWords.has(w)) overlap += 1;
       }
+      if (overlap < minOverlap) continue;
       const warnBonus = isWarnStyled(t) ? 2.5 : 0;
       const qBonus = content.includes("?") ? 1.5 : 0;
-      const score = overlap * 3 + (overlap > 0 ? warnBonus + qBonus : 0);
+      const score = overlap * 3 + warnBonus + qBonus;
       if (score > bestScore) {
         bestScore = score;
         best = t;
@@ -1309,6 +1382,131 @@ export function diagramPane(
     return details;
   };
 
+  const attachNodeEditing = (
+    stageWrap: HTMLElement,
+    stageEl: HTMLElement,
+    svgEl: SVGSVGElement,
+    diagram: ProcessDiagram,
+  ) => {
+    let activePopover: HTMLElement | null = null;
+    const closePopover = () => {
+      activePopover?.remove();
+      activePopover = null;
+    };
+
+    const groups = svgEl.querySelectorAll<SVGGElement>("g[data-el-id]");
+    for (const g of groups) {
+      const rawId = g.getAttribute("data-el-id") ?? "";
+      if (findEditableNodeText(diagram, rawId)) {
+        g.classList.add("diagram-node-editable");
+      }
+    }
+
+    stageEl.addEventListener("click", (ev) => {
+      const clickedGroup = (ev.target as Element | null)?.closest<SVGGElement>("g[data-el-id]");
+      if (!clickedGroup) {
+        closePopover();
+        return;
+      }
+      const rawId = clickedGroup.getAttribute("data-el-id") ?? "";
+      const found = findEditableNodeText(diagram, rawId);
+      if (!found) {
+        closePopover();
+        return;
+      }
+      ev.stopPropagation();
+      closePopover();
+
+      const input = el("textarea", {
+        className: "field",
+        value: found.text,
+        placeholder: "Nhập nội dung hoặc ghi chú cho nút này…",
+        ariaLabel: "Chỉnh sửa nội dung nút sơ đồ",
+      }) as HTMLTextAreaElement;
+
+      const saveEdit = async () => {
+        const nextText = input.value.trim();
+        if (nextText === found.text.trim()) {
+          closePopover();
+          return;
+        }
+        const st = getState(id);
+        if (!st.diagram) return;
+        const cloned: ProcessDiagram = JSON.parse(JSON.stringify(st.diagram));
+        let changed = false;
+        if (cloned.veElements && cloned.veElements.length > 0) {
+          changed = updateVeNodeText(cloned.veElements, found.id, nextText);
+        }
+        if (!changed) {
+          const legacyNode = cloned.nodes.find((n) => n.id === found.id);
+          if (legacyNode) {
+            legacyNode.label = nextText;
+            changed = true;
+          }
+        }
+        if (!changed) {
+          closePopover();
+          return;
+        }
+        try {
+          const nextRendered = await invoke<RenderedDiagram>("render_diagram", { diagram: cloned });
+          st.diagram = cloned;
+          st.rendered = nextRendered;
+          st.cache.set(cacheKey(st.selectedStrategy, st.uncertaintyMode), {
+            diagram: cloned,
+            rendered: nextRendered,
+          });
+          const payload = buildPersistPayload(st, cloned, st.selectedStrategy, st.uncertaintyMode);
+          st.savedPath = await invoke<string>("save_diagram", { id, diagram: payload });
+          st.exportNotice = "Đã cập nhật ghi chú nút và lưu sơ đồ.";
+          closePopover();
+          draw();
+        } catch (e) {
+          st.error = `Không cập nhật được nội dung nút: ${e}`;
+          closePopover();
+          draw();
+        }
+      };
+
+      input.addEventListener("keydown", (kev) => {
+        if (kev.key === "Escape") {
+          kev.preventDefault();
+          closePopover();
+        } else if (kev.key === "Enter" && (kev.metaKey || kev.ctrlKey)) {
+          kev.preventDefault();
+          void saveEdit();
+        }
+      });
+
+      const pop = el(
+        "div",
+        {
+          className: "diagram-node-editor",
+          onclick: (pev: MouseEvent) => pev.stopPropagation(),
+        },
+        el("span", { className: "diagram-node-editor-title", textContent: "Sửa chữ / ghi chú trên nút (⌘↵ để lưu)" }),
+        input,
+        el(
+          "div",
+          { className: "diagram-node-editor-actions" },
+          el("button", { className: "btn-ghost", textContent: "Huỷ", onclick: closePopover }),
+          el("button", { className: "btn-primary", textContent: "Lưu", onclick: () => void saveEdit() }),
+        ),
+      );
+
+      const wrapRect = stageWrap.getBoundingClientRect();
+      const targetRect = clickedGroup.getBoundingClientRect();
+      const left = Math.max(12, Math.min(wrapRect.width - 296, targetRect.left - wrapRect.left));
+      const top = Math.max(12, Math.min(wrapRect.height - 170, targetRect.bottom - wrapRect.top + 8));
+      pop.style.left = `${Math.round(left)}px`;
+      pop.style.top = `${Math.round(top)}px`;
+      stageWrap.append(pop);
+      activePopover = pop;
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    });
+  };
+
   const renderNoticeBanner = (st: JobDiagramState): HTMLElement | null => {
     if (st.running) return null;
     if (st.error) {
@@ -1495,6 +1693,9 @@ export function diagramPane(
             stageControls,
             stageEl,
           );
+      if (!st.running && stageEl) {
+        attachNodeEditing(stageWrap, stageEl, svg, diagram);
+      }
 
       const uncertaintiesSection = st.running
         ? null

@@ -2662,18 +2662,11 @@ fn compile_scene(
     let mut scene: Vec<SceneEl> = Vec::new();
     let mut raw_els: Vec<SceneEl> = Vec::new();
     let mut lint_arrows: Vec<LintArrow> = Vec::new();
-    let warn_hex = token_light("warn").unwrap();
     let ink_hex = token_light("ink").unwrap();
     let paper_hex = token_light("paper").unwrap();
     let line_hex = token_light("line").unwrap();
 
-    let safe_text_color = |hex: &str| -> String {
-        if hex.eq_ignore_ascii_case(warn_hex) {
-            ink_hex.to_owned()
-        } else {
-            hex.to_owned()
-        }
-    };
+    let safe_text_color = |hex: &str| -> String { hex.to_owned() };
 
     for (i, e) in ordered.iter().enumerate() {
         let t = str_at(e, "t").unwrap_or("");

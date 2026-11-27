@@ -1,6 +1,6 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { writeHtml } from "@tauri-apps/plugin-clipboard-manager";
-import { ask, save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 
 import { describeContext, type MeetingContextView } from "./context";
@@ -527,6 +527,16 @@ export function notePane(id: number, name: string, links: Links): HTMLElement {
           "button",
           {
             className: "btn-primary",
+            title: "Chọn lại cấu hình và tạo bản tóm tắt mới",
+            onclick: () => showForm("", note),
+          },
+          icon("summary", 15),
+          el("span", { textContent: "Tạo lại tóm tắt" }),
+        ),
+        el(
+          "button",
+          {
+            className: "btn-ghost",
             title: "Chép bảng để dán vào email",
             onclick: async () => {
               await save(note);
@@ -611,18 +621,6 @@ export function notePane(id: number, name: string, links: Links): HTMLElement {
           el("span", { textContent: "Word" }),
         ),
         overflowMenu("Thao tác khác cho biên bản", [
-          {
-            label: "Tạo lại biên bản",
-            onClick: async () => {
-              const yes = await ask("Tạo lại sẽ thay bản nháp này bằng bản mới. Nếu gặp lỗi, bản hiện tại vẫn còn nguyên.", {
-                title: "Tạo lại biên bản?",
-                kind: "warning",
-                okLabel: "Tạo lại",
-                cancelLabel: "Giữ bản này",
-              });
-              if (yes) showForm("", note);
-            },
-          },
           {
             label: "Mở trong Finder",
             onClick: async () => {

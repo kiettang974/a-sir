@@ -909,7 +909,7 @@ function aiSection(ai: AiView, reload: () => void): HTMLElement {
       { className: "hf-head" },
       el("div", {
         className: "style-title tpl-label",
-        textContent: "Tự chuyển model/provider khi quá tải",
+        textContent: "Tự đổi AI dự phòng khi quá tải",
       }),
       el("label", { className: "switch" }, fallbackSwitch, el("span", { className: "switch-track" }), fallbackText),
     ),

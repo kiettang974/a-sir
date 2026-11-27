@@ -62,6 +62,33 @@ jobs:
         working-directory: ui
         run: pnpm install --frozen-lockfile
 
+      - name: Extract release notes from CHANGELOG.md
+        id: changelog
+        shell: bash
+        run: |
+          VERSION=$(node -p "require('./app/tauri.conf.json').version")
+          NOTES=$(awk -v ver="## v${VERSION}" '
+            index($0, ver) == 1 { found=1; next }
+            found && /^## v/ { exit }
+            found { print }
+          ' CHANGELOG.md)
+          if [ -z "$NOTES" ]; then
+            NOTES="Bản phát hành A-Sir v${VERSION} cho macOS (\`.dmg\`) và Windows (\`.exe\` / \`.msi\`)."
+          fi
+          {
+            echo "body<<EOF"
+            echo "$NOTES"
+            echo ""
+            echo "### Lưu ý khi mở ứng dụng lần đầu (chưa ký chứng chỉ Apple / Windows)"
+            echo "- **macOS:** Sau khi kéo \`A-Sir.app\` vào thư mục **Applications**, nếu macOS báo *\"is damaged and can't be opened\"*, mở **Terminal** và chạy:"
+            echo '  ```bash'
+            echo "  xattr -cr /Applications/A-Sir.app"
+            echo '  ```'
+            echo "  Sau đó mở \`A-Sir\` bình thường."
+            echo "- **Windows:** Nếu Windows SmartScreen hiện cảnh báo, chọn **More info** → **Run anyway**."
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build Tauri bundle
         uses: tauri-apps/tauri-action@v0
         env:
@@ -71,15 +98,6 @@ jobs:
           args: ${{ matrix.args }}
           tagName: v__VERSION__
           releaseName: "A-Sir v__VERSION__"
-          releaseBody: |
-            Bản phát hành A-Sir cho macOS (`.dmg`) và Windows (`.exe` / `.msi`).
-
-            ### Lưu ý khi mở ứng dụng lần đầu (chưa ký chứng chỉ Apple / Windows)
-            - **macOS:** Sau khi kéo `A-Sir.app` vào thư mục **Applications**, nếu macOS báo *"is damaged and can't be opened"*, mở **Terminal** và chạy:
-              ```bash
-              xattr -cr /Applications/A-Sir.app
-              ```
-              Sau đó mở `A-Sir` bình thường.
-            - **Windows:** Nếu Windows SmartScreen hiện cảnh báo, chọn **More info** → **Run anyway**.
+          releaseBody: ${{ steps.changelog.outputs.body }}
           releaseDraft: false
           prerelease: false

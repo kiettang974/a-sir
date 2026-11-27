@@ -17,6 +17,7 @@ import { icon } from "./icons";
 import { type LocalModelProgress, overflowMenu, progressBar, type RecordFlowNav, recordFlowTabs } from "./ipc";
 import { notePane } from "./note";
 import { settingsPane } from "./settings";
+import { hasSeenTour, startOnboardingTour } from "./tour";
 
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -777,7 +778,17 @@ function queuePane(): HTMLElement {
       el(
         "button",
         {
-          className: `icon-btn push-right${view === "settings" ? " active" : ""}`,
+          className: "icon-btn push-right",
+          title: "Hướng dẫn nhanh",
+          ariaLabel: "Xem hướng dẫn nhanh",
+          onclick: () => startOnboardingTour(),
+        },
+        icon("help", 16),
+      ),
+      el(
+        "button",
+        {
+          className: `icon-btn${view === "settings" ? " active" : ""}`,
           title: "Cấu hình",
           ariaLabel: "Mở Cấu hình",
           onclick: () => {
@@ -1262,20 +1273,48 @@ function note(message: string) {
 }
 
 function invite(): HTMLElement {
-  return el(
+  const section = el(
     "section",
     { className: "invite" },
     el(
       "div",
-      {},
-      el("h2", { textContent: jobs.length ? "Chọn một file để đọc" : "Thả file ghi âm vào đây" }),
-      el("p", {
-        textContent:
-          "Chép lời tiếng Việt ngay trên máy. Mỗi bản ghi cho ra một file chữ (.txt) và một file phụ đề (.srt).",
-      }),
-      el("button", { className: "add", textContent: "Thêm file", onclick: () => addFiles() }),
+      { className: "invite-inner" },
+      el("h2", { textContent: jobs.length ? "Chọn một bản ghi để bắt đầu" : "Biến file ghi âm thành biên bản & sơ đồ" }),
+      el(
+        "div",
+        { className: "invite-steps" },
+        el(
+          "div",
+          { className: "invite-step" },
+          el("span", { className: "invite-step-num", textContent: "1" }),
+          el("strong", { textContent: "Nạp ghi âm" }),
+          el("span", { textContent: "Thả file vào cửa sổ hoặc lấy từ app Ghi âm" }),
+        ),
+        el(
+          "div",
+          { className: "invite-step" },
+          el("span", { className: "invite-step-num", textContent: "2" }),
+          el("strong", { textContent: "Chép lời & sửa trực tiếp" }),
+          el("span", { textContent: "Chép tại máy, bấm giờ để nghe lại và sửa chữ" }),
+        ),
+        el(
+          "div",
+          { className: "invite-step" },
+          el("span", { className: "invite-step-num", textContent: "3" }),
+          el("strong", { textContent: "Ra Biên bản & Sơ đồ" }),
+          el("span", { textContent: "Xuất Word, Excel, Email, ảnh PNG và draw.io" }),
+        ),
+      ),
+      el(
+        "div",
+        { className: "invite-actions" },
+        el("button", { className: "btn-primary", textContent: "Thêm file ghi âm", onclick: () => addFiles() }),
+        el("button", { className: "btn-ghost", textContent: "Từ app Ghi âm", onclick: openMemos }),
+      ),
     ),
   );
+  section.dataset.tour = "workspace";
+  return section;
 }
 
 function firstRun(): HTMLElement {
@@ -1406,9 +1445,16 @@ function render() {
   const listTop = list?.scrollTop ?? 0;
   const focused = document.activeElement?.textContent;
 
+  const qPane = queuePane();
+  qPane.querySelector(".queue-foot .add")?.setAttribute("data-tour", "add-files");
+  qPane.querySelector(".jobs")?.setAttribute("data-tour", "queue-list");
+  qPane.querySelector('.queue-foot button[aria-label="Mở Cấu hình"]')?.setAttribute("data-tour", "settings-btn");
+  const rPane = rightPane();
+  if (!rPane.dataset.tour) rPane.dataset.tour = "workspace";
+
   root.replaceChildren(
     modelsReady
-      ? el("div", { className: "layout" }, queuePane(), rightPane())
+      ? el("div", { className: "layout" }, qPane, rPane)
       : firstRun(),
   );
   refreshMemoControls();
@@ -1432,6 +1478,9 @@ async function main() {
   audioExtensions = initial.audioExtensions;
   modelLabels = initial.modelLabels ?? {};
   render();
+  if (modelsReady && !hasSeenTour()) {
+    queueMicrotask(() => startOnboardingTour());
+  }
 
   await listen<Queue>("queue", ({ payload }) => {
     const wasDone = jobs.find((j) => j.id === selected)?.state.kind === "done";

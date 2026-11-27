@@ -17,9 +17,10 @@
 - Dùng bản chép đã đối chiếu với audio nếu muốn tính WER. Benchmark sẵn có báo độ lệch từ với bản do engine cũ tạo và dùng cách chuẩn hoá riêng. Khi cần so với VietAudio, dùng cùng định nghĩa O-WER và N-WER với bảng xếp hạng.
 - Chạy ít nhất một file họp dài qua `examples/run_job.rs` hoặc app. Kiểm tra thời gian xử lý, tên riêng, thuật ngữ, số liệu, file TXT/SRT và khả năng nghe lại từ mốc trích dẫn.
 
-## Quy ước đánh version phát hành
+## Quy ước đánh version & ghi bản mô tả cập nhật
 
-Cập nhật đồng bộ trong `app/tauri.conf.json` và `app/Cargo.toml` trước khi push nhánh `release`:
+Cập nhật đồng bộ trong `app/tauri.conf.json`, `app/Cargo.toml` và `CHANGELOG.md` trước khi push nhánh `release` (hoặc tạo bản phát hành mới):
 
 - **Bản cập nhật nhỏ** (sửa lỗi, tinh chỉnh UI/UX): tăng phần patch `0.Y.X` (`X` từ `1` đến tối đa `10`; vượt `10` thì chuyển lên `0.(Y+1).0`).
 - **Bản cập nhật lớn** (tính năng mới đáng kể): tăng phần minor `0.Y.0` (`Y` từ `1` đến tối đa `10`; vượt `10` thì chuyển lên `1.0.0`).
+- **Bản mô tả cập nhật (`CHANGELOG.md`):** Viết theo chuẩn skill `vietnamese-tech-writing` / humanizer — tiếng Việt tự nhiên, nêu rõ người dùng nhận được gì mới và lỗi gì đã được sửa (`Đã thêm…`, `Đã sửa…`), không liệt kê tên file/code nội bộ. Workflow `.github/workflows/release.yml` sẽ tự động trích đúng mục `## v<version>` đưa lên GitHub Release.

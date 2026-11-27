@@ -102,31 +102,33 @@ export type RecordFlowNav = {
   diagramLabel?: string;
 };
 
-/** Unified workflow tab bar shared across Transcript, Context, Clean, Summary, and Diagram screens. */
+/** Unified 4-step workflow tab bar + optional Attachments tab shared across all record screens. */
 export function recordFlowTabs(active: RecordFlowTab, nav: RecordFlowNav): HTMLElement {
-  const items: { id: RecordFlowTab; label: string; run: () => void }[] = [
-    { id: "transcript", label: "Bản chép lời", run: nav.openTranscript },
-    { id: "context", label: "Ngữ cảnh", run: nav.openContext },
-    { id: "aiClean", label: nav.cleanLabel ?? "Bản làm sạch", run: nav.openClean },
-    { id: "note", label: "Tóm tắt", run: nav.openSummary },
-    { id: "diagram", label: nav.diagramLabel ?? "Sơ đồ", run: nav.openDiagram },
+  const mainSteps: { id: RecordFlowTab; label: string; run: () => void }[] = [
+    { id: "transcript", label: "1. Bản chép", run: nav.openTranscript },
+    { id: "aiClean", label: nav.cleanLabel ?? "2. Làm sạch", run: nav.openClean },
+    { id: "note", label: "3. Tóm tắt", run: nav.openSummary },
+    { id: "diagram", label: nav.diagramLabel ?? "4. Sơ đồ", run: nav.openDiagram },
   ];
+  const makeTab = (item: { id: RecordFlowTab; label: string; run: () => void }) => {
+    const btn = el("button", {
+      className: `settings-tab${active === item.id ? " active" : ""}`,
+      role: "tab",
+      textContent: item.label,
+      onclick: () => {
+        if (active === item.id) return;
+        item.run();
+      },
+    });
+    btn.setAttribute("aria-selected", String(active === item.id));
+    return btn;
+  };
   return el(
     "nav",
     { className: "settings-tabs record-flow-tabs", role: "tablist", ariaLabel: "Luồng xử lý bản ghi" },
-    ...items.map((item) => {
-      const btn = el("button", {
-        className: `settings-tab${active === item.id ? " active" : ""}`,
-        role: "tab",
-        textContent: item.label,
-        onclick: () => {
-          if (active === item.id) return;
-          item.run();
-        },
-      });
-      btn.setAttribute("aria-selected", String(active === item.id));
-      return btn;
-    }),
+    ...mainSteps.map(makeTab),
+    el("span", { className: "record-flow-sep", ariaHidden: "true" }),
+    makeTab({ id: "context", label: "Tài liệu kèm", run: nav.openContext }),
   );
 }
 

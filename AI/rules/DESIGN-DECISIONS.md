@@ -48,11 +48,11 @@ Mọi màu, bo góc, bóng đổ và font phải đi qua token trong `:root` c�
 
 | Màn hình | Slot chính (1 nút `.btn-primary` / `.add`) | Slot phụ (`.btn-ghost` / `.link`) | Menu tràn (`⋯`) |
 | --- | --- | --- | --- |
-| `Queue` (thanh bên) | `Thêm file` (chân thanh bên) | `Tạm dừng`/`Tiếp tục`, `Xoá hàng chờ`, `Từ app Ghi âm`, `Cấu hình` | Menu `⋯` từng bản ghi (`Huỷ`, `Thử lại`, `Chép lời lại`, `Xoá`) |
-| `Reader` (tab `Bản chép lời` / `Ngữ cảnh`) | `Chép bản chép` | Chuyển thẳng mọi bước qua thanh `recordFlowTabs` (`Bản chép lời · Ngữ cảnh · Bản làm sạch · Tóm tắt · Sơ đồ`); click mốc giờ để nghe lại, click chữ để sửa trực tiếp | `Chép lời lại`, `Mở trong Finder` |
-| `Clean` (tab `Bản làm sạch`) | `Chạy lại làm sạch` | — | — |
-| `Note` (tab `Tóm tắt`) | `Chép email` | `Excel`, `Word` | `Tạo lại biên bản`, `Mở trong Finder` |
-| `Diagram` (tab `Sơ đồ`) | `Tạo sơ đồ` (chưa có) / `Xuất PNG` (đã có) | `Xuất .drawio`, dropdown chọn kiểu sơ đồ có hình minh hoạ, dropdown hiển thị Cần xác nhận, thanh zoom (`−`/`+`/toàn màn hình) | `Tạo lại sơ đồ`, `Mở tệp đã lưu trong Finder` |
+| `Queue` (thanh bên) | `Thêm file` (chân thanh bên) | `Tạm dừng`/`Tiếp tục`, `Xoá hàng chờ`, `Từ app Ghi âm`, `Hướng dẫn nhanh` (`?`), `Cấu hình` | Menu `⋯` từng bản ghi (`Huỷ`, `Thử lại`, `Chép lời lại`, `Xoá`) |
+| `Reader` (tab `1. Bản chép` / `Tài liệu kèm`) | `Chép bản chép` | Thanh luồng `recordFlowTabs` (`1. Bản chép · 2. Làm sạch · 3. Tóm tắt · 4. Sơ đồ \| Tài liệu kèm`); click mốc giờ để nghe lại, click chữ để sửa trực tiếp | `Chép lời lại`, `Mở trong Finder` |
+| `Clean` (tab `2. Làm sạch`) | `Chạy lại làm sạch` | — | — |
+| `Note` (tab `3. Tóm tắt`) | `Tạo lại tóm tắt` | `Chép email`, `Excel`, `Word` | `Mở trong Finder` |
+| `Diagram` (tab `4. Sơ đồ`) | `Tạo sơ đồ` (chưa có) / `Xuất PNG` (đã có) | `Xuất .drawio`, dropdown chọn kiểu sơ đồ (16 mẫu có hình minh hoạ), dropdown hiển thị Cần xác nhận (4 chế độ), thanh zoom (`−`/`+`/toàn màn hình) | `Tạo lại sơ đồ`, `Mở tệp đã lưu trong Finder` |
 | `Settings` (4 tab) | `Lưu thuật ngữ` (tab Thuật ngữ), `Chọn dùng` (model) | `Tải model`, `Xoá`, `Chọn file mẫu`, `Kiểm tra`, `Chọn model` | — |
 | `Voice Memos` | `Chép lời <N> bản ghi` | `Chọn tất cả`/`Bỏ chọn`, ô tìm kiếm | — |
 

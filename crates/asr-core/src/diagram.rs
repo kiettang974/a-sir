@@ -42,6 +42,8 @@ pub struct DiagramEdge {
 pub struct DiagramUncertainty {
     pub item: String,
     pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -191,9 +193,10 @@ fn schema() -> Value {
         "type": "object",
         "properties": {
             "item": text,
-            "reason": text
+            "reason": text,
+            "nodeId": text
         },
-        "required": ["item", "reason"],
+        "required": ["item", "reason", "nodeId"],
         "additionalProperties": false
     });
     json!({
@@ -337,15 +340,15 @@ fn strategy_template(strategy: Option<&str>) -> Option<&'static str> {
 }
 
 fn uncertainty_mode_instruction(mode: Option<&str>) -> Option<&'static str> {
-    match mode?.trim() {
+    match mode.map(str::trim).filter(|s| !s.is_empty()).unwrap_or("inline") {
         "off" | "footer" => Some(
-            "Cách hiển thị phần Cần xác nhận: giữ luồng chính trong sơ đồ sạch gọn, chỉ vẽ các bước đã chốt; ghi đầy đủ mọi điểm còn mơ hồ vào mảng `uncertainties` (khung chú giải sẽ do app tự ghép ở chân hình khi người dùng bật).",
+            "Cách hiển thị phần Cần xác nhận: giữ luồng chính trong sơ đồ sạch gọn, chỉ vẽ các bước đã chốt; ghi đầy đủ mọi điểm còn mơ hồ vào mảng `uncertainties` (để `nodeId: \"\"`, khung chú giải sẽ do app tự ghép ở chân hình khi người dùng bật).",
         ),
         "badges-footer" => Some(
-            "Cách hiển thị phần Cần xác nhận (Phương án 3): trên sơ đồ, gắn các chấm `badge` màu `warn` có nhãn `\"?1\"`, `\"?2\"`, ... ngay cạnh đúng bước liên quan (chỉ vẽ thêm nhánh nét đứt nếu có nhánh rẽ lớn chưa chốt), và sắp xếp mảng `uncertainties` theo đúng thứ tự `?1`, `?2`, ... để khớp với khung chú giải chân hình.",
+            "Cách hiển thị phần Cần xác nhận (Phương án 3): với MỌI điểm trong mảng `uncertainties`, gắn một chấm `badge` (có `id` riêng như `\"q1\"`, `\"q2\"`) màu `warn` có nhãn `\"?1\"`, `\"?2\"`, ... ngay cạnh đúng bước liên quan trên sơ đồ, và điền đúng `id` đó vào trường `nodeId` của mục tương ứng trong `uncertainties`.",
         ),
         "inline" => Some(
-            "Cách hiển thị phần Cần xác nhận (Phương án 2): vẽ thẳng các bước/nhánh/điều kiện chưa chốt vào đúng vị trí trong luồng bằng hộp/mũi tên viền nét đứt màu `warn` (`\"dashed\":true,\"color\":\"warn\",\"fill\":\"warn\"`) kèm dấu `?`, và thêm `legend` (`ink`: `Đã chốt`, `warn` nét đứt: `Cần xác nhận`).",
+            "Cách hiển thị phần Cần xác nhận (Phương án 2 — BẮT BUỘC): với MỌI điểm còn mơ hồ/chưa chốt (được ghi trong mảng `uncertainties`), PHẢI vẽ trực tiếp vào đúng vị trí trong sơ đồ bằng hộp/hình thoi/nút viền nét đứt màu `warn` (`\"dashed\":true,\"color\":\"warn\",\"fill\":\"warn\"`) có `id` riêng (ví dụ `\"u1\"`, `\"u2\"`) kèm dấu `?` cuối nhãn — kể cả khi AI tự chọn dạng sơ đồ (`auto`), và ghi đúng `id` nút đó vào trường `nodeId` của từng mục trong `uncertainties`. Ví dụ nút chưa chốt trong swimlane/sơ đồ: `{\"id\":\"u1\",\"lane\":\"s\",\"row\":2,\"kind\":\"step\",\"text\":\"Nhánh chưa chốt?\",\"dashed\":true,\"color\":\"warn\",\"fill\":\"warn\"}` và mũi tên `{\"from\":\"b2\",\"to\":\"u1\",\"text\":\"Điều kiện?\",\"dashed\":true,\"color\":\"warn\"}`. Đồng thời luôn thêm `legend` cuối mảng `elements`: `{\"t\":\"legend\",\"x\":0,\"y\":400,\"items\":[{\"label\":\"Đã chốt\",\"color\":\"ink\"},{\"label\":\"Cần xác nhận\",\"color\":\"warn\",\"dashed\":true}]}`.",
         ),
         _ => None,
     }
@@ -445,10 +448,18 @@ fn parse_and_validate_with_lint(
         .filter_map(|u| {
             let item = u.item.trim().to_owned();
             let reason = u.reason.trim().to_owned();
+            let node_id = u
+                .node_id
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty());
             if item.is_empty() && reason.is_empty() {
                 None
             } else {
-                Some(DiagramUncertainty { item, reason })
+                Some(DiagramUncertainty {
+                    item,
+                    reason,
+                    node_id,
+                })
             }
         })
         .collect();
@@ -583,8 +594,91 @@ pub fn generate_with_strategy(
     generate_with_options(client, model, transcript, strategy, None)
 }
 
+fn count_warn_uncertainty_nodes(v: &Value) -> usize {
+    match v {
+        Value::Object(map) => {
+            let t = map.get("t").and_then(Value::as_str).unwrap_or("");
+            if t == "legend" || t == "arrow" || t == "line" {
+                return 0;
+            }
+            if t == "swimlane" {
+                return map
+                    .get("nodes")
+                    .and_then(Value::as_array)
+                    .map(|nodes| nodes.iter().map(count_warn_uncertainty_nodes).sum())
+                    .unwrap_or(0);
+            }
+            if t == "tree" {
+                return map
+                    .get("root")
+                    .map(count_warn_uncertainty_nodes)
+                    .unwrap_or(0);
+            }
+            if t == "sequence" {
+                return map
+                    .get("messages")
+                    .and_then(Value::as_array)
+                    .map(|msgs| {
+                        msgs.iter()
+                            .filter(|m| {
+                                m.get("color").and_then(Value::as_str) == Some("warn")
+                                    || m.get("fill").and_then(Value::as_str) == Some("warn")
+                            })
+                            .count()
+                    })
+                    .unwrap_or(0);
+            }
+            let is_warn = map.get("color").and_then(Value::as_str) == Some("warn")
+                || map.get("fill").and_then(Value::as_str) == Some("warn");
+            let self_count = usize::from(is_warn);
+            let children_count = map
+                .get("children")
+                .and_then(Value::as_array)
+                .map(|arr| arr.iter().map(count_warn_uncertainty_nodes).sum())
+                .unwrap_or(0);
+            self_count + children_count
+        }
+        Value::Array(arr) => arr.iter().map(count_warn_uncertainty_nodes).sum(),
+        _ => 0,
+    }
+}
+
+fn missing_inline_uncertainty_issues(
+    diagram: &ProcessDiagram,
+    uncertainty_mode: Option<&str>,
+) -> Vec<String> {
+    let mode = uncertainty_mode
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("inline");
+    let total = diagram.uncertainties.len();
+    if (mode == "inline" || mode == "badges-footer")
+        && total > 0
+        && !diagram.ve_elements.is_empty()
+    {
+        let drawn: usize = diagram
+            .ve_elements
+            .iter()
+            .map(count_warn_uncertainty_nodes)
+            .sum();
+        if drawn < total {
+            let items = diagram
+                .uncertainties
+                .iter()
+                .map(|u| u.item.as_str())
+                .collect::<Vec<_>>()
+                .join("; ");
+            return vec![format!(
+                "Mảng `uncertainties` có {total} điểm cần xác nhận nhưng `veSpecJson` mới vẽ {drawn}/{total} nút màu `warn`. BẮT BUỘC vẽ ĐỦ cả {total} điểm trực tiếp vào đúng vị trí trên sơ đồ bằng nút/nhánh màu `warn` nét đứt (`\"dashed\":true,\"color\":\"warn\",\"fill\":\"warn\"`) có `id` riêng, điền đúng `id` đó vào `nodeId` của từng mục trong `uncertainties` ({items}), và có `legend`."
+            )];
+        }
+    }
+    Vec::new()
+}
+
 /// Calls the configured LLM client with optional strategy and uncertainty display mode.
-/// Runs at most 1 automatic repair pass if `ve_engine` reports a spec error or hard lint error.
+/// Runs at most 1 automatic repair pass if `ve_engine` reports a spec error, hard lint error,
+/// or missing inline uncertainty visuals.
 pub fn generate_with_options(
     client: &dyn LlmClient,
     model: &str,
@@ -608,21 +702,30 @@ pub fn generate_with_options(
         .map(str::to_owned);
 
     match parse_and_validate_with_lint(&raw, model) {
-        Ok((mut diagram, lint_errors)) if lint_errors.is_empty() => {
-            diagram.strategy = strategy_tag;
-            diagram.uncertainty_mode = uncertainty_tag;
-            Ok(diagram)
-        }
-        Ok((mut first_diagram, lint_errors)) => {
+        Ok((mut first_diagram, mut lint_errors)) => {
+            lint_errors.extend(missing_inline_uncertainty_issues(
+                &first_diagram,
+                uncertainty_mode,
+            ));
+            if lint_errors.is_empty() {
+                first_diagram.strategy = strategy_tag;
+                first_diagram.uncertainty_mode = uncertainty_tag;
+                return Ok(first_diagram);
+            }
             let repair_prompt = build_repair_prompt(&user, &lint_errors);
             if let Ok(repaired_raw) = client.complete(SYSTEM_PROMPT, &repair_prompt, &schema_val)
-                && let Ok((mut repaired_diagram, repaired_errors)) =
+                && let Ok((mut repaired_diagram, mut repaired_errors)) =
                     parse_and_validate_with_lint(&repaired_raw, model)
-                && repaired_errors.len() < lint_errors.len()
             {
-                repaired_diagram.strategy = strategy_tag;
-                repaired_diagram.uncertainty_mode = uncertainty_tag;
-                return Ok(repaired_diagram);
+                repaired_errors.extend(missing_inline_uncertainty_issues(
+                    &repaired_diagram,
+                    uncertainty_mode,
+                ));
+                if repaired_errors.len() < lint_errors.len() {
+                    repaired_diagram.strategy = strategy_tag;
+                    repaired_diagram.uncertainty_mode = uncertainty_tag;
+                    return Ok(repaired_diagram);
+                }
             }
             first_diagram.strategy = strategy_tag;
             first_diagram.uncertainty_mode = uncertainty_tag;

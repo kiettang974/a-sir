@@ -1805,7 +1805,7 @@ fn m_swimlane(e: &Value) -> Result<Vec<Value>, String> {
         node_sizes.push((w, h));
     }
 
-    let rh = rh_base.max(max_node_h + 28.0);
+    let rh = rh_base.max(max_node_h + 52.0);
 
     let mut day = ey + hh;
     for (idx, n) in nodes.iter().enumerate() {
@@ -1916,6 +1916,24 @@ fn m_swimlane(e: &Value) -> Result<Vec<Value>, String> {
     }
 
     if let Some(edges) = e.get("edges").and_then(Value::as_array) {
+        let mut used_from_sides: HashMap<(String, String), usize> = HashMap::new();
+        struct PreparedEdge {
+            val: Value,
+            from: String,
+            to: String,
+            from_side: String,
+            to_side: String,
+            from_mx: f64,
+            from_row: f64,
+            to_mx: f64,
+            to_row: f64,
+            from_is_decision: bool,
+            explicit_from_at: bool,
+            explicit_to_at: bool,
+            explicit_shift: bool,
+        }
+        let mut prepared: Vec<PreparedEdge> = Vec::with_capacity(edges.len());
+
         for g in edges {
             let from = str_at(g, "from").ok_or("swimlane: edge missing 'from'")?;
             let to = str_at(g, "to").ok_or("swimlane: edge missing 'to'")?;
@@ -1927,6 +1945,9 @@ fn m_swimlane(e: &Value) -> Result<Vec<Value>, String> {
                 .ok_or_else(|| format!("swimlane: edge to='{to}' matches no node"))?;
             let mut a = g.clone();
             let obj = a.as_object_mut().unwrap();
+            let explicit_from_at = obj.contains_key("fromAt");
+            let explicit_to_at = obj.contains_key("toAt");
+            let explicit_shift = obj.contains_key("shift");
             obj.insert("t".into(), json!("arrow"));
             if !obj.contains_key("size") {
                 obj.insert("size".into(), json!(15.0));
@@ -1956,15 +1977,33 @@ fn m_swimlane(e: &Value) -> Result<Vec<Value>, String> {
                 } else if (ia.kind == "decision" || ia.kind == "merge")
                     && (ib.mx - ia.mx).abs() >= ia.w / 2.0 + 12.0
                 {
-                    obj.insert(
-                        "fromSide".into(),
-                        json!(if ib.mx > ia.mx { "right" } else { "left" }),
-                    );
-                    obj.insert(
-                        "toSide".into(),
-                        json!(if ib.row > ia.row { "top" } else { "bottom" }),
-                    );
-                    obj.insert("route".into(), json!("hv"));
+                    let preferred_side = if ib.mx > ia.mx { "right" } else { "left" };
+                    let side_taken = used_from_sides
+                        .get(&(from.to_owned(), preferred_side.to_owned()))
+                        .copied()
+                        .unwrap_or(0)
+                        > 0;
+                    let vert_side = if ib.row > ia.row { "bottom" } else { "top" };
+                    let vert_taken = used_from_sides
+                        .get(&(from.to_owned(), vert_side.to_owned()))
+                        .copied()
+                        .unwrap_or(0)
+                        > 0;
+                    if side_taken && !vert_taken {
+                        obj.insert("fromSide".into(), json!(vert_side));
+                        obj.insert(
+                            "toSide".into(),
+                            json!(if ib.row > ia.row { "top" } else { "bottom" }),
+                        );
+                        obj.insert("route".into(), json!("vhv"));
+                    } else {
+                        obj.insert("fromSide".into(), json!(preferred_side));
+                        obj.insert(
+                            "toSide".into(),
+                            json!(if ib.row > ia.row { "top" } else { "bottom" }),
+                        );
+                        obj.insert("route".into(), json!("hv"));
+                    }
                 } else {
                     let (fs, ts) = if ib.row > ia.row {
                         ("bottom", "top")
@@ -1976,15 +2015,136 @@ fn m_swimlane(e: &Value) -> Result<Vec<Value>, String> {
                     obj.insert("route".into(), json!("vhv"));
                 }
             }
-            if obj.get("text").and_then(Value::as_str).is_some()
-                && ia.kind == "decision"
-                && !obj.contains_key("labelAt")
-                && !obj.contains_key("labelDx")
-                && !obj.contains_key("labelDy")
-            {
-                obj.insert("labelAt".into(), json!(30.0));
+            let from_side = obj
+                .get("fromSide")
+                .and_then(Value::as_str)
+                .unwrap_or("auto")
+                .to_owned();
+            let to_side = obj
+                .get("toSide")
+                .and_then(Value::as_str)
+                .unwrap_or("auto")
+                .to_owned();
+            *used_from_sides
+                .entry((from.to_owned(), from_side.clone()))
+                .or_insert(0) += 1;
+
+            prepared.push(PreparedEdge {
+                val: a,
+                from: from.to_owned(),
+                to: to.to_owned(),
+                from_side,
+                to_side,
+                from_mx: ia.mx,
+                from_row: ia.row,
+                to_mx: ib.mx,
+                to_row: ib.row,
+                from_is_decision: ia.kind == "decision",
+                explicit_from_at,
+                explicit_to_at,
+                explicit_shift,
+            });
+        }
+
+        // Separate multiple edges leaving the same side of the same node so lines and labels never overlap.
+        let mut out_groups: HashMap<(String, String), Vec<usize>> = HashMap::new();
+        let mut in_groups: HashMap<(String, String), Vec<usize>> = HashMap::new();
+        for (idx, p) in prepared.iter().enumerate() {
+            if p.from_side != "auto" {
+                out_groups
+                    .entry((p.from.clone(), p.from_side.clone()))
+                    .or_default()
+                    .push(idx);
             }
-            out.push(a);
+            if p.to_side != "auto" {
+                in_groups
+                    .entry((p.to.clone(), p.to_side.clone()))
+                    .or_default()
+                    .push(idx);
+            }
+        }
+
+        for ((_, side), mut indices) in out_groups {
+            if indices.len() <= 1 {
+                if let Some(&idx) = indices.first() {
+                    let p = &mut prepared[idx];
+                    let obj = p.val.as_object_mut().unwrap();
+                    if obj.get("text").and_then(Value::as_str).is_some()
+                        && p.from_is_decision
+                        && !obj.contains_key("labelAt")
+                        && !obj.contains_key("labelDx")
+                        && !obj.contains_key("labelDy")
+                    {
+                        obj.insert("labelAt".into(), json!(30.0));
+                    }
+                }
+                continue;
+            }
+            let horiz_side = side == "top" || side == "bottom";
+            indices.sort_by(|&a, &b| {
+                let pa = &prepared[a];
+                let pb = &prepared[b];
+                let ka = if horiz_side { pa.to_mx } else { pa.to_row };
+                let kb = if horiz_side { pb.to_mx } else { pb.to_row };
+                ka.total_cmp(&kb)
+            });
+            let n = indices.len() as f64;
+            for (rank, &idx) in indices.iter().enumerate() {
+                let p = &mut prepared[idx];
+                let obj = p.val.as_object_mut().unwrap();
+                let offset = rank as f64 - (n - 1.0) / 2.0;
+                if !p.explicit_from_at {
+                    let step = (0.56 / n).min(0.28);
+                    let at = (0.5 + offset * step).clamp(0.20, 0.80);
+                    obj.insert("fromAt".into(), json!(at));
+                }
+                let route = obj.get("route").and_then(Value::as_str).unwrap_or("");
+                if !p.explicit_shift && (route == "vhv" || route == "hvh") {
+                    obj.insert("shift".into(), json!(offset * 22.0));
+                }
+                if obj.get("text").and_then(Value::as_str).is_some()
+                    && !obj.contains_key("labelAt")
+                    && !obj.contains_key("labelDx")
+                    && !obj.contains_key("labelDy")
+                {
+                    if p.from_is_decision {
+                        obj.insert("labelAt".into(), json!(30.0 + (rank as f64) * 76.0));
+                        if rank % 2 == 1 {
+                            obj.insert("labelDy".into(), json!(-16.0));
+                        }
+                    } else {
+                        obj.insert("labelDy".into(), json!(if offset < 0.0 { -12.0 } else { 14.0 }));
+                    }
+                }
+            }
+        }
+
+        for ((_, side), mut indices) in in_groups {
+            if indices.len() <= 1 {
+                continue;
+            }
+            let horiz_side = side == "top" || side == "bottom";
+            indices.sort_by(|&a, &b| {
+                let pa = &prepared[a];
+                let pb = &prepared[b];
+                let ka = if horiz_side { pa.from_mx } else { pa.from_row };
+                let kb = if horiz_side { pb.from_mx } else { pb.from_row };
+                ka.total_cmp(&kb)
+            });
+            let n = indices.len() as f64;
+            for (rank, &idx) in indices.iter().enumerate() {
+                let p = &mut prepared[idx];
+                if !p.explicit_to_at {
+                    let offset = rank as f64 - (n - 1.0) / 2.0;
+                    let step = (0.56 / n).min(0.28);
+                    let at = (0.5 + offset * step).clamp(0.20, 0.80);
+                    p.val.as_object_mut().unwrap().insert("toAt".into(), json!(at));
+                }
+            }
+        }
+
+        for p in prepared {
+            out.push(p.val);
         }
     }
     Ok(out)
@@ -3452,14 +3612,17 @@ fn compile_scene(
                         con -= l;
                     }
 
-                    if tu_do {
+                    let short_vertical = !tu_do && !ngang && tong < th + 28.0;
+                    if tu_do || short_vertical {
                         let dx = e.get("labelDx").and_then(Value::as_f64).unwrap_or(if ngang {
                             0.0
                         } else {
-                            tw / 2.0 + 8.0
+                            tw / 2.0 + 10.0
                         });
                         let dy = e.get("labelDy").and_then(Value::as_f64).unwrap_or(if ngang {
                             -(th / 2.0 + 3.0)
+                        } else if short_vertical {
+                            -4.0
                         } else {
                             0.0
                         });
@@ -4469,6 +4632,12 @@ fn render_scene_svg(scene: &[SceneEl], theme: ThemeMode) -> (f64, f64, String) {
     let paper_rendered = resolve_svg_color(token_light("paper").unwrap(), theme);
 
     for (idx, e) in scene.iter().enumerate() {
+        if e.el_type == "text" && e.text.as_deref().unwrap_or("").is_empty() {
+            continue;
+        }
+        if matches!(e.el_type.as_str(), "line" | "arrow") && e.points.len() < 2 {
+            continue;
+        }
         let mut rng = Rng::new(e.seed);
         let stroke = resolve_svg_color(&e.stroke_color, theme);
         let bg = resolve_svg_color(&e.background_color, theme);
@@ -4485,6 +4654,10 @@ fn render_scene_svg(scene: &[SceneEl], theme: ThemeMode) -> (f64, f64, String) {
 
         let x = e.x + ox;
         let y = e.y + oy;
+        let wrap_id = !e.id.is_empty();
+        if wrap_id {
+            let _ = write!(body, "<g data-el-id=\"{}\">", escape_xml(&e.id));
+        }
 
         match e.el_type.as_str() {
             "rectangle" => {
@@ -4756,6 +4929,9 @@ fn render_scene_svg(scene: &[SceneEl], theme: ThemeMode) -> (f64, f64, String) {
                 }
             }
             _ => {}
+        }
+        if wrap_id {
+            body.push_str("</g>");
         }
     }
 

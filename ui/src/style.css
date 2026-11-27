@@ -1499,6 +1499,20 @@ select.field { appearance: auto; }
   font-weight: 600;
   color: var(--ink);
   line-height: 1.25;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.diagram-type-cached {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 99px;
+  font-size: 10.5px;
+  font-weight: 600;
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 .diagram-type-desc {
   font-size: 11.5px;
@@ -1556,6 +1570,81 @@ select.field { appearance: auto; }
   padding: 48px 18px 18px;
   height: 70vh;
   min-height: 520px;
+}
+.diagram-stage-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 32px 24px;
+  text-align: center;
+}
+.diagram-spinner {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2.5px solid var(--rule-strong);
+  border-top-color: var(--accent);
+  animation: diagram-spin 0.8s linear infinite;
+  margin-bottom: 4px;
+}
+@keyframes diagram-spin {
+  to { transform: rotate(360deg); }
+}
+.diagram-loading-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.diagram-loading-sub {
+  margin: 0;
+  max-width: 44ch;
+  font-size: 13px;
+  color: var(--ink-soft);
+  line-height: 1.45;
+}
+.diagram-loading-bar {
+  width: 100%;
+  max-width: 320px;
+  margin-top: 4px;
+}
+.diagram-loading-meta {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+.diagram-jump-link {
+  margin-left: 8px;
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.diagram-focus-ring {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 3;
+  stroke-dasharray: 7 4;
+  pointer-events: none;
+  animation: diagram-focus-pulse 0.7s ease-in-out 3;
+}
+@keyframes diagram-focus-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+.diagram-focus-shake {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: diagram-node-wiggle 0.55s ease-in-out 2;
+}
+@keyframes diagram-node-wiggle {
+  0%, 100% { transform: translate(0, 0) rotate(0deg); }
+  20% { transform: translate(-3px, 0) rotate(-1.2deg); }
+  40% { transform: translate(3px, 0) rotate(1.2deg); }
+  60% { transform: translate(-2.5px, 0) rotate(-0.9deg); }
+  80% { transform: translate(2px, 0) rotate(0.7deg); }
 }
 .diagram-svg,
 .diagram-stage svg.dg,
@@ -1695,6 +1784,10 @@ select.field { appearance: auto; }
   font-variant-numeric: tabular-nums;
 }
 .diagram-uncertainty-list strong { color: var(--ink); }
+.clean-progress-wrap {
+  max-width: 360px;
+  margin: 8px 0 6px;
+}
 .diagram-modal-uncertainties {
   margin: 0 18px 14px;
   max-height: 22vh;

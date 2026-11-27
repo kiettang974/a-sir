@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 
 import { el } from "./dom";
-import { type AiView, PROVIDER_NAME, PROVIDERS, type RecordFlowNav, recordFlowTabs } from "./ipc";
+import { type AiView, progressBar, PROVIDER_NAME, PROVIDERS, type RecordFlowNav, recordFlowTabs } from "./ipc";
 
 export type ContextAttachment = {
   id: string;
@@ -230,8 +230,22 @@ type SavedAiClean = {
 
 const savedCleanCache = new Map<number, SavedAiClean>();
 const runningCleanJobs = new Set<number>();
+const cleanStartedAt = new Map<number, number>();
+const cleanEstimatedSecs = new Map<number, number>();
 const cleanErrorCache = new Map<number, string>();
 const cleanListeners = new Map<number, Set<() => void>>();
+
+function formatCleanEta(elapsedS: number, estS: number): string {
+  const remain = Math.max(0, estS - elapsedS);
+  if (remain > 0) {
+    return `${elapsedS}s · Ước tính còn ~${remain}s`;
+  }
+  return `${elapsedS}s · Sắp xong…`;
+}
+
+function estimateCleanSeconds(charCount: number): number {
+  return Math.max(10, Math.min(90, Math.round(charCount / 400) + 8));
+}
 
 function subscribeClean(jobId: number, fn: () => void): () => void {
   let set = cleanListeners.get(jobId);
@@ -452,24 +466,49 @@ export function aiCleanPane(jobId: number, title: string, cb: AiCleanCallbacks):
     );
   };
 
+  const renderEmpty = () => {
+    stopTimer();
+    renderHead(false);
+    body.replaceChildren(
+      el(
+        "div",
+        { className: "actions wrap" },
+        el("button", {
+          className: "btn-primary",
+          textContent: "Chạy làm sạch",
+          onclick: () => void runAuto(),
+        }),
+      ),
+    );
+  };
+
   const renderRunning = () => {
     stopTimer();
     renderHead(true);
-    let secs = 0;
+    const startedAt = cleanStartedAt.get(jobId) ?? Date.now();
+    if (!cleanStartedAt.has(jobId)) cleanStartedAt.set(jobId, startedAt);
+    const estS = cleanEstimatedSecs.get(jobId) ?? 20;
+
     const statusHeading = el("h3", { textContent: "Đang làm sạch bản chép lời…" });
-    const elapsedLine = el("p", { className: "hint", textContent: "0 giây" });
-    body.replaceChildren(statusHeading, elapsedLine);
+    const barHost = el("div", { className: "clean-progress-wrap" });
+    const elapsedLine = el("p", { className: "hint" });
+
+    const updateProgress = () => {
+      const elapsedS = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+      const pct = Math.min(95, Math.max(4, Math.round((elapsedS / Math.max(1, estS)) * 92)));
+      barHost.replaceChildren(progressBar(pct));
+      elapsedLine.textContent = formatCleanEta(elapsedS, estS);
+    };
+
+    updateProgress();
+    body.replaceChildren(statusHeading, barHost, elapsedLine);
     elapsedTimer = window.setInterval(() => {
       if (!runningCleanJobs.has(jobId) || !body.isConnected) {
         stopTimer();
         return;
       }
-      secs += 1;
-      elapsedLine.textContent =
-        secs >= 30
-          ? `${secs} giây — AI đang xử lý khá lâu (có thể đang bị giới hạn tốc độ hoặc file dài).`
-          : `${secs} giây`;
-    }, 1000);
+      updateProgress();
+    }, 500);
   };
 
   const runAuto = async () => {
@@ -478,15 +517,22 @@ export function aiCleanPane(jobId: number, title: string, cb: AiCleanCallbacks):
       return;
     }
     runningCleanJobs.add(jobId);
+    cleanStartedAt.set(jobId, Date.now());
     cleanErrorCache.delete(jobId);
+    if (!cleanEstimatedSecs.has(jobId)) {
+      cleanEstimatedSecs.set(jobId, 20);
+    }
     notifyClean(jobId);
     renderRunning();
 
     try {
-      const [ai, ctx] = await Promise.all([
+      const [ai, ctx, tr] = await Promise.all([
         invoke<AiView>("ai_settings"),
         invoke<MeetingContextView>("get_meeting_context", { id: jobId }),
+        invoke<{ text: string }>("read_transcript", { id: jobId }).catch(() => ({ text: "" })),
       ]);
+      cleanEstimatedSecs.set(jobId, estimateCleanSeconds(tr.text.length));
+      notifyClean(jobId);
       const usable = PROVIDERS.filter((p) => ai.keys[p]);
       if (usable.length === 0) {
         await runLocalOnly();
@@ -522,6 +568,7 @@ export function aiCleanPane(jobId: number, title: string, cb: AiCleanCallbacks):
       cleanErrorCache.set(jobId, String(e));
     } finally {
       runningCleanJobs.delete(jobId);
+      cleanStartedAt.delete(jobId);
       notifyClean(jobId);
     }
   };
@@ -537,6 +584,8 @@ export function aiCleanPane(jobId: number, title: string, cb: AiCleanCallbacks):
       showError("AI báo lỗi khi làm sạch", latestErr);
     } else if (latest) {
       renderSaved(latest);
+    } else {
+      renderEmpty();
     }
   };
 
@@ -560,8 +609,7 @@ export function aiCleanPane(jobId: number, title: string, cb: AiCleanCallbacks):
   } else if (savedCleanCache.has(jobId) || cleanErrorCache.has(jobId)) {
     syncView();
   } else {
-    renderHead(true);
-    body.replaceChildren(el("h3", { textContent: "Đang kiểm tra bản làm sạch…" }));
+    renderHead(false);
     invoke<SavedAiClean | null>("load_ai_clean", { id: jobId })
       .then((diskSaved) => {
         if (!pane.isConnected) return;
@@ -569,11 +617,11 @@ export function aiCleanPane(jobId: number, title: string, cb: AiCleanCallbacks):
           savedCleanCache.set(jobId, diskSaved);
           renderSaved(diskSaved);
         } else {
-          void runAuto();
+          renderEmpty();
         }
       })
       .catch(() => {
-        if (pane.isConnected) void runAuto();
+        if (pane.isConnected) renderEmpty();
       });
   }
   return pane;

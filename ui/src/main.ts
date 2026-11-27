@@ -1262,8 +1262,8 @@ function flowNavFor(job: Job): RecordFlowNav {
       view = "diagram";
       render();
     },
-    cleanLabel: cleanState === "running" ? "Đang làm sạch…" : "Bản làm sạch",
-    diagramLabel: diagramState === "running" ? "Đang tạo sơ đồ…" : "Sơ đồ",
+    cleanLabel: cleanState === "running" ? "2. Đang làm sạch…" : "2. Làm sạch",
+    diagramLabel: diagramState === "running" ? "4. Đang tạo sơ đồ…" : "4. Sơ đồ",
   };
 }
 

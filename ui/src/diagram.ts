@@ -252,6 +252,7 @@ export type DiagramEdge = {
 export type DiagramUncertainty = {
   item: string;
   reason: string;
+  nodeId?: string | null;
 };
 
 export type ProcessDiagram = {
@@ -321,8 +322,19 @@ type Links = {
   flow: RecordFlowNav;
 };
 
+type CachedDiagramEntry = {
+  diagram: ProcessDiagram;
+  rendered?: RenderedDiagram;
+};
+
+type SavedDiagramPayload = ProcessDiagram & {
+  variants?: Record<string, ProcessDiagram>;
+  activeKey?: string;
+};
+
 type JobDiagramState = {
   running: boolean;
+  startedAt: number | null;
   statusMessage: string;
   error: string | null;
   needsSettings: boolean;
@@ -331,18 +343,83 @@ type JobDiagramState = {
   rendered: RenderedDiagram | null;
   selectedStrategy: DiagramStrategyId;
   uncertaintyMode: UncertaintyDisplayMode;
+  cache: Map<string, CachedDiagramEntry>;
   exportError: { format: "png" | "drawio"; message: string } | null;
   exportNotice: string | null;
 };
 
+const EST_DIAGRAM_SECS = 25;
+
 const jobStates = new Map<number, JobDiagramState>();
 const jobListeners = new Map<number, Set<() => void>>();
+
+function cacheKey(strategy: DiagramStrategyId, mode: UncertaintyDisplayMode): string {
+  return `${strategy}::${mode}`;
+}
+
+function stripVariants(raw: SavedDiagramPayload): ProcessDiagram {
+  const { variants: _v, activeKey: _k, ...clean } = raw;
+  return clean;
+}
+
+function hydrateCacheFromSaved(st: JobDiagramState, saved: SavedDiagramPayload): ProcessDiagram {
+  if (saved.variants && typeof saved.variants === "object") {
+    for (const [k, v] of Object.entries(saved.variants)) {
+      if (v && typeof v === "object" && !st.cache.has(k)) {
+        st.cache.set(k, { diagram: stripVariants(v as SavedDiagramPayload) });
+      }
+    }
+  }
+  const active = stripVariants(saved);
+  const strategy = findStrategyOption(active.strategy).id;
+  const mode = findUncertaintyModeOption(active.uncertaintyMode).id;
+  const key = saved.activeKey || cacheKey(strategy, mode);
+  if (!st.cache.has(key)) {
+    st.cache.set(key, { diagram: active });
+  }
+  st.selectedStrategy = strategy;
+  st.uncertaintyMode = mode;
+  return active;
+}
+
+function buildPersistPayload(
+  st: JobDiagramState,
+  active: ProcessDiagram,
+  strategy: DiagramStrategyId,
+  mode: UncertaintyDisplayMode,
+): SavedDiagramPayload {
+  const key = cacheKey(strategy, mode);
+  const cleanActive = stripVariants(active as SavedDiagramPayload);
+  const existing = st.cache.get(key);
+  st.cache.set(key, { diagram: cleanActive, rendered: existing?.rendered });
+  const variants: Record<string, ProcessDiagram> = {};
+  for (const [k, entry] of st.cache.entries()) {
+    variants[k] = stripVariants(entry.diagram as SavedDiagramPayload);
+  }
+  return {
+    ...cleanActive,
+    variants,
+    activeKey: key,
+  };
+}
+
+function hasCachedStrategy(st: JobDiagramState, strategy: DiagramStrategyId): boolean {
+  if (st.uncertaintyMode === "off" || st.uncertaintyMode === "footer") {
+    const prefix = `${strategy}::`;
+    for (const k of st.cache.keys()) {
+      if (k.startsWith(prefix)) return true;
+    }
+    return false;
+  }
+  return st.cache.has(cacheKey(strategy, st.uncertaintyMode));
+}
 
 function getState(id: number): JobDiagramState {
   let st = jobStates.get(id);
   if (!st) {
     st = {
       running: false,
+      startedAt: null,
       statusMessage: "",
       error: null,
       needsSettings: false,
@@ -351,6 +428,7 @@ function getState(id: number): JobDiagramState {
       rendered: null,
       selectedStrategy: "auto",
       uncertaintyMode: "inline",
+      cache: new Map(),
       exportError: null,
       exportNotice: null,
     };
@@ -411,10 +489,13 @@ export async function openOrGenerateDiagram(
 
   // Check local saved diagram first (offline-safe, zero AI calls).
   try {
-    const saved = await invoke<ProcessDiagram | null>("load_diagram", { id });
+    const saved = await invoke<SavedDiagramPayload | null>("load_diagram", { id });
     if (saved) {
-      st.rendered = await invoke<RenderedDiagram>("render_diagram", { diagram: saved });
-      st.diagram = saved;
+      const active = hydrateCacheFromSaved(st, saved);
+      const rendered = await invoke<RenderedDiagram>("render_diagram", { diagram: active });
+      st.rendered = rendered;
+      st.diagram = active;
+      st.cache.set(cacheKey(st.selectedStrategy, st.uncertaintyMode), { diagram: active, rendered });
       callbacks.onOpenDiagram(id);
       return;
     }
@@ -495,13 +576,14 @@ async function runGeneration(
   const tag = modelName ? `${providerName} (${modelName})` : providerName;
   const styleHint = chosen === "auto" ? "" : ` theo kiểu ${opt.label}`;
   st.running = true;
+  st.startedAt = Date.now();
   st.error = null;
   st.needsSettings = false;
   st.exportError = null;
   st.exportNotice = null;
   st.statusMessage = isRegenerate
-    ? `Đang tạo lại sơ đồ${styleHint} bằng ${tag}… Bản sơ đồ hiện tại vẫn có thể xem và xuất.`
-    : `Đang phân tích bản chép lời và tạo sơ đồ${styleHint} bằng ${tag}…`;
+    ? `Đang vẽ lại sơ đồ${styleHint} bằng ${tag}…`
+    : `Đang phân tích bản chép lời và vẽ sơ đồ${styleHint} bằng ${tag}…`;
   notify(id);
 
   try {
@@ -519,16 +601,25 @@ async function runGeneration(
       );
     }
 
+    const normalizedDiagram: ProcessDiagram = {
+      ...nextDiagram,
+      strategy: chosen === "auto" ? null : chosen,
+      uncertaintyMode: chosenUncertainty,
+    };
+    const key = cacheKey(chosen, chosenUncertainty);
+    st.cache.set(key, { diagram: normalizedDiagram, rendered: nextRendered });
+    const payload = buildPersistPayload(st, normalizedDiagram, chosen, chosenUncertainty);
+
     let savedPath: string;
     try {
-      savedPath = await invoke<string>("save_diagram", { id, diagram: nextDiagram });
+      savedPath = await invoke<string>("save_diagram", { id, diagram: payload });
     } catch (saveErr) {
       throw new Error(
         `Không lưu được sơ đồ mới vào máy (${String(saveErr)}). Bản sơ đồ trước đó vẫn được giữ nguyên.`,
       );
     }
 
-    st.diagram = nextDiagram;
+    st.diagram = normalizedDiagram;
     st.rendered = nextRendered;
     st.savedPath = savedPath;
     st.error = null;
@@ -540,6 +631,7 @@ async function runGeneration(
     st.needsSettings = errorNeedsSettings(raw);
   } finally {
     st.running = false;
+    st.startedAt = null;
     st.statusMessage = "";
     notify(id);
   }
@@ -560,6 +652,62 @@ export function diagramPane(
   let loadedLocal = false;
   let loadError: string | null = null;
   let zoom = 0.75;
+  let loadingTimer: number | null = null;
+
+  const stopLoadingTimer = () => {
+    if (loadingTimer !== null) {
+      window.clearInterval(loadingTimer);
+      loadingTimer = null;
+    }
+  };
+
+  const renderLoadingStage = (st: JobDiagramState): HTMLElement => {
+    const fill = el("i");
+    const bar = el("div", { className: "bar" }, fill);
+    const meta = el("p", { className: "diagram-loading-meta" });
+
+    const tick = () => {
+      const started = st.startedAt ?? Date.now();
+      const elapsedS = Math.max(0, Math.floor((Date.now() - started) / 1000));
+      const pct = Math.min(94, Math.max(8, Math.round((elapsedS / EST_DIAGRAM_SECS) * 90) + 6));
+      fill.style.width = `${pct}%`;
+      const remain = EST_DIAGRAM_SECS - elapsedS;
+      meta.textContent =
+        remain > 2
+          ? `${elapsedS}s · Ước tính còn ~${remain}s`
+          : `${elapsedS}s · Sắp hoàn tất…`;
+    };
+
+    tick();
+    stopLoadingTimer();
+    loadingTimer = window.setInterval(() => {
+      if (!pane.isConnected || !getState(id).running) {
+        stopLoadingTimer();
+        return;
+      }
+      tick();
+    }, 1000);
+
+    return el(
+      "div",
+      { className: "diagram-stage-wrap", role: "status", ariaLive: "polite" },
+      el(
+        "div",
+        { className: "diagram-stage diagram-stage-loading" },
+        el("div", { className: "diagram-spinner", ariaHidden: "true" }),
+        el("p", {
+          className: "diagram-loading-title",
+          textContent: st.diagram ? "Đang vẽ lại sơ đồ…" : "Đang tạo sơ đồ…",
+        }),
+        el("p", {
+          className: "diagram-loading-sub",
+          textContent: st.statusMessage || "AI đang phân tích nội dung và dựng bố cục sơ đồ.",
+        }),
+        el("div", { className: "diagram-loading-bar" }, bar),
+        meta,
+      ),
+    );
+  };
 
   const openModal = (diagram: ProcessDiagram, rendered: RenderedDiagram) => {
     let modalZoom = 1;
@@ -646,7 +794,13 @@ export function diagramPane(
       ),
     );
 
-    const modalUncertainties = renderUncertaintiesBlock(diagram, "diagram-modal-uncertainties");
+    const modalMode = findUncertaintyModeOption(diagram.uncertaintyMode ?? getState(id).uncertaintyMode).id;
+    const modalUncertainties = renderUncertaintiesBlock(
+      diagram,
+      modalMode,
+      (u, idx) => focusUncertaintyOnStage(stage, u, idx, modalMode, false),
+      "diagram-modal-uncertainties",
+    );
     const dialog = el(
       "div",
       {
@@ -708,8 +862,180 @@ export function diagramPane(
     draw();
   };
 
-  const renderUncertaintiesBlock = (diagram: ProcessDiagram, extraClass = ""): HTMLElement | null => {
+  const normalizeWords = (raw: string): string[] =>
+    raw
+      .toLowerCase()
+      .normalize("NFC")
+      .replace(/[^\p{L}\p{N}\s]+/gu, " ")
+      .split(/\s+/)
+      .filter((w) => w.length >= 2);
+
+  const findElementByDataId = (svgEl: SVGSVGElement, rawId: string): SVGGraphicsElement | null => {
+    const trimmed = rawId.trim();
+    if (!trimmed) return null;
+    for (const node of svgEl.querySelectorAll<SVGGraphicsElement>("[data-el-id]")) {
+      if (node.getAttribute("data-el-id") === trimmed) return node;
+    }
+    return null;
+  };
+
+  const upgradeTextToShape = (svgEl: SVGSVGElement, textEl: SVGTextElement): SVGGraphicsElement => {
+    const group = textEl.closest<SVGGraphicsElement>("[data-el-id]");
+    const gid = group?.getAttribute("data-el-id") ?? "";
+    if (gid.endsWith("~txt")) {
+      const parentShape = findElementByDataId(svgEl, gid.slice(0, -4));
+      if (parentShape) return parentShape;
+    }
+    return group ?? textEl;
+  };
+
+  const findUncertaintyTarget = (
+    svgEl: SVGSVGElement,
+    u: DiagramUncertainty,
+    idx: number,
+    mode: UncertaintyDisplayMode,
+  ): SVGGraphicsElement | null => {
+    // Mode "footer" (PA 1): jump directly to the rendered footer card.
+    if (mode === "footer") {
+      const footer = findElementByDataId(svgEl, "uncertainties_footer");
+      if (footer) return footer;
+    }
+
+    // Direct 1-to-1 binding via AI-emitted nodeId (exact shape highlight).
+    if (u.nodeId) {
+      const direct = findElementByDataId(svgEl, u.nodeId);
+      if (direct) return direct;
+    }
+
+    const texts = Array.from(svgEl.querySelectorAll<SVGTextElement>("text"));
+    if (texts.length === 0) return null;
+
+    const badgeTag = `?${idx + 1}`;
+    const exactBadge = texts.find((t) => (t.textContent ?? "").trim() === badgeTag);
+    if (exactBadge) return upgradeTextToShape(svgEl, exactBadge);
+
+    const isLegendLabel = (raw: string) => {
+      const s = raw.trim().toLowerCase();
+      return s === "cần xác nhận" || s === "đã chốt" || s === "chú giải";
+    };
+    const isWarnStyled = (t: SVGTextElement) => {
+      const fill = (t.getAttribute("fill") ?? "").toLowerCase();
+      return (
+        fill.includes("d97706") ||
+        fill.includes("b45309") ||
+        fill.includes("e8590c") ||
+        fill.includes("f59e0b") ||
+        fill.includes("warn")
+      );
+    };
+
+    const queryWords = new Set(normalizeWords(`${u.item} ${u.reason}`));
+    let best: SVGTextElement | null = null;
+    let bestScore = 0;
+
+    for (const t of texts) {
+      const content = (t.textContent ?? "").trim();
+      if (!content || isLegendLabel(content)) continue;
+      const words = normalizeWords(content);
+      let overlap = 0;
+      for (const w of words) {
+        if (queryWords.has(w)) overlap += 1;
+      }
+      const warnBonus = isWarnStyled(t) ? 2.5 : 0;
+      const qBonus = content.includes("?") ? 1.5 : 0;
+      const score = overlap * 3 + (overlap > 0 ? warnBonus + qBonus : 0);
+      if (score > bestScore) {
+        bestScore = score;
+        best = t;
+      }
+    }
+    if (best) return upgradeTextToShape(svgEl, best);
+
+    const warnCandidates = texts.filter((t) => {
+      const content = (t.textContent ?? "").trim();
+      return content && !isLegendLabel(content) && (isWarnStyled(t) || content.includes("?"));
+    });
+    if (warnCandidates.length > 0) {
+      return upgradeTextToShape(svgEl, warnCandidates[Math.min(idx, warnCandidates.length - 1)]);
+    }
+    return null;
+  };
+
+  const focusUncertaintyOnStage = (
+    stageEl: HTMLElement | null,
+    u: DiagramUncertainty,
+    idx: number,
+    mode: UncertaintyDisplayMode,
+    scrollStageIntoView = true,
+  ): boolean => {
+    if (!stageEl || mode === "off") return false;
+    const svgEl = stageEl.querySelector<SVGSVGElement>("svg");
+    if (!svgEl) return false;
+    const target = findUncertaintyTarget(svgEl, u, idx, mode);
+    if (!target) return false;
+
+    if (scrollStageIntoView) {
+      stageEl.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+
+    const stageRect = stageEl.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    const centerLeft =
+      stageEl.scrollLeft + (targetRect.left - stageRect.left) + targetRect.width / 2 - stageEl.clientWidth / 2;
+    const centerTop =
+      stageEl.scrollTop + (targetRect.top - stageRect.top) + targetRect.height / 2 - stageEl.clientHeight / 2;
+    stageEl.scrollTo({
+      left: Math.max(0, centerLeft),
+      top: Math.max(0, centerTop),
+      behavior: "smooth",
+    });
+
+    svgEl.querySelectorAll(".diagram-focus-ring").forEach((n) => n.remove());
+    svgEl.querySelectorAll(".diagram-focus-shake").forEach((n) => n.classList.remove("diagram-focus-shake"));
+
+    const shakeNodes: Element[] = [target];
+    const targetId = target.getAttribute("data-el-id");
+    if (targetId && !targetId.endsWith("~txt")) {
+      const textGroup = findElementByDataId(svgEl, `${targetId}~txt`);
+      if (textGroup) shakeNodes.push(textGroup);
+    }
+    for (const node of shakeNodes) {
+      node.classList.add("diagram-focus-shake");
+    }
+    window.setTimeout(() => {
+      for (const node of shakeNodes) {
+        node.classList.remove("diagram-focus-shake");
+      }
+    }, 1500);
+
+    try {
+      const bbox = target.getBBox();
+      const isTextOnly = target.tagName.toLowerCase() === "text";
+      const padX = isTextOnly ? Math.max(24, bbox.width * 0.25) : 10;
+      const padY = isTextOnly ? Math.max(20, bbox.height * 0.45) : 10;
+      const ring = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      ring.setAttribute("class", "diagram-focus-ring");
+      ring.setAttribute("x", String(bbox.x - padX));
+      ring.setAttribute("y", String(bbox.y - padY));
+      ring.setAttribute("width", String(bbox.width + padX * 2));
+      ring.setAttribute("height", String(bbox.height + padY * 2));
+      ring.setAttribute("rx", "12");
+      svgEl.append(ring);
+      window.setTimeout(() => ring.remove(), 2200);
+    } catch {
+      // Ignore getBBox errors on detached SVGs.
+    }
+    return true;
+  };
+
+  const renderUncertaintiesBlock = (
+    diagram: ProcessDiagram,
+    mode: UncertaintyDisplayMode,
+    onJump: (u: DiagramUncertainty, idx: number) => boolean,
+    extraClass = "",
+  ): HTMLElement | null => {
     if (diagram.uncertainties.length === 0) return null;
+    const showJump = mode !== "off";
     return el(
       "details",
       { className: `diagram-uncertainties${extraClass ? ` ${extraClass}` : ""}` },
@@ -729,6 +1055,26 @@ export function diagramPane(
             el("span", { className: "diagram-q-badge", textContent: `?${idx + 1}` }),
             el("strong", { textContent: u.item || "Chi tiết chưa rõ" }),
             u.reason ? el("span", { textContent: ` — ${u.reason}` }) : null,
+            showJump
+              ? el("button", {
+                  className: "link diagram-jump-link",
+                  textContent: mode === "footer" ? "Xem ở khung chú giải" : "Xem trên biểu đồ",
+                  onclick: (ev: MouseEvent) => {
+                    ev.preventDefault();
+                    const found = onJump(u, idx);
+                    if (!found) {
+                      const btn = ev.currentTarget as HTMLButtonElement | null;
+                      if (btn) {
+                        const prev = btn.textContent;
+                        btn.textContent = "Chưa vẽ trên sơ đồ — thử Tạo lại";
+                        window.setTimeout(() => {
+                          btn.textContent = prev;
+                        }, 2200);
+                      }
+                    }
+                  },
+                })
+              : null,
           ),
         ),
       ),
@@ -751,6 +1097,60 @@ export function diagramPane(
     void runGeneration(id, picked.name, picked.model, strategy, uncertaintyMode);
   };
 
+  const activateCachedVariant = async (
+    strategy: DiagramStrategyId,
+    mode: UncertaintyDisplayMode,
+    entry: CachedDiagramEntry,
+    notice?: string | null,
+  ) => {
+    const st = getState(id);
+    const diagram: ProcessDiagram = {
+      ...entry.diagram,
+      strategy: strategy === "auto" ? null : strategy,
+      uncertaintyMode: mode,
+    };
+    const rendered =
+      entry.rendered && entry.diagram.uncertaintyMode === mode
+        ? entry.rendered
+        : await invoke<RenderedDiagram>("render_diagram", { diagram });
+    st.cache.set(cacheKey(strategy, mode), { diagram, rendered });
+    st.selectedStrategy = strategy;
+    st.uncertaintyMode = mode;
+    st.diagram = diagram;
+    st.rendered = rendered;
+    st.error = null;
+    st.exportError = null;
+    st.exportNotice = notice ?? null;
+    try {
+      const payload = buildPersistPayload(st, diagram, strategy, mode);
+      st.savedPath = await invoke<string>("save_diagram", { id, diagram: payload });
+    } catch {
+      // Keep working in memory even if disk persistence fails.
+    }
+    draw();
+  };
+
+  const applyStrategy = async (strategy: DiagramStrategyId) => {
+    const st = getState(id);
+    const mode = st.uncertaintyMode;
+    const exact = st.cache.get(cacheKey(strategy, mode));
+    if (exact) {
+      await activateCachedVariant(strategy, mode, exact);
+      return;
+    }
+    if (mode === "off" || mode === "footer") {
+      const prefix = `${strategy}::`;
+      for (const [k, entry] of st.cache.entries()) {
+        if (k.startsWith(prefix)) {
+          await activateCachedVariant(strategy, mode, entry);
+          return;
+        }
+      }
+    }
+    st.selectedStrategy = strategy;
+    triggerGenerate(strategy, mode);
+  };
+
   const applyUncertaintyMode = async (mode: UncertaintyDisplayMode) => {
     const st = getState(id);
     st.uncertaintyMode = mode;
@@ -763,7 +1163,12 @@ export function diagramPane(
       const updated: ProcessDiagram = { ...st.diagram, uncertaintyMode: mode };
       try {
         const nextRendered = await invoke<RenderedDiagram>("render_diagram", { diagram: updated });
-        st.savedPath = await invoke<string>("save_diagram", { id, diagram: updated });
+        st.cache.set(cacheKey(st.selectedStrategy, mode), {
+          diagram: updated,
+          rendered: nextRendered,
+        });
+        const payload = buildPersistPayload(st, updated, st.selectedStrategy, mode);
+        st.savedPath = await invoke<string>("save_diagram", { id, diagram: payload });
         st.diagram = updated;
         st.rendered = nextRendered;
         st.exportNotice =
@@ -776,7 +1181,12 @@ export function diagramPane(
       draw();
       return;
     }
-    // Modes "inline" and "badges-footer" ask AI to draw inline dashed branches or ?1/?2 badges on the flow.
+    // Modes "inline" and "badges-footer": reuse cached variant for this (strategy, mode) if available.
+    const cached = st.cache.get(cacheKey(st.selectedStrategy, mode));
+    if (cached) {
+      await activateCachedVariant(st.selectedStrategy, mode, cached);
+      return;
+    }
     triggerGenerate(st.selectedStrategy, mode);
   };
 
@@ -846,8 +1256,9 @@ export function diagramPane(
       { className: "diagram-type-panel", role: "menu", ariaLabel: "Chọn kiểu sơ đồ" },
       ...STRATEGY_GROUPS.flatMap((group) => [
         el("div", { className: "diagram-type-group", textContent: group }),
-        ...DIAGRAM_STRATEGIES.filter((opt) => opt.group === group).map((opt) =>
-          el(
+        ...DIAGRAM_STRATEGIES.filter((opt) => opt.group === group).map((opt) => {
+          const cached = hasCachedStrategy(st, opt.id);
+          return el(
             "button",
             {
               className: `diagram-type-item${opt.id === current.id ? " active" : ""}`,
@@ -855,19 +1266,23 @@ export function diagramPane(
               disabled: st.running || !hasTranscriptText,
               onclick: () => {
                 details.open = false;
-                st.selectedStrategy = opt.id;
-                triggerGenerate(opt.id);
+                void applyStrategy(opt.id);
               },
             },
             el("span", { className: "diagram-type-thumb" }, parsePreviewSvg(opt.previewSvg, "diagram-type-svg")),
             el(
               "span",
               { className: "diagram-type-meta" },
-              el("span", { className: "diagram-type-name", textContent: opt.label }),
+              el(
+                "span",
+                { className: "diagram-type-name" },
+                el("span", { textContent: opt.label }),
+                cached ? el("span", { className: "diagram-type-cached", textContent: "Đã có" }) : null,
+              ),
               el("span", { className: "diagram-type-desc", textContent: opt.desc }),
             ),
-          ),
-        ),
+          );
+        }),
       ]),
     );
     details.append(summary, panel);
@@ -875,13 +1290,7 @@ export function diagramPane(
   };
 
   const renderNoticeBanner = (st: JobDiagramState): HTMLElement | null => {
-    if (st.running && st.statusMessage) {
-      return el(
-        "div",
-        { className: "diagram-banner", role: "status" },
-        el("span", { textContent: st.statusMessage }),
-      );
-    }
+    if (st.running) return null;
     if (st.error) {
       return el(
         "div",
@@ -936,6 +1345,7 @@ export function diagramPane(
 
   const draw = () => {
     if (!pane.isConnected && loadedLocal) return;
+    stopLoadingTimer();
     const st = getState(id);
 
     if (!loadedLocal) {
@@ -981,6 +1391,7 @@ export function diagramPane(
             "button",
             {
               className: "btn-primary",
+              disabled: st.running,
               title: "Xuất ảnh PNG độ nét cao để chèn vào tài liệu",
               onclick: () => void exportFile("png"),
             },
@@ -990,6 +1401,7 @@ export function diagramPane(
             "button",
             {
               className: "btn-ghost",
+              disabled: st.running,
               title: "Xuất tệp .drawio để mở và chỉnh sửa trong draw.io / diagrams.net",
               onclick: () => void exportFile("drawio"),
             },
@@ -1054,14 +1466,21 @@ export function diagramPane(
         ),
       );
 
-      const stageWrap = el(
-        "div",
-        { className: "diagram-stage-wrap" },
-        stageControls,
-        el("div", { className: "diagram-stage" }, svg),
-      );
+      const stageEl = st.running ? null : el("div", { className: "diagram-stage" }, svg);
+      const stageWrap = st.running
+        ? renderLoadingStage(st)
+        : el(
+            "div",
+            { className: "diagram-stage-wrap" },
+            stageControls,
+            stageEl,
+          );
 
-      const uncertaintiesSection = renderUncertaintiesBlock(diagram);
+      const uncertaintiesSection = st.running
+        ? null
+        : renderUncertaintiesBlock(diagram, st.uncertaintyMode, (u, idx) =>
+            focusUncertaintyOnStage(stageEl, u, idx, st.uncertaintyMode, true),
+          );
 
       const children = [
         renderNoticeBanner(st),
@@ -1098,6 +1517,7 @@ export function diagramPane(
     const emptyChildren = [
       loadError ? el("p", { className: "status-inline bad", textContent: loadError }) : null,
       renderNoticeBanner(st),
+      st.running ? renderLoadingStage(st) : null,
       missingKey && !st.error
         ? el(
             "div",
@@ -1126,6 +1546,7 @@ export function diagramPane(
   const unsubscribe = subscribe(id, draw);
   const observer = new MutationObserver(() => {
     if (!pane.isConnected) {
+      stopLoadingTimer();
       unsubscribe();
       observer.disconnect();
     }
@@ -1140,7 +1561,7 @@ export function diagramPane(
     try {
       const [settings, saved] = await Promise.all([
         invoke<AiView>("ai_settings"),
-        invoke<ProcessDiagram | null>("load_diagram", { id }).catch((e) => {
+        invoke<SavedDiagramPayload | null>("load_diagram", { id }).catch((e) => {
           loadError = String(e);
           return null;
         }),
@@ -1149,14 +1570,14 @@ export function diagramPane(
       const st = getState(id);
       if (!st.diagram && saved) {
         try {
-          st.rendered = await invoke<RenderedDiagram>("render_diagram", { diagram: saved });
-          st.diagram = saved;
-          if (saved.strategy) {
-            st.selectedStrategy = findStrategyOption(saved.strategy).id;
-          }
-          if (saved.uncertaintyMode) {
-            st.uncertaintyMode = findUncertaintyModeOption(saved.uncertaintyMode).id;
-          }
+          const active = hydrateCacheFromSaved(st, saved);
+          const rendered = await invoke<RenderedDiagram>("render_diagram", { diagram: active });
+          st.rendered = rendered;
+          st.diagram = active;
+          st.cache.set(cacheKey(st.selectedStrategy, st.uncertaintyMode), {
+            diagram: active,
+            rendered,
+          });
         } catch (e) {
           loadError = `Sơ đồ đã lưu không hợp lệ: ${e instanceof Error ? e.message : String(e)}`;
         }

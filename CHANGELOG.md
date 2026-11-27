@@ -1,6 +1,6 @@
 # Lịch sử cập nhật A-Sir
 
-## v0.4.9 — 2026-11-27
+## v0.5.0 — 2026-11-27
 
 ### Tính năng mới
 - **Đã thêm màn hình chào 3 bước và tour hướng dẫn nhanh cho người mới:** Lần đầu mở ứng dụng, A-Sir tự giới thiệu 5 bước chính từ nạp file ghi âm đến xuất biên bản và vẽ sơ đồ. Bạn có thể mở lại hướng dẫn bất cứ lúc nào bằng nút `?` ở góc dưới thanh bên.

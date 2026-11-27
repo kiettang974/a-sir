@@ -48,10 +48,9 @@ jobs:
 
       - name: Setup Vulkan SDK (Windows GPU acceleration)
         if: matrix.platform == 'windows-latest'
-        uses: humbletim/setup-vulkan-sdk@v1.4.0
+        uses: humbletim/install-vulkan-sdk@v1.2
         with:
-          vulkan-version: 1.3.296.0
-          vulkan-components: Shader_Toolchain_Debug_Symbols
+          cache: true
 
       - name: Configure Windows build tools (LLVM / CMake)
         if: matrix.platform == 'windows-latest'

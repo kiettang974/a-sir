@@ -1754,7 +1754,10 @@ pub fn build_excalidraw_json(layout: &LayoutDiagram) -> String {
 /// the layered flowchart layout + hand-drawn SVG + Excalidraw v2 JSON renderer.
 pub fn render_diagram(diagram: &ProcessDiagram) -> Result<RenderedDiagram, String> {
     if !diagram.ve_elements.is_empty() {
-        let out = crate::ve_engine::render_spec_elements(&diagram.ve_elements, &HashMap::new())?;
+        let out = crate::ve_engine::render_spec_elements(
+            &diagram.ve_elements,
+            crate::ve_engine::builtin_icons(),
+        )?;
         return Ok(RenderedDiagram {
             width: out.width,
             height: out.height,

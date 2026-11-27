@@ -14,21 +14,132 @@ use std::collections::{HashMap, HashSet};
 use std::f64::consts::PI;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 // ---------------------------------------------------------------------------
-// Theme palette (1:1 port of engine/theme.py)
+// Theme palette (1:1 port of engine/theme.py — Light, Dark, and CSS var(--token))
 // ---------------------------------------------------------------------------
 
 const CANH_NEN: &str = "#0B1021";
 const CANH_CHU: &str = "#DDE7F7";
 const PRE_BG_LIGHT: &str = "#111A2B";
+const PRE_BG_DARK: &str = "#080D14";
 const PRE_FG_LIGHT: &str = "#DCE6F5";
+const PRE_FG_DARK: &str = "#C9D8EE";
 const LIT_DARK: &str = "#24272D";
 const LIT_LIGHT: &str = "#F4EFE4";
 const HACH_HEP: f64 = 30.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ThemeMode {
+    #[default]
+    Light,
+    Dark,
+    CssTokens,
+}
+
+const THEME_TOKENS: &[(&str, &str, &str)] = &[
+    ("paper", "#EDF0F4", "#0D1219"),
+    ("card", "#FFFFFF", "#141C26"),
+    ("ink", "#111A2B", "#E8EEF7"),
+    ("muted", "#5C6B82", "#93A3BA"),
+    ("line", "#C9D4E3", "#2A3746"),
+    ("fill-soft", "#F2F6FB", "#1B2532"),
+    ("l2", "#64748B", "#8B9AB0"),
+    ("l3", "#008F79", "#64D3C2"),
+    ("l4", "#1E5AE8", "#5B8DFF"),
+    ("l6", "#8F74BE", "#B49ADD"),
+    ("l7", "#4D3399", "#7C5FFF"),
+    ("err", "#D6294B", "#FF6B85"),
+    ("warn", "#E8930C", "#F0A93A"),
+    ("node", "#14621C", "#479A46"),
+    ("heap", "#96470C", "#D99456"),
+    ("hot", "#BE1D72", "#F27BC4"),
+    ("fill-l2", "#D4D8DF", "#4A5462"),
+    ("fill-l3", "#A0F2E3", "#00433A"),
+    ("fill-l4", "#C0D1F9", "#324E8A"),
+    ("fill-l6", "#E7D5FF", "#45375B"),
+    ("fill-l7", "#EDDAFF", "#3F325C"),
+    ("fill-err", "#F4C3CD", "#843C4C"),
+    ("fill-warn", "#F9E1BB", "#7D5C27"),
+    ("fill-node", "#C5EDBF", "#1E411D"),
+    ("fill-heap", "#F5E3C6", "#4A3418"),
+    ("fill-hot", "#F9D8EA", "#4A1D38"),
+];
+
+fn resolve_svg_color(hex: &str, mode: ThemeMode) -> String {
+    if hex.eq_ignore_ascii_case("transparent") {
+        return "transparent".into();
+    }
+    if hex.eq_ignore_ascii_case(CANH_NEN) {
+        return match mode {
+            ThemeMode::Light => PRE_BG_LIGHT.into(),
+            ThemeMode::Dark => PRE_BG_DARK.into(),
+            ThemeMode::CssTokens => "var(--pre-bg)".into(),
+        };
+    }
+    if hex.eq_ignore_ascii_case(CANH_CHU) {
+        return match mode {
+            ThemeMode::Light => PRE_FG_LIGHT.into(),
+            ThemeMode::Dark => PRE_FG_DARK.into(),
+            ThemeMode::CssTokens => "var(--pre-fg)".into(),
+        };
+    }
+    if hex.eq_ignore_ascii_case(LIT_DARK) {
+        return match mode {
+            ThemeMode::CssTokens => "var(--lit-dark)".into(),
+            _ => LIT_DARK.into(),
+        };
+    }
+    if hex.eq_ignore_ascii_case(LIT_LIGHT) {
+        return match mode {
+            ThemeMode::CssTokens => "var(--lit-light)".into(),
+            _ => LIT_LIGHT.into(),
+        };
+    }
+    match mode {
+        ThemeMode::Light => hex.to_owned(),
+        ThemeMode::Dark => THEME_TOKENS
+            .iter()
+            .find(|&&(_, light, _)| light.eq_ignore_ascii_case(hex))
+            .map(|&(_, _, dark)| dark.to_owned())
+            .unwrap_or_else(|| hex.to_owned()),
+        ThemeMode::CssTokens => THEME_TOKENS
+            .iter()
+            .find(|&&(_, light, _)| light.eq_ignore_ascii_case(hex))
+            .map(|&(name, _, _)| format!("var(--{name})"))
+            .unwrap_or_else(|| hex.to_owned()),
+    }
+}
+
+/// Generates the complete `tokens.css` stylesheet (Light + system dark + `[data-theme="dark"]`),
+/// matching `engine/theme.py::stylesheet()`.
+pub fn tokens_css() -> String {
+    let mut light_rows = String::new();
+    let mut dark_rows = String::new();
+    for &(name, light, dark) in THEME_TOKENS {
+        let _ = writeln!(light_rows, "  --{name}:{light};");
+        let _ = writeln!(dark_rows, "  --{name}:{dark};");
+    }
+    for (name, light, dark) in [
+        ("pre-bg", PRE_BG_LIGHT, PRE_BG_DARK),
+        ("pre-fg", PRE_FG_LIGHT, PRE_FG_DARK),
+        ("lit-dark", LIT_DARK, LIT_DARK),
+        ("lit-light", LIT_LIGHT, LIT_LIGHT),
+        ("bg", "#E8EDF4", "#0A1526"),
+        ("grid", "#D5DEEA", "#13223A"),
+    ] {
+        let _ = writeln!(light_rows, "  --{name}:{light};");
+        let _ = writeln!(dark_rows, "  --{name}:{dark};");
+    }
+    format!(
+        ":root{{\n{light_rows}}}\n\n@media (prefers-color-scheme:dark){{\n:root:not([data-theme=\"light\"]){{\n{dark_rows}}}\n}}\n\n:root[data-theme=\"dark\"]{{\n{dark_rows}}}\n"
+    )
+}
 
 fn token_light(name: &str) -> Option<&'static str> {
     match name {
@@ -3469,7 +3580,131 @@ fn lint_scene(
         }
     }
 
-    // 3. Free text overlaps another text
+    // 2a. One arrow's head lands where another arrow starts (exempting a->b, b->a pairs)
+    for (i, a1) in lint_arrows.iter().enumerate() {
+        for (j, a2) in lint_arrows.iter().enumerate() {
+            if i == j || a1.pts.len() < 2 || a2.pts.len() < 2 {
+                continue;
+            }
+            if a1.from.is_some() && a1.from == a2.to && a1.to == a2.from {
+                continue;
+            }
+            let head = *a1.pts.last().unwrap();
+            let start = a2.pts[0];
+            if (head.0 - start.0).hypot(head.1 - start.1) < 6.0 {
+                reminders.push(format!(
+                    "an arrow ends where another starts ({:.0},{:.0}): use fromAt/toAt or another side",
+                    head.0, head.1
+                ));
+            }
+        }
+    }
+
+    // 2d. Two arrows leave or reach the same spot in the same direction sharing > 12 units of stroke
+    let dir_vec = |p: (f64, f64), q: (f64, f64)| -> (f64, f64, f64) {
+        let l = (q.0 - p.0).hypot(q.1 - p.1);
+        if l > 1e-6 {
+            ((q.0 - p.0) / l, (q.1 - p.1) / l, l)
+        } else {
+            (0.0, 0.0, 0.0)
+        }
+    };
+    for i in 0..lint_arrows.len() {
+        for j in (i + 1)..lint_arrows.len() {
+            let (p1, p2) = (&lint_arrows[i].pts, &lint_arrows[j].pts);
+            if p1.len() < 2 || p2.len() < 2 {
+                continue;
+            }
+            let pairs = [
+                (p1[0], p2[0], p1[1], p2[1], "leave"),
+                (
+                    *p1.last().unwrap(),
+                    *p2.last().unwrap(),
+                    p1[p1.len() - 2],
+                    p2[p2.len() - 2],
+                    "reach",
+                ),
+            ];
+            for (k1, k2, n1, n2, verb) in pairs {
+                let (ux, uy, l1) = dir_vec(k1, n1);
+                let (vx, vy, l2) = dir_vec(k2, n2);
+                if (k1.0 - k2.0).hypot(k1.1 - k2.1) < 6.0
+                    && ux * vx + uy * vy > 0.985
+                    && l1.min(l2) > 12.0
+                {
+                    reminders.push(format!(
+                        "two arrows {verb} ({:.0},{:.0}) in the same direction sharing {:.0} units: use fromAt/toAt",
+                        k1.0, k1.1, l1.min(l2)
+                    ));
+                }
+            }
+        }
+    }
+
+    // 2b. Bound arrow label nearly as long as the arrow carrying it
+    for e in scene {
+        if e.el_type == "text"
+            && let Some(cid) = e.container_id.as_deref()
+            && let Some(ar) = by.get(cid)
+            && ar.el_type == "arrow"
+        {
+            let dai = ar.width.hypot(ar.height);
+            let doc = if dai > 1e-6 {
+                e.width * ar.width / dai + e.height * ar.height / dai
+            } else {
+                e.width
+            };
+            if doc > dai - 14.0 {
+                reminders.push(format!(
+                    "label \"{}\" spans {doc:.0} along an arrow only {dai:.0} long",
+                    e.text.as_deref().unwrap_or("")
+                ));
+            }
+        }
+    }
+
+    // 2c. Arrowhead straddles the border of a non-endpoint enclosing box/frame
+    for ar in lint_arrows {
+        if ar.pts.len() < 2 {
+            continue;
+        }
+        let mut ends = Vec::new();
+        if ar.head_count >= 1 {
+            ends.push((*ar.pts.last().unwrap(), ar.pts[ar.pts.len() - 2]));
+        }
+        if ar.head_count >= 2 {
+            ends.push((ar.pts[0], ar.pts[1]));
+        }
+        for ((px, py), (qx, qy)) in ends {
+            let l = (qx - px).hypot(qy - py).max(1.0);
+            let d = l.min(26.0);
+            let (hbx, hby) = (px + (qx - px) * d / l, py + (qy - py) * d / l);
+            for h in &than {
+                if h.t != "box"
+                    || ar.from.as_deref() == Some(h.id.as_str())
+                    || ar.to.as_deref() == Some(h.id.as_str())
+                {
+                    continue;
+                }
+                let (x0, y0, x1, y1) = (h.x, h.y, h.x + h.w, h.y + h.h);
+                let inside = |x: f64, y: f64| x > x0 && x < x1 && y > y0 && y < y1;
+                let bien = (px - x0)
+                    .abs()
+                    .min((px - x1).abs())
+                    .min((py - y0).abs())
+                    .min((py - y1).abs());
+                if bien > 2.0 && inside(px, py) != inside(hbx, hby) {
+                    reminders.push(format!(
+                        "arrowhead at ({px:.0},{py:.0}) is cut by border of '{}' ({bien:.0} units away)",
+                        h.id
+                    ));
+                    break;
+                }
+            }
+        }
+    }
+
+    // 3. Free text overlaps another text, straddles a rectangle border, or hugs a frame edge
     let free: Vec<&SceneEl> = scene
         .iter()
         .filter(|e| e.el_type == "text" && e.container_id.is_none())
@@ -3492,23 +3727,168 @@ fn lint_scene(
                 ));
             }
         }
+        let dt = f.width * f.height;
+        if dt > 0.0 {
+            for s in scene {
+                if s.el_type != "rectangle" || s.stroke_color == "transparent" {
+                    continue;
+                }
+                let g = overlap_area((f.x, f.y, f.width, f.height), (s.x, s.y, s.width, s.height));
+                if 0.12 * dt < g && g < 0.88 * dt {
+                    reminders.push(format!(
+                        "text \"{}\" straddles border of shape '{}'",
+                        f.text.as_deref().unwrap_or(""),
+                        s.id
+                    ));
+                } else if g >= 0.88 * dt
+                    && s.width >= 3.0 * f.width
+                    && s.height >= 3.0 * f.height
+                    && !f.id.starts_with(&format!("{}.", s.id))
+                {
+                    let ke = (f.x - s.x)
+                        .min(f.y - s.y)
+                        .min(s.x + s.width - f.x - f.width)
+                        .min(s.y + s.height - f.y - f.height);
+                    if ke > -1.0 && ke < 4.0 {
+                        reminders.push(format!(
+                            "text \"{}\" touches border of shape '{}' ({ke:.0} units inside)",
+                            f.text.as_deref().unwrap_or(""),
+                            s.id
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    // 3a. Label touches the hollow ring of a zero-one / zero-many ER end
+    for r in scene
+        .iter()
+        .filter(|e| e.el_type == "ellipse" && e.id.starts_with("_zero"))
+    {
+        let ring = (r.x - 3.0, r.y - 3.0, r.width + 6.0, r.height + 6.0);
+        for f in &all_text {
+            if overlap_area((f.x, f.y, f.width, f.height), ring) > 0.0 {
+                reminders.push(format!(
+                    "label \"{}\" touches hollow ring of zero-one/zero-many end",
+                    f.text.as_deref().unwrap_or("")
+                ));
+            }
+        }
+    }
+
+    // 3b. Free label touches the bar or crow's foot of an ER end
+    let mut reported_er: HashSet<&str> = HashSet::new();
+    for ar in scene.iter().filter(|e| e.el_type == "arrow" && e.points.len() >= 2) {
+        let abs_p: Vec<(f64, f64)> = ar.points.iter().map(|&(dx, dy)| (ar.x + dx, ar.y + dy)).collect();
+        for (head, tip, prev) in [
+            (ar.end_arrowhead.as_deref(), *abs_p.last().unwrap(), abs_p[abs_p.len() - 2]),
+            (ar.start_arrowhead.as_deref(), abs_p[0], abs_p[1]),
+        ] {
+            if !head.unwrap_or("").starts_with("crowfoot") {
+                continue;
+            }
+            let l = (prev.0 - tip.0).hypot(prev.1 - tip.1).max(1.0);
+            let (ux, uy) = ((prev.0 - tip.0) / l, (prev.1 - tip.1) / l);
+            let q = (tip.0 + ux * l.min(24.0), tip.1 + uy * l.min(24.0));
+            let xs = [tip.0 - uy * 8.0, tip.0 + uy * 8.0, q.0 - uy * 8.0, q.0 + uy * 8.0];
+            let ys = [tip.1 + ux * 8.0, tip.1 - ux * 8.0, q.1 + ux * 8.0, q.1 - ux * 8.0];
+            let min_x = xs.into_iter().fold(f64::INFINITY, f64::min) - 1.0;
+            let max_x = xs.into_iter().fold(f64::NEG_INFINITY, f64::max) + 1.0;
+            let min_y = ys.into_iter().fold(f64::INFINITY, f64::min) - 1.0;
+            let max_y = ys.into_iter().fold(f64::NEG_INFINITY, f64::max) + 1.0;
+            let zone = (min_x, min_y, max_x - min_x, max_y - min_y);
+            for f in &free {
+                if !reported_er.contains(f.id.as_str())
+                    && overlap_area((f.x, f.y, f.width, f.height), zone) > 0.0
+                {
+                    reported_er.insert(f.id.as_str());
+                    reminders.push(format!(
+                        "label \"{}\" touches ER bar/crow at ({:.0},{:.0})",
+                        f.text.as_deref().unwrap_or(""),
+                        tip.0,
+                        tip.1
+                    ));
+                }
+            }
+        }
+    }
+
+    // 3c. Sequence message label runs across a lifeline
+    let lifelines: Vec<&SceneEl> = scene
+        .iter()
+        .filter(|e| e.el_type == "line" && e.id.contains("~life~"))
+        .collect();
+    for t in scene
+        .iter()
+        .filter(|e| e.el_type == "text" && e.id.contains("~lab~"))
+    {
+        for life in &lifelines {
+            let min_y = life.points.iter().map(|p| life.y + p.1).fold(f64::INFINITY, f64::min);
+            let max_y = life.points.iter().map(|p| life.y + p.1).fold(f64::NEG_INFINITY, f64::max);
+            if t.x < life.x && life.x < t.x + t.width && min_y < t.y + t.height && t.y < max_y {
+                let actor = life.id.split("~life~").nth(1).unwrap_or("");
+                reminders.push(format!(
+                    "sequence label \"{}\" crosses lifeline of '{actor}'",
+                    t.text.as_deref().unwrap_or("")
+                ));
+            }
+        }
+    }
+
+    // 3d. Arrow stroke runs through free text
+    for ar in scene.iter().filter(|e| e.el_type == "arrow" && e.points.len() >= 2) {
+        let abs_p: Vec<(f64, f64)> = ar.points.iter().map(|&(dx, dy)| (ar.x + dx, ar.y + dy)).collect();
+        for f in &free {
+            if abs_p
+                .windows(2)
+                .any(|w| seg_intersects_rect_inset(w[0], w[1], f.x, f.y, f.width, f.height, 2.0))
+            {
+                reminders.push(format!(
+                    "an arrow line runs through text \"{}\"",
+                    f.text.as_deref().unwrap_or("")
+                ));
+            }
+        }
     }
 
     // 4. Too many accent colors
     let mut accents: HashSet<&str> = HashSet::new();
     for e in goc {
         if let Some(c) = str_at(e, "color")
-            && is_accent(c) {
-                accents.insert(c);
-            }
+            && is_accent(c)
+        {
+            accents.insert(c);
+        }
         if let Some(f) = str_at(e, "fill")
-            && is_accent(f) {
-                accents.insert(f);
-            }
+            && is_accent(f)
+        {
+            accents.insert(f);
+        }
     }
     if accents.len() > 3 {
         reminders.push(format!("{} accent colors used (recommend <= 3)", accents.len()));
     }
+
+    // 5. Figure is only rounded boxes joined by arrows
+    let types: HashSet<&str> = scene.iter().map(|e| e.el_type.as_str()).collect();
+    let non_code_rects = scene
+        .iter()
+        .filter(|e| e.el_type == "rectangle" && !e.background_color.eq_ignore_ascii_case(CANH_NEN))
+        .count();
+    let only_basic = types
+        .iter()
+        .all(|&t| matches!(t, "rectangle" | "arrow" | "text"));
+    let has_variety = scene.iter().any(|e| {
+        e.stroke_style == "dashed" || (e.el_type == "rectangle" && e.roundness.is_none())
+    });
+    if only_basic && non_code_rects >= 4 && types.contains("arrow") && !has_variety {
+        reminders.push("figure is only rounded boxes joined by arrows".into());
+    }
+
+    // Deduplicate reminders preserving order
+    let mut seen_rem: HashSet<String> = HashSet::new();
+    reminders.retain(|r| seen_rem.insert(r.clone()));
 
     (errors, reminders)
 }
@@ -3928,7 +4308,7 @@ fn scene_bounds(scene: &[SceneEl]) -> (f64, f64, f64, f64) {
     (min_x, min_y, max_x, max_y)
 }
 
-fn render_scene_svg(scene: &[SceneEl]) -> (f64, f64, String) {
+fn render_scene_svg(scene: &[SceneEl], theme: ThemeMode) -> (f64, f64, String) {
     let (min_x, min_y, max_x, max_y) = scene_bounds(scene);
     let pad = 16.0;
     let ox = pad - min_x;
@@ -3940,28 +4320,24 @@ fn render_scene_svg(scene: &[SceneEl]) -> (f64, f64, String) {
     let mut arrow_label_rect: HashMap<&str, (f64, f64, f64, f64)> = HashMap::new();
     for e in scene {
         if e.el_type == "text"
-            && let Some(cid) = e.container_id.as_deref() {
-                arrow_label_rect.insert(cid, (e.x + ox - 5.0, e.y + oy - 2.0, e.width + 10.0, e.height + 4.0));
-            }
+            && let Some(cid) = e.container_id.as_deref()
+        {
+            arrow_label_rect.insert(
+                cid,
+                (e.x + ox - 5.0, e.y + oy - 2.0, e.width + 10.0, e.height + 4.0),
+            );
+        }
     }
 
     let mut defs = String::new();
     let mut body = String::with_capacity(16 * 1024);
 
-    let resolve_render_color = |hex: &str| -> String {
-        if hex.eq_ignore_ascii_case(CANH_NEN) {
-            PRE_BG_LIGHT.to_owned()
-        } else if hex.eq_ignore_ascii_case(CANH_CHU) {
-            PRE_FG_LIGHT.to_owned()
-        } else {
-            hex.to_owned()
-        }
-    };
+    let paper_rendered = resolve_svg_color(token_light("paper").unwrap(), theme);
 
     for (idx, e) in scene.iter().enumerate() {
         let mut rng = Rng::new(e.seed);
-        let stroke = resolve_render_color(&e.stroke_color);
-        let bg = resolve_render_color(&e.background_color);
+        let stroke = resolve_svg_color(&e.stroke_color, theme);
+        let bg = resolve_svg_color(&e.background_color, theme);
         let op_attr = if e.opacity < 99.5 {
             format!(" opacity=\"{}\"", fmt_n(e.opacity / 100.0))
         } else {
@@ -4180,7 +4556,7 @@ fn render_scene_svg(scene: &[SceneEl]) -> (f64, f64, String) {
                     );
                 }
                 if e.el_type == "arrow" {
-                    let paper = token_light("paper").unwrap();
+                    let paper = paper_rendered.as_str();
                     if let Some(ref end_h) = e.end_arrowhead {
                         let n = abs_pts.len();
                         push_arrowhead(
@@ -4338,8 +4714,23 @@ fn scene_to_excalidraw_json(scene: &[SceneEl]) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Public entry points
+// Built-in 188 infrastructure icons (MIT License) + `.excalidrawlib` loader
 // ---------------------------------------------------------------------------
+
+static BUILTIN_ICONS_RAW: &str = include_str!("../assets/icons.json");
+static BUILTIN_ICONS: OnceLock<HashMap<String, Value>> = OnceLock::new();
+
+/// Returns all 188 built-in infrastructure icons (AWS, Azure, GCP, DB, network, etc.).
+pub fn builtin_icons() -> &'static HashMap<String, Value> {
+    BUILTIN_ICONS.get_or_init(|| serde_json::from_str(BUILTIN_ICONS_RAW).unwrap_or_default())
+}
+
+/// Returns sorted list of all 188 built-in icon names.
+pub fn list_icon_names() -> Vec<String> {
+    let mut names: Vec<String> = builtin_icons().keys().cloned().collect();
+    names.sort();
+    names
+}
 
 pub fn load_icons_json(path: &Path) -> Result<HashMap<String, Value>, String> {
     let raw = std::fs::read_to_string(path)
@@ -4347,9 +4738,62 @@ pub fn load_icons_json(path: &Path) -> Result<HashMap<String, Value>, String> {
     serde_json::from_str(&raw).map_err(|e| format!("invalid icons JSON: {e}"))
 }
 
-pub fn render_spec_elements(
+/// Loads extra icons from an Excalidraw `.excalidrawlib` file (same as `ve.py --lib`).
+pub fn load_excalidrawlib(path: &Path) -> Result<HashMap<String, Value>, String> {
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| format!("cannot read library {}: {e}", path.display()))?;
+    let doc: Value = serde_json::from_str(&raw)
+        .map_err(|e| format!("invalid .excalidrawlib JSON {}: {e}", path.display()))?;
+    let mut out = HashMap::new();
+    if let Some(items) = doc.get("libraryItems").and_then(Value::as_array) {
+        for (i, it) in items.iter().enumerate() {
+            let els: Vec<Value> = it
+                .get("elements")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter(|x| !bool_at(x, "isDeleted", false))
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default();
+            if !els.is_empty() {
+                let name = str_at(it, "name")
+                    .map(|s| s.trim().to_lowercase())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| format!("#{i}"));
+                out.insert(
+                    name,
+                    json!({ "elements": els, "src": path.display().to_string() }),
+                );
+            }
+        }
+    } else if let Some(items) = doc.get("library").and_then(Value::as_array) {
+        for (i, it) in items.iter().enumerate() {
+            let els: Vec<Value> = it
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .filter(|x| !bool_at(x, "isDeleted", false))
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default();
+            if !els.is_empty() {
+                out.insert(
+                    format!("#{i}"),
+                    json!({ "elements": els, "src": path.display().to_string() }),
+                );
+            }
+        }
+    }
+    Ok(out)
+}
+
+pub fn render_spec_elements_with_theme(
     spec_els: &[Value],
     icons: &HashMap<String, Value>,
+    theme: ThemeMode,
 ) -> Result<VeOutput, String> {
     let compiled = compile_scene(spec_els, icons)?;
     let (errors, reminders) = lint_scene(
@@ -4358,7 +4802,7 @@ pub fn render_spec_elements(
         &compiled.lint_arrows,
         &compiled.goc,
     );
-    let (width, height, svg) = render_scene_svg(&compiled.scene);
+    let (width, height, svg) = render_scene_svg(&compiled.scene, theme);
     let excalidraw_json = scene_to_excalidraw_json(&compiled.scene);
     Ok(VeOutput {
         width,
@@ -4371,6 +4815,13 @@ pub fn render_spec_elements(
     })
 }
 
+pub fn render_spec_elements(
+    spec_els: &[Value],
+    icons: &HashMap<String, Value>,
+) -> Result<VeOutput, String> {
+    render_spec_elements_with_theme(spec_els, icons, ThemeMode::Light)
+}
+
 pub fn render_spec_json(spec_json: &str, icons: &HashMap<String, Value>) -> Result<VeOutput, String> {
     let spec: Value = serde_json::from_str(spec_json).map_err(|e| format!("invalid spec JSON: {e}"))?;
     let els = spec
@@ -4380,9 +4831,17 @@ pub fn render_spec_json(spec_json: &str, icons: &HashMap<String, Value>) -> Resu
     render_spec_elements(els, icons)
 }
 
-pub fn render_spec_file(path: &Path, icons: &HashMap<String, Value>) -> Result<VeOutput, String> {
+pub fn render_spec_file_with_theme(
+    path: &Path,
+    icons: &HashMap<String, Value>,
+    theme: ThemeMode,
+) -> Result<VeOutput, String> {
     let els = load_spec_file(path)?;
-    render_spec_elements(&els, icons)
+    render_spec_elements_with_theme(&els, icons, theme)
+}
+
+pub fn render_spec_file(path: &Path, icons: &HashMap<String, Value>) -> Result<VeOutput, String> {
+    render_spec_file_with_theme(path, icons, ThemeMode::Light)
 }
 
 #[cfg(test)]
@@ -4390,12 +4849,71 @@ mod tests {
     use super::*;
 
     #[test]
+    fn builtin_icons_contains_all_188_infrastructure_icons() {
+        let icons = builtin_icons();
+        assert_eq!(icons.len(), 188);
+        assert!(icons.contains_key("firewall"));
+        assert!(icons.contains_key("database"));
+        // Render an icon diagram directly with zero external files
+        let spec = json!({
+            "elements": [
+                { "t": "icon", "id": "fw", "name": "firewall", "x": 0, "y": 0, "h": 60, "text": "WAF", "color": "err" },
+                { "t": "icon", "id": "db", "name": "database", "x": 180, "y": 0, "h": 60, "text": "DB", "color": "l4" },
+                { "t": "arrow", "from": "fw", "to": "db", "text": "TCP" }
+            ]
+        });
+        let out = render_spec_elements(spec["elements"].as_array().unwrap(), icons).unwrap();
+        assert!(out.svg.contains("WAF"));
+        assert!(out.svg.contains("DB"));
+    }
+
+    #[test]
+    fn theme_modes_emit_light_dark_and_css_tokens() {
+        let spec = json!([
+            { "t": "box", "id": "a", "x": 0, "y": 0, "w": 140, "h": 54, "text": "API", "color": "l4", "fill": "l4" },
+            { "t": "code", "id": "c", "x": 180, "y": 0, "text": "GET /ok" }
+        ]);
+        let els = spec.as_array().unwrap();
+        let light = render_spec_elements_with_theme(els, builtin_icons(), ThemeMode::Light).unwrap();
+        let dark = render_spec_elements_with_theme(els, builtin_icons(), ThemeMode::Dark).unwrap();
+        let tokens = render_spec_elements_with_theme(els, builtin_icons(), ThemeMode::CssTokens).unwrap();
+
+        assert!(light.svg.contains("#1E5AE8"));
+        assert!(dark.svg.contains("#5B8DFF"));
+        assert!(tokens.svg.contains("var(--l4)"));
+        assert!(tokens.svg.contains("var(--fill-l4)"));
+        assert!(tokens.svg.contains("var(--pre-bg)"));
+        assert!(tokens_css().contains("--fill-l4:#324E8A;"));
+    }
+
+    #[test]
+    fn linter_detects_lifeline_crossing_and_head_to_tail_collision() {
+        let seq = json!([{
+            "t": "sequence", "x": 0, "y": 0, "gap": 130,
+            "actors": [
+                { "id": "a", "label": "A" },
+                { "id": "b", "label": "B" },
+                { "id": "c", "label": "C" }
+            ],
+            "messages": [
+                { "from": "a", "to": "b", "text": "tin nhan rat dai vuot qua hai cot lifeline" }
+            ]
+        }]);
+        let out = render_spec_elements(seq.as_array().unwrap(), builtin_icons()).unwrap();
+        assert!(
+            out.reminders.iter().any(|r| r.contains("crosses lifeline")),
+            "expected lifeline crossing lint, got: {:?}",
+            out.reminders
+        );
+    }
+
+    #[test]
     fn renders_all_30_official_examples_when_skill_repo_present() {
         let skill_dir = Path::new("/Users/kietta/.claude/skills/drawing-excalidraw-figures");
         if !skill_dir.exists() {
             return;
         }
-        let icons = load_icons_json(&skill_dir.join("assets/icons.json")).unwrap();
+        let icons = builtin_icons();
         let mut count = 0usize;
         let mut entries: Vec<_> = std::fs::read_dir(skill_dir.join("examples"))
             .unwrap()
@@ -4405,7 +4923,7 @@ mod tests {
             .collect();
         entries.sort();
         for path in entries {
-            let out = render_spec_file(&path, &icons)
+            let out = render_spec_file(&path, icons)
                 .unwrap_or_else(|e| panic!("failed to render {}: {e}", path.display()));
             assert!(out.svg.starts_with("<svg "), "{}", path.display());
             assert!(out.svg.ends_with("</svg>"), "{}", path.display());

@@ -1,7 +1,7 @@
 //! Generates a structured Vietnamese process flowchart from a full transcript using Gemini.
 //! Wire format lives in `ai`; this module owns the prompt, JSON schema, and structural validation.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -114,7 +114,7 @@ Quy tắc chọn loại sơ đồ & dựng `veSpecJson`:
    - `veSpecJson`: chuỗi JSON hợp lệ có dạng `{\"elements\":[...]}` dùng các phần tử chuẩn của engine vẽ:
      * **Quy trình nhiều vai trò/bộ phận** → `{\"t\":\"swimlane\",\"x\":0,\"y\":0,\"laneW\":200,\"rowH\":110,\"lanes\":[{\"id\":\"nv\",\"label\":\"Nhân viên\"}],\"nodes\":[{\"id\":\"s\",\"lane\":\"nv\",\"row\":0,\"kind\":\"start\"},{\"id\":\"b1\",\"lane\":\"nv\",\"row\":1,\"text\":\"...\"},{\"id\":\"d1\",\"lane\":\"nv\",\"row\":2,\"kind\":\"decision\",\"text\":\"...\"},{\"id\":\"e\",\"lane\":\"nv\",\"row\":3,\"kind\":\"end\"}],\"edges\":[{\"from\":\"s\",\"to\":\"b1\",\"text\":\"...\"}]}`.
      * **Tương tác giữa các hệ thống/API theo thứ tự** → `{\"t\":\"sequence\",\"x\":0,\"y\":0,\"gap\":210,\"actors\":[{\"id\":\"c\",\"label\":\"Client\"}],\"messages\":[{\"from\":\"c\",\"to\":\"s\",\"text\":\"...\"},{\"alt\":\"điều kiện\"},...,{\"else\":\"nhánh khác\"},...,{\"end\":true},{\"note\":\"...\",\"over\":[\"c\",\"s\"],\"color\":\"warn\",\"fill\":\"warn\"}]}` (mỗi `text` của message trên 1 dòng).
-     * **Kiến trúc hệ thống (đường ghi/đọc, DB, cache, queue)** → `frame` (`dashed:true`), `box`, `db` (`kind`: `sql|kv|doc|col|ts`), `pipe` (Kafka/stream), `queue`, `window` (client), `arrow` (`from`,`to`,`fromSide`,`toSide`,`route`:`hv|vh|hvh|vhv`,`labelAt`,`labelDx`,`labelDy`), `note`, `legend`.
+     * **Kiến trúc hệ thống (đường ghi/đọc, DB, cache, queue, hạ tầng cloud)** → `frame` (`dashed:true`), `box`, `db` (`kind`: `sql|kv|doc|col|ts`), `pipe` (Kafka/stream), `queue`, `window` (client), `icon` (`name` trong 188 icon dựng sẵn như `firewall`, `database`, `server`, `load-balancer`, `cloud`, `aws-lambda`, `aws-s3`, `k8s-pod`...), `arrow` (`from`,`to`,`fromSide`,`toSide`,`route`:`hv|vh|hvh|vhv`,`labelAt`,`labelDx`,`labelDy`), `note`, `legend`.
      * **Vòng đời trạng thái** → `start`, `end`, `frame`, `box`, `arrow`.
      * **Mô hình dữ liệu** → `entity` (`name`,`fields`) + `arrow` (`tail\":\"one\",\"head\":\"many\"`).
    - **Hệ màu token (CHỈ dùng tên token, TUYỆT ĐỐI không dùng mã hex):**
@@ -274,7 +274,7 @@ pub fn parse_and_validate(raw: &str, model: &str) -> Result<ProcessDiagram, Diag
             ));
         };
         if !ve_elements.is_empty() {
-            ve_engine::render_spec_elements(&ve_elements, &HashMap::new())
+            ve_engine::render_spec_elements(&ve_elements, ve_engine::builtin_icons())
                 .map_err(|e| DiagramError::InvalidDiagram(format!("lỗi dựng hình sơ đồ ({e})")))?;
             return Ok(ProcessDiagram {
                 title,

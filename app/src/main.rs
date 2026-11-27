@@ -335,11 +335,11 @@ async fn probe_accessible_models(
     app: State<'_, App>,
     provider: Provider,
     candidates: Option<Vec<String>>,
-    model: String,
+    model: Option<String>,
 ) -> Result<ModelProbe, String> {
     let client = app
         .workspace
-        .client(provider, Some(&model))
+        .client(provider, model.as_deref())
         .map_err(|e| e.to_string())?;
     off_thread(move || {
         client

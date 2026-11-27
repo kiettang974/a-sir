@@ -1526,11 +1526,13 @@ function providerBlock(
         if (pickerOpen) drawPicker();
       }
       // Step 2: parallel probe (<=5s cap) reusing the already-fetched list (zero duplicate GET).
-      const accessible = await invoke<string[]>("probe_accessible_models", {
+      const probe = await invoke<{ checked: string[]; accessible: string[] }>("probe_accessible_models", {
         provider,
         candidates: models,
+        model: modelName,
       });
       if (providerModelCache[provider].generation !== generation) return;
+      const accessible = probe.accessible ?? [];
       cache.accessible = accessible;
       probing = false;
       if (accessible.length > 0 && !accessible.includes(modelName)) {

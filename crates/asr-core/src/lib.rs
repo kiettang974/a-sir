@@ -5,6 +5,7 @@ pub mod audio;
 pub mod clean;
 pub mod context;
 pub mod deliverable;
+pub mod diagram;
 pub mod docx;
 pub mod excel;
 pub mod glossary;

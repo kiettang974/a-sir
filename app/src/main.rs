@@ -15,6 +15,7 @@ use asr_core::context::{
     ACCEPTED_EXTENSIONS, ContextAttachment, MAX_FILE_BYTES, MAX_TOTAL_BYTES, MeetingContext,
 };
 use asr_core::deliverable::{MeetingRow, TemplateFormat};
+use asr_core::diagram::ProcessDiagram;
 use asr_core::glossary::Term;
 use asr_core::models::{CustomModel, DiscoveredModel, ModelStore, ModelSummary};
 use asr_core::summary::Draft;
@@ -569,6 +570,39 @@ fn load_note(app: State<App>, id: u64) -> Result<Option<serde_json::Value>, Stri
     app.runner.transcript(id)?.note()
 }
 
+/// Sends the cleaned transcript (falling back to raw) to the configured Gemini model to extract a process diagram.
+#[tauri::command]
+async fn generate_diagram(app: State<'_, App>, id: u64) -> Result<ProcessDiagram, String> {
+    let transcript = app.runner.transcript(id)?.text_for_summary()?;
+    let workspace = app.workspace.clone();
+    off_thread(move || {
+        workspace
+            .generate_diagram(&transcript)
+            .map_err(|e| e.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+fn load_diagram(app: State<App>, id: u64) -> Result<Option<serde_json::Value>, String> {
+    app.runner.transcript(id)?.diagram()
+}
+
+#[tauri::command]
+fn save_diagram(
+    app: State<App>,
+    id: u64,
+    diagram: serde_json::Value,
+) -> Result<PathBuf, String> {
+    app.runner.transcript(id)?.save_diagram(&diagram)
+}
+
+#[tauri::command]
+fn export_diagram_file(path: PathBuf, bytes: Vec<u8>) -> Result<PathBuf, String> {
+    std::fs::write(&path, &bytes).map_err(|e| format!("không lưu được tệp xuất ({}): {e}", path.display()))?;
+    Ok(path)
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct MeetingTemplatesView {
@@ -1050,6 +1084,10 @@ fn main() {
             load_ai_clean,
             save_note,
             load_note,
+            generate_diagram,
+            load_diagram,
+            save_diagram,
+            export_diagram_file,
             meeting_templates,
             set_templates_enabled,
             import_meeting_template,

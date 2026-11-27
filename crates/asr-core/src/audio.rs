@@ -130,11 +130,14 @@ fn resample(input: Vec<f32>, rate: usize) -> Result<Vec<f32>, String> {
         out.extend_from_slice(&resampler.process(&[head], None).map_err(|e| fail(&e))?[0]);
         rest = tail;
     }
-    out.extend_from_slice(
-        &resampler
-            .process_partial(Some(&[rest]), None)
-            .map_err(|e| fail(&e))?[0],
-    );
+    // An empty tail (length an exact multiple of the chunk) makes rubato reject the buffer.
+    if !rest.is_empty() {
+        out.extend_from_slice(
+            &resampler
+                .process_partial(Some(&[rest]), None)
+                .map_err(|e| fail(&e))?[0],
+        );
+    }
     // Flush what the filter still holds; its delay is dropped so timestamps stay right.
     out.extend_from_slice(
         &resampler
@@ -182,6 +185,12 @@ mod tests {
         let out = decode(&path).unwrap();
         assert_eq!(out.len(), 48_000);
         assert!((peak_hz(&out) - 440.0).abs() < 3.0, "{}", peak_hz(&out));
+    }
+
+    #[test]
+    fn input_length_that_is_a_multiple_of_the_chunk_resamples() {
+        let out = resample(vec![0.0; 4096 * 43], 44_100).unwrap();
+        assert_eq!(out.len(), 4096 * 43 * SAMPLE_RATE / 44_100);
     }
 
     #[test]

@@ -8,7 +8,8 @@ import "@fontsource/literata/vietnamese-400.css";
 import "@fontsource/literata/latin-400.css";
 import "./style.css";
 
-import { aiCleanPane, contextTabBody } from "./context";
+import { aiCleanPane, contextTabBody, getAiCleanButtonState, openOrStartAiClean } from "./context";
+import { diagramPane, getDiagramButtonState, openOrGenerateDiagram } from "./diagram";
 import { el } from "./dom";
 import { icon } from "./icons";
 import { type LocalModelProgress, overflowMenu, progressBar } from "./ipc";
@@ -125,7 +126,7 @@ let suppressClickOnce = false;
 let pendingQueueRender = false;
 let transcript: { id: number; text: string; lines: Line[] } | null = null;
 let readerNote = "";
-let view: "reader" | "memos" | "settings" | "note" | "aiClean" = "reader";
+let view: "reader" | "memos" | "settings" | "note" | "aiClean" | "diagram" = "reader";
 let readerTab: "transcript" | "context" = "transcript";
 let pendingSettingsTab: "speech" | "ai" | "minutes" | "glossary" | "update" | undefined;
 let memos: MemoList | null = null;
@@ -1009,6 +1010,26 @@ function readerPane(): HTMLElement {
   }
   const shown = transcript?.id === job.id ? transcript : null;
   const text = shown?.text ?? null;
+  const diagramState = getDiagramButtonState(job.id);
+  const diagramBusy = diagramState === "running";
+  const diagramLabel =
+    diagramState === "running"
+      ? "Đang phân tích tạo sơ đồ…"
+      : diagramState === "ready"
+        ? "Xem sơ đồ"
+        : diagramState === "error"
+          ? "Sơ đồ (lỗi)"
+          : "Tạo sơ đồ";
+  const cleanState = getAiCleanButtonState(job.id);
+  const cleanBusy = cleanState === "running";
+  const cleanLabel =
+    cleanState === "running"
+      ? "Đang làm sạch…"
+      : cleanState === "ready"
+        ? "Xem bản làm sạch"
+        : cleanState === "error"
+          ? "Làm sạch (lỗi)"
+          : "Làm sạch";
   return el(
     "section",
     { className: "reader" },
@@ -1036,14 +1057,69 @@ function readerPane(): HTMLElement {
           "button",
           {
             className: "btn-ghost",
-            title: "Lọc câu rác, từ lặp và sửa tên riêng/thuật ngữ (tại máy → AI theo ngữ cảnh)",
+            title: diagramBusy
+              ? "Đang phân tích bản chép lời và tạo sơ đồ bằng Gemini…"
+              : text !== null && text.trim().length === 0
+                ? "Bản chép lời đang trống nên chưa thể tạo sơ đồ"
+                : "Tạo hoặc mở sơ đồ quy trình từ bản chép lời bằng Gemini",
+            disabled: diagramBusy || text === null || text.trim().length === 0,
             onclick: () => {
-              view = "aiClean";
-              render();
+              void openOrGenerateDiagram(job.id, {
+                onStateChange: () => {
+                  if (selected === job.id && view === "reader") render();
+                },
+                onOpenDiagram: (doneId) => {
+                  if (selected === doneId) {
+                    view = "diagram";
+                    render();
+                  }
+                },
+                onFinished: (doneId, err) => {
+                  if (selected === doneId && view === "reader") {
+                    readerNote = err
+                      ? `Chưa tạo được sơ đồ: ${err}`
+                      : "Đã tạo xong sơ đồ quy trình. Bấm \"Xem sơ đồ\" để mở.";
+                    render();
+                  }
+                },
+              });
+            },
+          },
+          icon("diagram", 15),
+          el("span", { textContent: diagramLabel }),
+        ),
+        el(
+          "button",
+          {
+            className: "btn-ghost",
+            title: cleanBusy
+              ? "Đang làm sạch bản chép lời…"
+              : "Lọc câu rác, từ lặp và sửa tên riêng/thuật ngữ (tại máy → AI theo ngữ cảnh)",
+            disabled: cleanBusy || text === null,
+            onclick: () => {
+              void openOrStartAiClean(job.id, {
+                onStateChange: () => {
+                  if (selected === job.id && view === "reader") render();
+                },
+                onOpenClean: (doneId) => {
+                  if (selected === doneId) {
+                    view = "aiClean";
+                    render();
+                  }
+                },
+                onFinished: (doneId, err) => {
+                  if (selected === doneId && view === "reader") {
+                    readerNote = err
+                      ? `Chưa làm sạch được: ${err}`
+                      : "Đã làm sạch xong bản chép lời. Bấm \"Xem bản làm sạch\" để xem chi tiết.";
+                    render();
+                  }
+                },
+              });
             },
           },
           icon("fileText", 15),
-          el("span", { textContent: "Làm sạch" }),
+          el("span", { textContent: cleanLabel }),
         ),
         el(
           "button",
@@ -1197,6 +1273,23 @@ function rightPane(): HTMLElement {
       back: () => select(job.id),
     });
   }
+  if (view === "diagram" && job) {
+    const hasText =
+      transcript?.id === job.id ? transcript.text.trim().length > 0 : job.state.kind === "done";
+    return diagramPane(job.id, jobName(job), hasText, {
+      openSettings: () => {
+        view = "settings";
+        selected = null;
+        pendingSettingsTab = "ai";
+        render();
+      },
+      openSummary: () => {
+        view = "note";
+        render();
+      },
+      back: () => select(job.id),
+    });
+  }
   if (view === "aiClean" && job) {
     return aiCleanPane(job.id, jobName(job), {
       openSettings: () => {
@@ -1208,6 +1301,10 @@ function rightPane(): HTMLElement {
       openContext: () => {
         view = "reader";
         readerTab = "context";
+        render();
+      },
+      openSummary: () => {
+        view = "note";
         render();
       },
       back: () => {

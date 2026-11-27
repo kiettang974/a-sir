@@ -43,6 +43,7 @@ const state = {
   ai: aiView(params.get("keys") !== "none"),
   glossary: structuredClone(GLOSSARY) as Term[],
   notes: new Map<number, unknown>(),
+  diagrams: new Map<number, unknown>(),
 };
 
 const LOCAL_MODEL_CATALOG = [
@@ -274,6 +275,10 @@ const commands: Record<string, (a: Args) => unknown | Promise<unknown>> = {
     if (settings.summaryStyle) (state.ai as Record<string, unknown>).summaryStyle = settings.summaryStyle;
   },
   list_models: ({ provider }: Args) => MODELS[provider as Provider] ?? [],
+  probe_accessible_models: ({ candidates, model }: Args) => {
+    const checked = [...new Set<string>([model, ...candidates].filter(Boolean))].slice(0, 2);
+    return { checked, accessible: checked.slice(0, 1) };
+  },
   set_api_key: ({ provider, key }: Args) => {
     const k = String(key).trim();
     if (k.length < 8) throw "API key quá ngắn.";
@@ -307,6 +312,43 @@ const commands: Record<string, (a: Args) => unknown | Promise<unknown>> = {
     const j = job(id);
     return `${OUTPUT_DIR}/${j.title ?? stem(j.source)} - meeting note.html`;
   },
+  generate_diagram: async ({ id }: Args) => {
+    await sleep(900);
+    if (job(id).state.kind !== "done") throw "File này chưa chép lời xong.";
+    if (!state.ai.keys.gemini) throw "Chưa có API key cho nhà cung cấp này";
+    return {
+      title: "Quy trình duyệt thanh toán (mô phỏng)",
+      summary: "Kiểm tra hoá đơn, phân nhánh theo ngưỡng 2 triệu và đường trả lại hồ sơ thiếu chứng từ.",
+      model: state.ai.models.gemini ?? "gemini-3.8-flash",
+      nodes: [
+        { id: "n1", kind: "start", label: "Tiếp nhận hồ sơ đề nghị thanh toán", role: "Nhân viên" },
+        { id: "n2", kind: "decision", label: "Hồ sơ đủ hoá đơn hợp lệ?", role: "Kế toán" },
+        { id: "n3", kind: "step", label: "Trả lại hồ sơ để bổ sung hoá đơn", role: "Kế toán" },
+        { id: "n4", kind: "decision", label: "Giá trị khoản chi >= 2 triệu?", role: "" },
+        { id: "n5", kind: "step", label: "Trình duyệt bổ sung", role: "" },
+        { id: "n6", kind: "end", label: "Chuyển kế toán thực hiện thanh toán", role: "Kế toán" },
+      ],
+      edges: [
+        { from: "n1", to: "n2", label: "" },
+        { from: "n2", to: "n3", label: "Thiếu hoá đơn" },
+        { from: "n3", to: "n1", label: "Nộp lại" },
+        { from: "n2", to: "n4", label: "Đủ hoá đơn" },
+        { from: "n4", to: "n6", label: "< 2 triệu" },
+        { from: "n4", to: "n5", label: ">= 2 triệu" },
+        { from: "n5", to: "n6", label: "Đã duyệt" },
+      ],
+      uncertainties: [
+        { item: "Người duyệt bổ sung", reason: "Bản chép lời chưa chốt rõ ai duyệt khoản từ 2 triệu trở lên." },
+      ],
+    };
+  },
+  load_diagram: ({ id }: Args) => structuredClone(state.diagrams.get(id) ?? null),
+  save_diagram: ({ id, diagram }: Args) => {
+    state.diagrams.set(id, structuredClone(diagram));
+    const j = job(id);
+    return `${OUTPUT_DIR}/${j.title ?? stem(j.source)}_diagram.json`;
+  },
+  export_diagram_file: ({ path }: Args) => String(path),
   meeting_templates: () => ({ excel: null, docx: null }),
   import_meeting_template: ({ path }: Args) => {
     const name = baseName(String(path));

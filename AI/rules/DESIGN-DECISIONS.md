@@ -49,7 +49,8 @@ Mọi màu, bo góc, bóng đổ và font phải đi qua token trong `:root` c�
 | Màn hình | Slot chính (1 nút `.btn-primary` / `.add`) | Slot phụ (`.btn-ghost` / `.link`) | Menu tràn (`⋯`) |
 | --- | --- | --- | --- |
 | `Queue` (thanh bên) | `Thêm file` (chân thanh bên) | `Tạm dừng`/`Tiếp tục`, `Xoá hàng chờ`, `Từ app Ghi âm`, `Cấu hình` | Menu `⋯` từng bản ghi (`Huỷ`, `Thử lại`, `Chép lời lại`, `Xoá`) |
-| `Reader` (đọc bản chép) | `Bảng tóm tắt` | `Chép toàn bộ` | `Chép lời lại`, `Tạo bản đã làm sạch`, `Mở trong Finder` |
+| `Reader` (đọc bản chép) | `Tóm tắt` | `Tạo sơ đồ`, `Làm sạch`, `Chép` | `Chép lời lại`, `Mở trong Finder` |
+| `Diagram` (sơ đồ quy trình) | `Tạo sơ đồ` (chưa có kết quả) / `Xuất PNG` (đã có kết quả) | `Xuất .excalidraw`, điều khiển zoom | `Tạo lại sơ đồ`, `Mở tệp đã lưu trong Finder`, `Về bản chép lời` |
 | `Note` (biên bản họp) | `Chép gửi email` | `Xuất Excel`, `Xuất Word` | `Tạo lại bảng tóm tắt`, `Mở trong Finder`, `Về bản chép lời` |
 | `Settings` (4 tab) | `Lưu thuật ngữ` (tab Thuật ngữ), `Chọn dùng` (model) | `Tải model`, `Xoá`, `Chọn file mẫu`, `Kiểm tra`, `Chọn model` | — |
 | `Voice Memos` | `Chép lời <N> bản ghi` | `Chọn tất cả`/`Bỏ chọn`, ô tìm kiếm | — |

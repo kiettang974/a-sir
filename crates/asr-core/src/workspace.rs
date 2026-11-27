@@ -12,6 +12,7 @@ use crate::ai::{AiAttachment, AiError, AiSettings, ApiKeys, HttpClient, Provider
 use crate::clean::{self, AiCleanProposal};
 use crate::context::ContextStore;
 use crate::deliverable::{self, MeetingRow, TemplateFormat};
+use crate::diagram::{self, DiagramError, ProcessDiagram};
 use crate::docx;
 use crate::excel;
 use crate::glossary::{self, Term};
@@ -547,6 +548,17 @@ impl Workspace {
             context_notes,
             attachments,
         )
+    }
+
+    /// Generates a process flowchart from the transcript using the configured Gemini
+    /// model and API key only (no audio, no context notes, no attachments, no meeting note).
+    pub fn generate_diagram(&self, transcript: &str) -> Result<ProcessDiagram, DiagramError> {
+        if transcript.trim().is_empty() {
+            return Err(DiagramError::EmptyTranscript);
+        }
+        let model = self.ai_settings().model(Provider::Gemini).to_owned();
+        let client = self.client(Provider::Gemini, Some(&model))?;
+        diagram::generate(&client, &model, transcript)
     }
 
     pub fn glossary(&self) -> Vec<Term> {

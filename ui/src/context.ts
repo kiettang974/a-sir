@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 
 import { el } from "./dom";
+import { icon } from "./icons";
 import { type AiView, PROVIDER_NAME, PROVIDERS } from "./ipc";
 
 export type ContextAttachment = {
@@ -222,6 +223,7 @@ type AiCleanCallbacks = {
   back: () => void;
   openSettings: () => void;
   openContext: () => void;
+  openSummary: () => void;
   onSaved: (path: string) => void;
 };
 
@@ -233,6 +235,103 @@ type SavedAiClean = {
 };
 
 const savedCleanCache = new Map<number, SavedAiClean>();
+const runningCleanJobs = new Set<number>();
+const cleanErrorCache = new Map<number, string>();
+
+export function getAiCleanButtonState(jobId: number): "idle" | "running" | "ready" | "error" {
+  if (runningCleanJobs.has(jobId)) return "running";
+  if (savedCleanCache.has(jobId)) return "ready";
+  if (cleanErrorCache.has(jobId)) return "error";
+  return "idle";
+}
+
+/**
+ * Opens an existing cleaned transcript immediately, or runs AI/local cleaning in the background
+ * while keeping the user on the Reader screen. Never auto-navigates when finished; the user
+ * clicks the button again to inspect the cleaned result.
+ */
+export async function openOrStartAiClean(
+  jobId: number,
+  callbacks: {
+    onStateChange: () => void;
+    onOpenClean: (id: number) => void;
+    onFinished?: (id: number, error: string | null) => void;
+  },
+): Promise<void> {
+  if (runningCleanJobs.has(jobId)) return;
+  if (savedCleanCache.has(jobId) || cleanErrorCache.has(jobId)) {
+    callbacks.onOpenClean(jobId);
+    return;
+  }
+
+  try {
+    const diskSaved = await invoke<SavedAiClean | null>("load_ai_clean", { id: jobId });
+    if (diskSaved && Array.isArray(diskSaved.edits)) {
+      savedCleanCache.set(jobId, diskSaved);
+      callbacks.onOpenClean(jobId);
+      return;
+    }
+  } catch {
+    // No saved cleaned copy yet; run cleaning in background.
+  }
+
+  runningCleanJobs.add(jobId);
+  cleanErrorCache.delete(jobId);
+  callbacks.onStateChange();
+
+  try {
+    const [ai, ctx] = await Promise.all([
+      invoke<AiView>("ai_settings"),
+      invoke<MeetingContextView>("get_meeting_context", { id: jobId }),
+    ]);
+    const usable = PROVIDERS.filter((p) => ai.keys[p]);
+    if (usable.length === 0) {
+      const path = await invoke<string>("clean_transcript", { id: jobId });
+      const fileName = path.split(/[/\\]/).pop() ?? path;
+      savedCleanCache.set(jobId, {
+        edits: [],
+        savedFileName: fileName,
+        providerName: "Làm sạch tại máy",
+        usedContext: false,
+      });
+    } else {
+      const provider = usable.includes(ai.defaultProvider) ? ai.defaultProvider : usable[0];
+      const useContext = describeContext(ctx).hasAny;
+      const pName = PROVIDER_NAME[provider];
+      const proposal = await invoke<AiCleanProposal>("preview_ai_clean", {
+        id: jobId,
+        provider,
+        useContext,
+      });
+      const saved: SavedAiClean = {
+        edits: proposal.edits,
+        savedFileName: "",
+        providerName: pName,
+        usedContext: useContext,
+      };
+      const savedPath = await invoke<string>("save_ai_clean", {
+        id: jobId,
+        cleanedText: proposal.cleanedText,
+        meta: saved,
+      });
+      saved.savedFileName = savedPath.split(/[/\\]/).pop() ?? savedPath;
+      invoke("save_ai_clean", {
+        id: jobId,
+        cleanedText: proposal.cleanedText,
+        meta: saved,
+      }).catch(() => {});
+      savedCleanCache.set(jobId, saved);
+    }
+    callbacks.onFinished?.(jobId, null);
+  } catch (e) {
+    const err = String(e);
+    cleanErrorCache.set(jobId, err);
+    callbacks.onFinished?.(jobId, err);
+  } finally {
+    runningCleanJobs.delete(jobId);
+    callbacks.onStateChange();
+  }
+}
 
 export function aiCleanPane(jobId: number, title: string, cb: AiCleanCallbacks): HTMLElement {
   const head = el("header", { className: "reader-head" });
@@ -246,6 +345,16 @@ export function aiCleanPane(jobId: number, title: string, cb: AiCleanCallbacks):
       el(
         "div",
         { className: "reader-actions" },
+        el(
+          "button",
+          {
+            className: "btn-primary",
+            title: "Mở bảng tóm tắt biên bản",
+            onclick: cb.openSummary,
+          },
+          icon("summary", 15),
+          el("span", { textContent: "Tóm tắt" }),
+        ),
         el("button", {
           className: "btn-ghost",
           textContent: "Chạy lại",
@@ -429,8 +538,12 @@ export function aiCleanPane(jobId: number, title: string, cb: AiCleanCallbacks):
   };
 
   const cached = savedCleanCache.get(jobId);
+  const cachedErr = cleanErrorCache.get(jobId);
   if (cached) {
     renderSaved(cached);
+  } else if (cachedErr) {
+    cleanErrorCache.delete(jobId);
+    showError("AI báo lỗi khi làm sạch", cachedErr);
   } else {
     renderHead(true);
     body.replaceChildren(el("h3", { textContent: "Đang kiểm tra bản làm sạch…" }));

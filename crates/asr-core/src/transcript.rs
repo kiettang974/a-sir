@@ -167,6 +167,32 @@ impl Transcript {
         save_atomic(&page, html.as_bytes()).map_err(|e| e.to_string())?;
         Ok(page)
     }
+
+    /// Path of the latest saved process diagram for this recording.
+    pub fn diagram_path(&self) -> PathBuf {
+        self.sidecar("_diagram", "json")
+    }
+
+    /// Loads the latest saved process diagram for this recording, if present.
+    pub fn diagram(&self) -> Result<Option<Value>, String> {
+        let path = self.diagram_path();
+        match fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map(Some)
+                .map_err(|e| format!("tệp sơ đồ đã lưu bị hỏng: {e}")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(format!("không đọc được sơ đồ đã lưu: {e}")),
+        }
+    }
+
+    /// Atomically saves the latest process diagram beside the transcript so a failed write
+    /// never corrupts the previously saved diagram.
+    pub fn save_diagram(&self, diagram: &Value) -> Result<PathBuf, String> {
+        let path = self.diagram_path();
+        let bytes = serde_json::to_vec_pretty(diagram).map_err(|e| e.to_string())?;
+        save_atomic(&path, &bytes).map_err(|e| format!("không lưu được sơ đồ: {e}"))?;
+        Ok(path)
+    }
 }
 
 #[cfg(test)]
@@ -252,5 +278,25 @@ mod tests {
 
         t.write_ai_cleaned("[00:00:00 --> 00:00:01] bản lọc AI\n").unwrap();
         assert!(t.text_for_summary().unwrap().contains("bản lọc AI"));
+    }
+
+    #[test]
+    fn diagrams_round_trip_separately_per_transcript_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let t1 = transcript(dir.path(), "bản 1");
+        let txt2 = dir.path().join("họp (2).txt");
+        fs::write(&txt2, "bản 2").unwrap();
+        let t2 = Transcript::new(txt2, dir.path().join("họp.m4a"));
+
+        assert_eq!(t1.diagram().unwrap(), None);
+        assert_eq!(t2.diagram().unwrap(), None);
+
+        let d1 = json!({ "title": "Sơ đồ 1", "nodes": [], "edges": [] });
+        let d2 = json!({ "title": "Sơ đồ 2", "nodes": [], "edges": [] });
+        let p1 = t1.save_diagram(&d1).unwrap();
+        let p2 = t2.save_diagram(&d2).unwrap();
+        assert_ne!(p1, p2);
+        assert_eq!(t1.diagram().unwrap(), Some(d1));
+        assert_eq!(t2.diagram().unwrap(), Some(d2));
     }
 }

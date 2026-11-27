@@ -1,6 +1,6 @@
 {
   "productName": "A-Sir",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "identifier": "com.asir.app",
   "build": {
     "beforeDevCommand": { "script": "pnpm dev", "cwd": "../ui" },

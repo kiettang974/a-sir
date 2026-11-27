@@ -175,7 +175,7 @@ fn ai_clean_schema() -> Value {
                 "items": {
                     "type": "object",
                     "properties": {
-                        "line": { "type": "integer", "minimum": 1 },
+                        "line": { "type": "integer" },
                         "corrected": { "type": "string" },
                         "reason": { "type": "string" }
                     },

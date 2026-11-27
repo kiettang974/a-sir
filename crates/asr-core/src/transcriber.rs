@@ -151,10 +151,28 @@ impl WhisperCpp {
                 .map(str::to_owned)
                 .ok_or_else(|| TranscribeError::Engine(format!("đường dẫn lỗi: {}", p.display())))
         };
-        let mut ctx_params = WhisperContextParameters::default();
-        ctx_params.flash_attn(true);
-        let ctx = WhisperContext::new_with_params(&path(model)?, ctx_params).map_err(engine)?;
-        let state = ctx.create_state().map_err(engine)?;
+        let model_path = path(model)?;
+        // Prioritize GPU (Metal on macOS, Vulkan on Windows) with automatic silent fallback
+        // to CPU when no compatible GPU/driver is available so users never need extra installs.
+        let (ctx, state) = {
+            let mut gpu_params = WhisperContextParameters::default();
+            gpu_params.use_gpu(true);
+            gpu_params.flash_attn(true);
+            match WhisperContext::new_with_params(&model_path, gpu_params)
+                .and_then(|c| c.create_state().map(|s| (c, s)))
+            {
+                Ok(pair) => pair,
+                Err(_) => {
+                    let mut cpu_params = WhisperContextParameters::default();
+                    cpu_params.use_gpu(false);
+                    cpu_params.flash_attn(true);
+                    let c = WhisperContext::new_with_params(&model_path, cpu_params)
+                        .map_err(engine)?;
+                    let s = c.create_state().map_err(engine)?;
+                    (c, s)
+                }
+            }
+        };
         let vad_ctx = if options.use_vad {
             let vad = WhisperVadContext::new(&path(vad_model)?, WhisperVadContextParams::default())
                 .map_err(engine)?;

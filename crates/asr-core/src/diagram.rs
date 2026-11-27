@@ -279,6 +279,27 @@ fn strategy_instruction(strategy: Option<&str>) -> Option<&'static str> {
         "explained-flow" => {
             "Người dùng CHỌN CỨNG dạng sơ đồ: **Hướng dẫn từng bước kèm ví dụ (`explained-flow`)**. Hãy xếp 1 cột bước đánh số `badge` (1, 2, 3...) từ trên xuống, mỗi bước kèm 1 hộp/ghi chú ví dụ cụ thể bên phải (nối bằng mũi tên nét đứt `muted`)."
         }
+        "failure-branch" => {
+            "Người dùng CHỌN CỨNG dạng sơ đồ: **Luồng chính & Nhánh lỗi (`failure-branch`)**. Hãy vẽ luồng thành công nằm ngang ở hàng trên (`node`/`l4`), từ các bước có rủi ro kéo nhánh rẽ xuống dưới (`err`) nêu rõ lỗi, cơ chế retry/fallback hoặc nơi dừng."
+        }
+        "two-views" => {
+            "Người dùng CHỌN CỨNG dạng sơ đồ: **Hai góc nhìn song song (`two-views`)**. Hãy chia 2 khung `frame` cạnh nhau (ví dụ Góc nhìn người dùng vs Góc nhìn hệ thống, hoặc Lý thuyết vs Thực tế), dùng chung màu nhấn cho cùng một thực thể ở hai bên và nối đối chiếu khi cần."
+        }
+        "vulnerability" => {
+            "Người dùng CHỌN CỨNG dạng sơ đồ: **Phân tích lỗ hổng & Phòng vệ (`vulnerability`)**. Chỉ trình bày cơ chế và biện pháp phòng vệ (tuyệt đối không ghi payload tấn công): ① Cách hoạt động bình thường → ② Điểm yếu / đầu vào bất thường (`err`) → ③ Tác động lên dữ liệu → ④ Biện pháp chặn & việc cần làm (`node`)."
+        }
+        "timeline" => {
+            "Người dùng CHỌN CỨNG dạng sơ đồ: **Trục thời gian & Cột mốc (`timeline`)**. Hãy vẽ trục `axis` ngang bên dưới với các mốc thời gian thật, xếp các hộp sự kiện/cột mốc phía trên nối xuống trục, nhấn `err` ở điểm sự cố hoặc `l4` ở cột mốc chốt."
+        }
+        "concept" => {
+            "Người dùng CHỌN CỨNG dạng sơ đồ: **Giải thích khái niệm (`concept`)**. Hãy bắt đầu từ ① ví dụ đời thường / ẩn dụ dễ hiểu (bên trái), rồi nối sang ② cơ chế/khái niệm thật (bên phải) có giải thích ngắn bằng lời thường ngay dưới thuật ngữ."
+        }
+        "note" => {
+            "Người dùng CHỌN CỨNG dạng sơ đồ: **Ghi chú cuộc họp & Quyết định (`note`)**. Hãy gom thành các thẻ `card` ngắn gọn đúng theo ngôn từ cuộc họp: Bối cảnh / Vấn đề (`VĐ1`...) → Quyết định đã chốt (nhấn `l4`) → Câu hỏi mở / Hành động tiếp theo (`HĐ1`...)."
+        }
+        "idea" => {
+            "Người dùng CHỌN CỨNG dạng sơ đồ: **Trình bày ý tưởng / Đề xuất (`idea`)**. Hãy vẽ mạch thuyết phục 3 chặng rõ ràng: ① Vấn đề hiện tại (`err`) → ② Ý tưởng cốt lõi (nhấn `l4`, ở trung tâm) → ③ Giá trị mang lại & Bước thử nghiệm đầu tiên (`node`)."
+        }
         _ => {
             "Người dùng yêu cầu ưu tiên chiến lược đã chọn khi dựng `veSpecJson`."
         }
@@ -334,6 +355,27 @@ fn strategy_template(strategy: Option<&str>) -> Option<&'static str> {
         ),
         "explained-flow" => Some(
             r#"{"elements":[{"t":"badge","x":0,"y":12,"n":1,"color":"l4"},{"t":"box","id":"s1","x":42,"y":0,"w":210,"h":54,"text":"Bước 1: Tiếp nhận","color":"l4","fill":"l4"},{"t":"box","id":"e1","x":310,"y":0,"w":230,"h":54,"text":"VD: Khách gửi đơn online","color":"muted","fill":"soft"},{"t":"arrow","from":"s1","to":"e1","dashed":true,"color":"muted"},{"t":"badge","x":0,"y":102,"n":2,"color":"l4"},{"t":"box","id":"s2","x":42,"y":90,"w":210,"h":54,"text":"Bước 2: Kiểm tra","fill":"soft"},{"t":"box","id":"e2","x":310,"y":90,"w":230,"h":54,"text":"VD: Dược sĩ gọi xác nhận","color":"muted","fill":"soft"},{"t":"arrow","from":"s1","to":"s2"},{"t":"arrow","from":"s2","to":"e2","dashed":true,"color":"muted"},{"t":"badge","x":0,"y":192,"n":3,"color":"node"},{"t":"box","id":"s3","x":42,"y":180,"w":210,"h":54,"text":"Bước 3: Hoàn tất","color":"node","fill":"node"},{"t":"arrow","from":"s2","to":"s3"}]}"#,
+        ),
+        "failure-branch" => Some(
+            r#"{"elements":[{"t":"box","id":"p1","x":0,"y":20,"w":180,"h":60,"text":"1. Nhận yêu cầu","fill":"soft"},{"t":"box","id":"p2","x":240,"y":20,"w":200,"h":60,"text":"2. Kiểm tra dữ liệu","color":"l4","fill":"l4"},{"t":"box","id":"p3","x":500,"y":20,"w":200,"h":60,"text":"3. Xử lý thành công","color":"node","fill":"node"},{"t":"box","id":"f1","x":240,"y":150,"w":200,"h":74,"text":"Lỗi định dạng\n→ Báo sửa","color":"err","fill":"err"},{"t":"box","id":"f2","x":500,"y":150,"w":200,"h":74,"text":"Quá hạn\n→ Thử lại","color":"warn","fill":"warn","dashed":true},{"t":"arrow","from":"p1","to":"p2","text":"Hồ sơ"},{"t":"arrow","from":"p2","to":"p3","text":"Hợp lệ","color":"node"},{"t":"arrow","from":"p2","to":"f1","text":"Sai","color":"err"},{"t":"arrow","from":"p3","to":"f2","text":"Timeout","color":"warn","dashed":true}]}"#,
+        ),
+        "two-views" => Some(
+            r#"{"elements":[{"t":"frame","id":"v1","x":0,"y":0,"w":280,"h":240,"label":"Góc nhìn Người dùng","dashed":true,"color":"l4"},{"t":"box","id":"u1","x":30,"y":46,"w":220,"h":56,"text":"Bấm nút Đặt lịch","color":"l4","fill":"l4"},{"t":"box","id":"u2","x":30,"y":146,"w":220,"h":56,"text":"Nhận mã xác nhận","color":"node","fill":"node"},{"t":"arrow","from":"u1","to":"u2"},{"t":"frame","id":"v2","x":340,"y":0,"w":290,"h":240,"label":"Góc nhìn Hệ thống","dashed":true,"color":"muted"},{"t":"box","id":"s1","x":370,"y":46,"w":230,"h":56,"text":"Khoá khung giờ 30p","color":"l4","fill":"soft"},{"t":"box","id":"s2","x":370,"y":146,"w":230,"h":56,"text":"Gửi mail + mã PIN","color":"node","fill":"soft"},{"t":"arrow","from":"s1","to":"s2"},{"t":"arrow","from":"u1","to":"s1","dashed":true,"color":"muted"}]}"#,
+        ),
+        "vulnerability" => Some(
+            r#"{"elements":[{"t":"badge","x":0,"y":0,"n":1,"color":"l4"},{"t":"box","id":"v1","x":42,"y":0,"w":260,"h":84,"text":"Luồng bình thường\nKiểm tra quyền hợp lệ","fill":"soft"},{"t":"badge","x":340,"y":0,"n":2,"color":"err"},{"t":"box","id":"v2","x":382,"y":0,"w":270,"h":84,"text":"Điểm yếu phát sinh\nThiếu kiểm tra đầu vào","color":"err","fill":"err"},{"t":"badge","x":0,"y":124,"n":3,"color":"warn"},{"t":"box","id":"v3","x":42,"y":124,"w":260,"h":84,"text":"Tác động dữ liệu\nLộ thông tin phiên","color":"warn","fill":"warn"},{"t":"badge","x":340,"y":124,"n":4,"color":"node"},{"t":"box","id":"v4","x":382,"y":124,"w":270,"h":84,"text":"Phòng vệ & Vá lỗi\nKiểm tra chặt + xoay khoá","color":"node","fill":"node"},{"t":"arrow","from":"v1","to":"v2","text":"Bỏ sót"},{"t":"arrow","from":"v2","to":"v3","route":"vh","text":"Gây ra","color":"err"},{"t":"arrow","from":"v3","to":"v4","text":"Khắc phục","color":"node"}]}"#,
+        ),
+        "timeline" => Some(
+            r#"{"elements":[{"t":"axis","x":30,"y":200,"length":580,"gap":145,"ticks":["Mốc 1","Mốc 2","Mốc 3","Mốc 4"],"label":"Thời gian"},{"t":"box","id":"m1","x":20,"y":60,"w":150,"h":58,"text":"Khởi động","fill":"soft"},{"t":"box","id":"m2","x":195,"y":60,"w":165,"h":58,"text":"Điểm thay đổi","color":"l4","fill":"l4"},{"t":"box","id":"m3","x":385,"y":60,"w":155,"h":58,"text":"Sự cố / Chặn","color":"err","fill":"err"},{"t":"box","id":"m4","x":565,"y":60,"w":150,"h":58,"text":"Hoàn tất","color":"node","fill":"node"},{"t":"arrow","from":"m1","to":"m2"},{"t":"arrow","from":"m2","to":"m3"},{"t":"arrow","from":"m3","to":"m4"}]}"#,
+        ),
+        "concept" => Some(
+            r#"{"elements":[{"t":"frame","id":"f1","x":0,"y":0,"w":290,"h":220,"label":"① Ví dụ đời thường","dashed":true,"color":"muted"},{"t":"box","id":"c1","x":25,"y":54,"w":240,"h":126,"text":"Xô hứng nước\nChứa tối đa N lít,\ntràn thì bỏ bớt","fill":"soft"},{"t":"frame","id":"f2","x":350,"y":0,"w":320,"h":220,"label":"② Áp dụng thực tế","dashed":true,"color":"l4"},{"t":"box","id":"c2","x":375,"y":54,"w":270,"h":126,"text":"Rate limit\nChặn yêu cầu vượt ngưỡng\nđể bảo vệ hệ thống","color":"l4","fill":"l4"},{"t":"arrow","from":"c1","to":"c2","text":"tương tự","color":"l4"}]}"#,
+        ),
+        "note" => Some(
+            r#"{"elements":[{"t":"card","id":"n1","x":0,"y":0,"w":260,"title":"VĐ1 · Bối cảnh","text":"Vấn đề đang gặp trong cuộc họp\nvà lý do cần thống nhất.","fill":"soft"},{"t":"card","id":"n2","x":300,"y":0,"w":270,"title":"Quyết định đã chốt","text":"Phương án được chọn\nvà mốc áp dụng cụ thể.","color":"l4","fill":"l4"},{"t":"card","id":"n3","x":300,"y":160,"w":270,"title":"HĐ1 · Bước tiếp theo","text":"Người phụ trách triển khai\nvà kiểm tra lại kết quả.","color":"node","fill":"node"},{"t":"arrow","from":"n1","to":"n2","text":"chốt"},{"t":"arrow","from":"n2","to":"n3","text":"triển khai"}]}"#,
+        ),
+        "idea" => Some(
+            r#"{"elements":[{"t":"box","id":"i1","x":0,"y":46,"w":220,"h":118,"text":"Vấn đề hiện tại\nThao tác thủ công\nmất nhiều thời gian","color":"err","fill":"err"},{"t":"box","id":"i2","x":280,"y":36,"w":240,"h":136,"text":"Ý tưởng cốt lõi\nTự động hoá bước lặp,\ngiữ nguyên luồng chính","color":"l4","fill":"l4","weight":3},{"t":"box","id":"i3","x":580,"y":46,"w":230,"h":118,"text":"Giá trị & Thử nghiệm\nGiảm 50% thời gian,\nchạy thử 1 nhóm trước","color":"node","fill":"node"},{"t":"arrow","from":"i1","to":"i2","text":"giải quyết"},{"t":"arrow","from":"i2","to":"i3","text":"mang lại","color":"node"}]}"#,
         ),
         _ => None,
     }
@@ -1015,7 +1057,7 @@ mod tests {
     }
 
     #[test]
-    fn all_16_strategy_templates_render_cleanly_with_zero_lint_errors() {
+    fn all_23_strategy_templates_render_cleanly_with_zero_lint_errors() {
         let strategies = [
             "process-flow",
             "interaction",
@@ -1023,13 +1065,20 @@ mod tests {
             "decision",
             "data-model",
             "incident",
+            "vulnerability",
             "mechanism",
+            "timeline",
             "funnel",
             "matrix-2x2",
             "causal-loop",
             "concept-map",
+            "concept",
+            "note",
+            "idea",
             "state-machine",
             "before-after",
+            "two-views",
+            "failure-branch",
             "threshold-plot",
             "layer-stack",
             "explained-flow",

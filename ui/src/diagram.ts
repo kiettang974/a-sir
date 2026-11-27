@@ -20,21 +20,37 @@ export type DiagramStrategyId =
   | "process-flow"
   | "state-machine"
   | "explained-flow"
+  | "failure-branch"
   | "decision"
   | "before-after"
+  | "two-views"
   | "interaction"
   | "architecture"
   | "layer-stack"
   | "data-model"
   | "incident"
+  | "vulnerability"
   | "mechanism"
+  | "timeline"
   | "funnel"
   | "matrix-2x2"
   | "threshold-plot"
   | "causal-loop"
-  | "concept-map";
+  | "concept-map"
+  | "concept"
+  | "note"
+  | "idea";
 
 type DiagramStrategyGroup = "Quy trình & Sản phẩm" | "Kỹ thuật & Dữ liệu" | "Kinh doanh & Tư duy";
+
+const QUICK_STRATEGY_IDS: DiagramStrategyId[] = [
+  "auto",
+  "process-flow",
+  "decision",
+  "interaction",
+  "architecture",
+  "before-after",
+];
 
 type DiagramStrategyOption = {
   id: DiagramStrategyId;
@@ -94,6 +110,20 @@ const DIAGRAM_STRATEGIES: DiagramStrategyOption[] = [
     previewSvg: `<svg viewBox="0 0 48 32" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="24" rx="2" stroke-dasharray="2 2" stroke-opacity="0.5"/><rect x="27" y="4" width="18" height="24" rx="2"/><rect x="6" y="10" width="12" height="5" rx="1" stroke-opacity="0.5"/><rect x="6" y="19" width="12" height="5" rx="1"/><rect x="30" y="10" width="12" height="5" rx="1" stroke-opacity="0.5"/><rect x="30" y="19" width="12" height="5" rx="1" fill="currentColor" fill-opacity="0.22"/><path d="M22 16h4m-1.5-2l1.5 2-1.5 2"/></svg>`,
   },
   {
+    id: "failure-branch",
+    group: "Quy trình & Sản phẩm",
+    label: "Luồng chính & Nhánh lỗi",
+    desc: "Đường thành công ở trên, nhánh lỗi/retry rẽ xuống",
+    previewSvg: `<svg viewBox="0 0 48 32" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="11" height="7" rx="1.5" fill="currentColor" fill-opacity="0.14"/><rect x="19" y="5" width="11" height="7" rx="1.5" fill="currentColor" fill-opacity="0.14"/><rect x="35" y="5" width="10" height="7" rx="1.5" fill="currentColor" fill-opacity="0.22"/><rect x="19" y="20" width="11" height="7" rx="1.5" stroke-dasharray="2 2"/><rect x="35" y="20" width="10" height="7" rx="1.5" stroke-dasharray="2 2"/><path d="M14 8.5h5M30 8.5h5M24.5 12v8M40 12v8"/></svg>`,
+  },
+  {
+    id: "two-views",
+    group: "Quy trình & Sản phẩm",
+    label: "Hai góc nhìn song song",
+    desc: "Đối chiếu người dùng vs hệ thống (hoặc 2 vai trò)",
+    previewSvg: `<svg viewBox="0 0 48 32" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="24" rx="2"/><rect x="27" y="4" width="18" height="24" rx="2"/><rect x="6" y="9" width="12" height="5" rx="1" fill="currentColor" fill-opacity="0.18"/><rect x="6" y="19" width="12" height="5" rx="1"/><rect x="30" y="9" width="12" height="5" rx="1" fill="currentColor" fill-opacity="0.18"/><rect x="30" y="19" width="12" height="5" rx="1"/><path d="M18 11.5h12" stroke-dasharray="2 2"/></svg>`,
+  },
+  {
     id: "interaction",
     group: "Kỹ thuật & Dữ liệu",
     label: "Tuần tự tương tác (Sequence)",
@@ -136,6 +166,20 @@ const DIAGRAM_STRATEGIES: DiagramStrategyOption[] = [
     previewSvg: `<svg viewBox="0 0 48 32" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="25" x2="44" y2="25"/><path d="M42 23l2 2-2 2"/><rect x="6" y="7" width="12" height="5" rx="1" fill="currentColor" fill-opacity="0.14"/><rect x="14" y="14" width="18" height="5" rx="1" fill="currentColor" fill-opacity="0.22"/><line x1="32" y1="5" x2="32" y2="25" stroke-dasharray="2 2"/><line x1="10" y1="23" x2="10" y2="27"/><line x1="22" y1="23" x2="22" y2="27"/><line x1="34" y1="23" x2="34" y2="27"/></svg>`,
   },
   {
+    id: "vulnerability",
+    group: "Kỹ thuật & Dữ liệu",
+    label: "Lỗ hổng & Phòng vệ",
+    desc: "Cơ chế bình thường → Điểm yếu → Tác động → Vá lỗi",
+    previewSvg: `<svg viewBox="0 0 48 32" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M24 4l13 4.5v7.5c0 6.5-5.5 10.5-13 12.5C16.5 26.5 11 22.5 11 16V8.5L24 4z" fill="currentColor" fill-opacity="0.14"/><path d="M19.5 16l3 3 6.5-6.5"/></svg>`,
+  },
+  {
+    id: "timeline",
+    group: "Kỹ thuật & Dữ liệu",
+    label: "Trục thời gian & Cột mốc",
+    desc: "Diễn tiến sự kiện, mốc bàn giao hoặc lịch sử thay đổi",
+    previewSvg: `<svg viewBox="0 0 48 32" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="24" x2="44" y2="24"/><circle cx="10" cy="24" r="2" fill="currentColor"/><circle cx="24" cy="24" r="2" fill="currentColor"/><circle cx="38" cy="24" r="2" fill="currentColor"/><rect x="5" y="7" width="10" height="8" rx="1.5"/><rect x="19" y="7" width="10" height="8" rx="1.5" fill="currentColor" fill-opacity="0.2"/><rect x="33" y="7" width="10" height="8" rx="1.5"/><path d="M10 15v7M24 15v7M38 15v7" stroke-dasharray="2 2"/></svg>`,
+  },
+  {
     id: "funnel",
     group: "Kinh doanh & Tư duy",
     label: "Phễu chuyển đổi (Funnel)",
@@ -167,8 +211,29 @@ const DIAGRAM_STRATEGIES: DiagramStrategyOption[] = [
     id: "concept-map",
     group: "Kinh doanh & Tư duy",
     label: "Bản đồ khái niệm",
-    desc: "Liên kết ý chính có động từ nối",
+    desc: "Tổng hợp kiến thức & liên kết ý chính có động từ nối",
     previewSvg: `<svg viewBox="0 0 48 32" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="24" cy="16" rx="7" ry="4.5" fill="currentColor" fill-opacity="0.2"/><rect x="3" y="5" width="10" height="6" rx="1.5"/><rect x="3" y="21" width="10" height="6" rx="1.5"/><rect x="35" y="5" width="10" height="6" rx="1.5"/><rect x="35" y="21" width="10" height="6" rx="1.5"/><path d="M13 9l5 4M13 23l5-4M30 13l5-4M30 19l5 4"/></svg>`,
+  },
+  {
+    id: "concept",
+    group: "Kinh doanh & Tư duy",
+    label: "Giải thích khái niệm",
+    desc: "Từ ví dụ đời thường / ẩn dụ → cơ chế thực tế",
+    previewSvg: `<svg viewBox="0 0 48 32" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="13" cy="14" r="6" fill="currentColor" fill-opacity="0.14"/><path d="M10.5 23h5"/><rect x="27" y="7" width="17" height="16" rx="2" fill="currentColor" fill-opacity="0.2"/><path d="M19 15h8m-2-2l2 2-2 2"/></svg>`,
+  },
+  {
+    id: "note",
+    group: "Kinh doanh & Tư duy",
+    label: "Ghi chú & Quyết định",
+    desc: "Tóm lược bối cảnh, quyết định đã chốt và hành động",
+    previewSvg: `<svg viewBox="0 0 48 32" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="22" rx="2"/><line x1="7" y1="10" x2="17" y2="10"/><line x1="7" y1="15" x2="15" y2="15" stroke-opacity="0.5"/><rect x="26" y="5" width="18" height="10" rx="2" fill="currentColor" fill-opacity="0.2"/><rect x="26" y="18" width="18" height="9" rx="2"/><path d="M20 10h6M35 15v3"/></svg>`,
+  },
+  {
+    id: "idea",
+    group: "Kinh doanh & Tư duy",
+    label: "Trình bày ý tưởng (Pitch)",
+    desc: "Vấn đề hiện tại → Ý tưởng cốt lõi → Giá trị mang lại",
+    previewSvg: `<svg viewBox="0 0 48 32" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="10" width="11" height="12" rx="1.5"/><rect x="18" y="6" width="12" height="20" rx="2" fill="currentColor" fill-opacity="0.22"/><rect x="34" y="10" width="11" height="12" rx="1.5" fill="currentColor" fill-opacity="0.12"/><path d="M14 16h4M30 16h4"/></svg>`,
   },
 ];
 
@@ -176,8 +241,10 @@ function parsePreviewSvg(markup: string, className: string): SVGSVGElement {
   const ns = "http://www.w3.org/2000/svg";
   const svg = document.createElementNS(ns, "svg");
   svg.setAttribute("viewBox", "0 0 48 32");
-  svg.setAttribute("width", className.includes("-sm") ? "24" : "44");
-  svg.setAttribute("height", className.includes("-sm") ? "16" : "30");
+  const isGallery = className.includes("gallery");
+  const isSm = className.includes("-sm");
+  svg.setAttribute("width", isGallery ? "132" : isSm ? "24" : "44");
+  svg.setAttribute("height", isGallery ? "88" : isSm ? "16" : "30");
   svg.setAttribute("fill", "none");
   svg.setAttribute("stroke", "currentColor");
   svg.setAttribute("stroke-width", "1.5");
@@ -384,44 +451,52 @@ function findVeNodeText(val: unknown, targetId: string): string | null {
   return null;
 }
 
-function updateVeNodeText(val: unknown, targetId: string, nextText: string): boolean {
-  if (!val || typeof val !== "object") return false;
-  if (Array.isArray(val)) {
-    for (const item of val) {
-      if (updateVeNodeText(item, targetId, nextText)) return true;
+const USER_NOTE_PREFIX = "user_note_";
+
+function findAttachedNodeNote(diagram: ProcessDiagram, nodeId: string): string {
+  const noteId = `${USER_NOTE_PREFIX}${nodeId}`;
+  for (const item of diagram.veElements ?? []) {
+    if (!item || typeof item !== "object") continue;
+    const obj = item as Record<string, unknown>;
+    if (obj.t === "note" && (obj.id === noteId || obj.to === nodeId) && typeof obj.text === "string") {
+      return obj.text;
     }
-    return false;
   }
-  const obj = val as Record<string, unknown>;
-  if (obj.id === targetId && obj.t !== "arrow" && obj.t !== "line" && obj.t !== "legend") {
-    if ("label" in obj && !("text" in obj)) {
-      obj.label = nextText;
-    } else {
-      obj.text = nextText;
-    }
-    return true;
+  return "";
+}
+
+function upsertAttachedNodeNote(diagram: ProcessDiagram, nodeId: string, noteText: string): void {
+  const noteId = `${USER_NOTE_PREFIX}${nodeId}`;
+  const list = Array.isArray(diagram.veElements) ? [...diagram.veElements] : [];
+  const filtered = list.filter((item) => {
+    if (!item || typeof item !== "object") return true;
+    const obj = item as Record<string, unknown>;
+    return !(obj.t === "note" && obj.id === noteId);
+  });
+  const trimmed = noteText.trim();
+  if (trimmed) {
+    filtered.push({
+      t: "note",
+      id: noteId,
+      to: nodeId,
+      text: trimmed,
+      size: 14,
+      color: "muted",
+    });
   }
-  if (obj.t === "swimlane" && Array.isArray(obj.nodes)) {
-    return updateVeNodeText(obj.nodes, targetId, nextText);
-  }
-  if (obj.t === "tree" && obj.root) {
-    return updateVeNodeText(obj.root, targetId, nextText);
-  }
-  if (Array.isArray(obj.children)) {
-    return updateVeNodeText(obj.children, targetId, nextText);
-  }
-  return false;
+  diagram.veElements = filtered;
 }
 
 function findEditableNodeText(diagram: ProcessDiagram, rawId: string): { id: string; text: string } | null {
-  const baseId = rawId.endsWith("~txt") ? rawId.slice(0, -4) : rawId;
+  let baseId = rawId.endsWith("~txt") ? rawId.slice(0, -4) : rawId;
+  if (baseId.startsWith(USER_NOTE_PREFIX)) {
+    baseId = baseId.slice(USER_NOTE_PREFIX.length);
+  }
   if (!baseId || baseId.startsWith("_") || baseId === "uncertainties_footer") return null;
   if (diagram.veElements && diagram.veElements.length > 0) {
     const found = findVeNodeText(diagram.veElements, baseId);
     if (found !== null) return { id: baseId, text: found };
   }
-  const legacy = diagram.nodes.find((n) => n.id === baseId);
-  if (legacy) return { id: baseId, text: legacy.label };
   return null;
 }
 
@@ -1328,6 +1403,105 @@ export function diagramPane(
     return details;
   };
 
+  const openStrategyGalleryModal = (st: JobDiagramState) => {
+    let activeGroup: DiagramStrategyGroup | "Tất cả" = "Tất cả";
+    const currentId = findStrategyOption(st.selectedStrategy).id;
+    const grid = el("div", { className: "diagram-gallery-grid" });
+    const tabsWrap = el("div", { className: "diagram-gallery-tabs", role: "tablist" });
+
+    const close = () => {
+      document.removeEventListener("keydown", onKey);
+      backdrop.remove();
+    };
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") close();
+    };
+    document.addEventListener("keydown", onKey);
+
+    const renderGallery = () => {
+      const groups: (DiagramStrategyGroup | "Tất cả")[] = ["Tất cả", ...STRATEGY_GROUPS];
+      tabsWrap.replaceChildren(
+        ...groups.map((g) =>
+          el("button", {
+            className: `settings-tab${activeGroup === g ? " active" : ""}`,
+            role: "tab",
+            textContent: g,
+            onclick: () => {
+              activeGroup = g;
+              renderGallery();
+            },
+          }),
+        ),
+      );
+
+      const items =
+        activeGroup === "Tất cả"
+          ? DIAGRAM_STRATEGIES
+          : DIAGRAM_STRATEGIES.filter((s) => s.group === activeGroup);
+
+      grid.replaceChildren(
+        ...items.map((opt) => {
+          const cached = hasCachedStrategy(st, opt.id);
+          const isCurrent = opt.id === currentId;
+          return el(
+            "button",
+            {
+              className: `diagram-gallery-card${isCurrent ? " active" : ""}`,
+              disabled: st.running || !hasTranscriptText,
+              onclick: () => {
+                close();
+                void applyStrategy(opt.id);
+              },
+            },
+            el(
+              "div",
+              { className: "diagram-gallery-preview" },
+              parsePreviewSvg(opt.previewSvg, "diagram-gallery-svg"),
+            ),
+            el(
+              "div",
+              { className: "diagram-gallery-body" },
+              el(
+                "div",
+                { className: "diagram-type-name" },
+                el("span", { textContent: opt.label }),
+                cached ? el("span", { className: "diagram-type-cached", textContent: "Đã có" }) : null,
+              ),
+              el("p", { className: "diagram-gallery-desc", textContent: opt.desc }),
+              el("span", { className: "diagram-gallery-group", textContent: opt.group }),
+            ),
+          );
+        }),
+      );
+    };
+
+    const modalHead = el(
+      "header",
+      { className: "diagram-modal-head" },
+      el("h3", { textContent: `Chọn mẫu sơ đồ (${DIAGRAM_STRATEGIES.length} mẫu)` }),
+      el("button", { className: "btn-ghost", textContent: "Đóng", onclick: close }),
+    );
+    const dialog = el(
+      "div",
+      {
+        className: "diagram-modal diagram-gallery-modal",
+        role: "dialog",
+        ariaLabel: "Thư viện mẫu sơ đồ",
+        onclick: (ev: MouseEvent) => ev.stopPropagation(),
+      },
+      modalHead,
+      tabsWrap,
+      grid,
+    );
+    const backdrop = el(
+      "div",
+      { className: "diagram-modal-backdrop", onclick: close },
+      dialog,
+    );
+    document.body.append(backdrop);
+    renderGallery();
+  };
+
   const renderStrategyDropdown = (st: JobDiagramState): HTMLElement => {
     ensureMenuDismissListeners();
     const current = findStrategyOption(st.selectedStrategy);
@@ -1344,39 +1518,57 @@ export function diagramPane(
     );
     summary.setAttribute("aria-label", `Đổi kiểu sơ đồ (hiện tại: ${current.label})`);
 
+    const quickIds = QUICK_STRATEGY_IDS.includes(current.id)
+      ? QUICK_STRATEGY_IDS
+      : [...QUICK_STRATEGY_IDS, current.id];
+    const quickOptions = quickIds
+      .map((sid) => DIAGRAM_STRATEGIES.find((s) => s.id === sid))
+      .filter((s): s is DiagramStrategyOption => Boolean(s));
+
     const panel = el(
       "div",
       { className: "diagram-type-panel", role: "menu", ariaLabel: "Chọn kiểu sơ đồ" },
-      ...STRATEGY_GROUPS.flatMap((group) => [
-        el("div", { className: "diagram-type-group", textContent: group }),
-        ...DIAGRAM_STRATEGIES.filter((opt) => opt.group === group).map((opt) => {
-          const cached = hasCachedStrategy(st, opt.id);
-          return el(
-            "button",
-            {
-              className: `diagram-type-item${opt.id === current.id ? " active" : ""}`,
-              role: "menuitemradio",
-              disabled: st.running || !hasTranscriptText,
-              onclick: () => {
-                details.open = false;
-                void applyStrategy(opt.id);
-              },
+      el("div", { className: "diagram-type-group", textContent: "Dùng nhiều nhất" }),
+      ...quickOptions.map((opt) => {
+        const cached = hasCachedStrategy(st, opt.id);
+        return el(
+          "button",
+          {
+            className: `diagram-type-item${opt.id === current.id ? " active" : ""}`,
+            role: "menuitemradio",
+            disabled: st.running || !hasTranscriptText,
+            onclick: () => {
+              details.open = false;
+              void applyStrategy(opt.id);
             },
-            el("span", { className: "diagram-type-thumb" }, parsePreviewSvg(opt.previewSvg, "diagram-type-svg")),
+          },
+          el("span", { className: "diagram-type-thumb" }, parsePreviewSvg(opt.previewSvg, "diagram-type-svg")),
+          el(
+            "span",
+            { className: "diagram-type-meta" },
             el(
               "span",
-              { className: "diagram-type-meta" },
-              el(
-                "span",
-                { className: "diagram-type-name" },
-                el("span", { textContent: opt.label }),
-                cached ? el("span", { className: "diagram-type-cached", textContent: "Đã có" }) : null,
-              ),
-              el("span", { className: "diagram-type-desc", textContent: opt.desc }),
+              { className: "diagram-type-name" },
+              el("span", { textContent: opt.label }),
+              cached ? el("span", { className: "diagram-type-cached", textContent: "Đã có" }) : null,
             ),
-          );
-        }),
-      ]),
+            el("span", { className: "diagram-type-desc", textContent: opt.desc }),
+          ),
+        );
+      }),
+      el(
+        "button",
+        {
+          className: "diagram-type-more",
+          disabled: st.running || !hasTranscriptText,
+          onclick: () => {
+            details.open = false;
+            openStrategyGalleryModal(st);
+          },
+        },
+        el("span", { className: "diagram-type-more-plus", textContent: "+" }),
+        el("span", { textContent: `Xem tất cả ${DIAGRAM_STRATEGIES.length} mẫu hình minh hoạ…` }),
+      ),
     );
     details.append(summary, panel);
     return details;
@@ -1417,37 +1609,24 @@ export function diagramPane(
       ev.stopPropagation();
       closePopover();
 
+      const existingNote = findAttachedNodeNote(diagram, found.id);
       const input = el("textarea", {
         className: "field",
-        value: found.text,
-        placeholder: "Nhập nội dung hoặc ghi chú cho nút này…",
-        ariaLabel: "Chỉnh sửa nội dung nút sơ đồ",
+        value: existingNote,
+        placeholder: "Thêm ghi chú bên ngoài nút này (chữ bên trong nút vẫn giữ nguyên)…",
+        ariaLabel: "Ghi chú bên ngoài nút sơ đồ",
       }) as HTMLTextAreaElement;
 
-      const saveEdit = async () => {
-        const nextText = input.value.trim();
-        if (nextText === found.text.trim()) {
+      const saveNote = async (nextText: string) => {
+        const trimmed = nextText.trim();
+        if (trimmed === existingNote.trim()) {
           closePopover();
           return;
         }
         const st = getState(id);
         if (!st.diagram) return;
         const cloned: ProcessDiagram = JSON.parse(JSON.stringify(st.diagram));
-        let changed = false;
-        if (cloned.veElements && cloned.veElements.length > 0) {
-          changed = updateVeNodeText(cloned.veElements, found.id, nextText);
-        }
-        if (!changed) {
-          const legacyNode = cloned.nodes.find((n) => n.id === found.id);
-          if (legacyNode) {
-            legacyNode.label = nextText;
-            changed = true;
-          }
-        }
-        if (!changed) {
-          closePopover();
-          return;
-        }
+        upsertAttachedNodeNote(cloned, found.id, trimmed);
         try {
           const nextRendered = await invoke<RenderedDiagram>("render_diagram", { diagram: cloned });
           st.diagram = cloned;
@@ -1458,11 +1637,11 @@ export function diagramPane(
           });
           const payload = buildPersistPayload(st, cloned, st.selectedStrategy, st.uncertaintyMode);
           st.savedPath = await invoke<string>("save_diagram", { id, diagram: payload });
-          st.exportNotice = "Đã cập nhật ghi chú nút và lưu sơ đồ.";
+          st.exportNotice = trimmed ? "Đã lưu ghi chú bên ngoài nút." : "Đã xoá ghi chú nút.";
           closePopover();
           draw();
         } catch (e) {
-          st.error = `Không cập nhật được nội dung nút: ${e}`;
+          st.error = `Không lưu được ghi chú nút: ${e}`;
           closePopover();
           draw();
         }
@@ -1474,23 +1653,34 @@ export function diagramPane(
           closePopover();
         } else if (kev.key === "Enter" && (kev.metaKey || kev.ctrlKey)) {
           kev.preventDefault();
-          void saveEdit();
+          void saveNote(input.value);
         }
       });
 
+      const shortLabel = found.text.replace(/\s+/g, " ").trim();
       const pop = el(
         "div",
         {
           className: "diagram-node-editor",
           onclick: (pev: MouseEvent) => pev.stopPropagation(),
         },
-        el("span", { className: "diagram-node-editor-title", textContent: "Sửa chữ / ghi chú trên nút (⌘↵ để lưu)" }),
+        el("span", {
+          className: "diagram-node-editor-title",
+          textContent: shortLabel ? `Ghi chú cho: ${shortLabel}` : "Ghi chú bên ngoài nút",
+        }),
         input,
         el(
           "div",
           { className: "diagram-node-editor-actions" },
+          existingNote
+            ? el("button", {
+                className: "link danger-link",
+                textContent: "Xoá ghi chú",
+                onclick: () => void saveNote(""),
+              })
+            : null,
           el("button", { className: "btn-ghost", textContent: "Huỷ", onclick: closePopover }),
-          el("button", { className: "btn-primary", textContent: "Lưu", onclick: () => void saveEdit() }),
+          el("button", { className: "btn-primary", textContent: "Lưu", onclick: () => void saveNote(input.value) }),
         ),
       );
 

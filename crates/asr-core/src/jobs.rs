@@ -576,27 +576,41 @@ fn process(
     job: &Job,
     job_model: &str,
 ) -> Result<JobState, String> {
-    let samples = audio::decode(&job.source)?;
     let fingerprint = fingerprint(&job.source)?;
     let work = shared.work_dir(job.id);
     fs::create_dir_all(&work).map_err(|e| e.to_string())?;
     let checkpoint_path = work.join("checkpoint.json");
+    let pcm_path = work.join("audio_16k.pcm");
 
-    let mut checkpoint = fs::read(&checkpoint_path)
+    let saved_checkpoint = fs::read(&checkpoint_path)
         .ok()
         .and_then(|b| serde_json::from_slice::<Checkpoint>(&b).ok())
         .filter(|c| {
             c.fingerprint == fingerprint
                 && c.model.as_deref().unwrap_or(crate::models::DEFAULT_MODEL_ID) == job_model
-        })
-        .unwrap_or_else(|| Checkpoint {
-            fingerprint,
-            model: Some(job_model.to_owned()),
-            chunks: plan_chunks(&silence_ends(&samples), samples.len()),
-            done: Vec::new(),
         });
 
-    let total = samples.len().max(1);
+    // Reuse cached 16 kHz PCM16 on resume so pausing/restarting skips re-decoding long files.
+    let pcm = match (saved_checkpoint.as_ref(), audio::Pcm16File::open_existing(&pcm_path)) {
+        (Some(cp), Some(existing))
+            if cp.chunks.last().map(|&(_, end)| end) == Some(existing.len()) =>
+        {
+            existing
+        }
+        _ => audio::decode_to_pcm16(&job.source, &pcm_path)?,
+    };
+
+    let mut checkpoint = match saved_checkpoint {
+        Some(cp) if cp.chunks.last().map(|&(_, end)| end) == Some(pcm.len()) => cp,
+        _ => Checkpoint {
+            fingerprint,
+            model: Some(job_model.to_owned()),
+            chunks: plan_chunks(&pcm.silence_ends()?, pcm.len()),
+            done: Vec::new(),
+        },
+    };
+
+    let total = pcm.len().max(1);
     let started = Instant::now();
     let resumed: usize = checkpoint.chunks[..checkpoint.done.len()]
         .iter()
@@ -620,6 +634,7 @@ fn process(
         shared.interrupt.store(false, Ordering::Relaxed);
         let index = checkpoint.done.len();
         let (start, end) = checkpoint.chunks[index];
+        let chunk_samples = pcm.read_range(start, end)?;
         let control = Control {
             cancel: shared.interrupt.clone(),
             on_progress: {
@@ -628,7 +643,7 @@ fn process(
                 Arc::new(move |p| report(progress_of(index, p)))
             },
         };
-        match engine.transcribe(&samples[start..end], &control) {
+        match engine.transcribe(&chunk_samples, &control) {
             Ok(mut segments) => {
                 let offset = (start * 1000 / SAMPLE_RATE) as u64;
                 for s in &mut segments {
@@ -813,6 +828,7 @@ fn write_outputs(
 }
 
 /// Sample index where each silence of at least 0.5 s below −35 dB ends.
+#[cfg(test)]
 fn silence_ends(samples: &[f32]) -> Vec<usize> {
     const FRAME: usize = SAMPLE_RATE / 50;
     const MIN_FRAMES: usize = 25;

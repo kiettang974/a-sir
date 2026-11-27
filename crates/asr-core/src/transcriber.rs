@@ -2,13 +2,13 @@
 
 use std::ffi::c_void;
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use whisper_rs::{
-    FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperVadContext,
-    WhisperVadContextParams, WhisperVadParams,
+    FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
+    WhisperVadContext, WhisperVadContextParams, WhisperVadParams,
 };
 
 use crate::glossary::Term;
@@ -133,8 +133,9 @@ impl Default for WhisperOptions {
 }
 
 pub struct WhisperCpp {
-    ctx: WhisperContext,
-    vad_model: String,
+    _ctx: WhisperContext,
+    state: Mutex<WhisperState>,
+    vad_ctx: Option<Mutex<WhisperVadContext>>,
     options: WhisperOptions,
 }
 
@@ -150,12 +151,21 @@ impl WhisperCpp {
                 .map(str::to_owned)
                 .ok_or_else(|| TranscribeError::Engine(format!("đường dẫn lỗi: {}", p.display())))
         };
-        let ctx =
-            WhisperContext::new_with_params(&path(model)?, WhisperContextParameters::default())
+        let mut ctx_params = WhisperContextParameters::default();
+        ctx_params.flash_attn(true);
+        let ctx = WhisperContext::new_with_params(&path(model)?, ctx_params).map_err(engine)?;
+        let state = ctx.create_state().map_err(engine)?;
+        let vad_ctx = if options.use_vad {
+            let vad = WhisperVadContext::new(&path(vad_model)?, WhisperVadContextParams::default())
                 .map_err(engine)?;
+            Some(Mutex::new(vad))
+        } else {
+            None
+        };
         Ok(Self {
-            ctx,
-            vad_model: path(vad_model)?,
+            _ctx: ctx,
+            state: Mutex::new(state),
+            vad_ctx,
             options,
         })
     }
@@ -165,16 +175,12 @@ unsafe extern "C" fn abort_requested(flag: *mut c_void) -> bool {
     unsafe { &*(flag as *const AtomicBool) }.load(Ordering::Relaxed)
 }
 
-/// whisper.cpp only honours `params.vad` in `whisper_full`; whisper-rs calls
-/// `whisper_full_with_state`, which ignores it. Shared by both WhisperCpp and QwenAsr.
-fn vad_speech_spans(
-    vad_model: &str,
+fn vad_speech_spans_with_ctx(
+    ctx: &mut WhisperVadContext,
     samples: &[f32],
     speech_pad_ms: i32,
 ) -> Result<Vec<(usize, usize)>, TranscribeError> {
     let engine = |e: whisper_rs::WhisperError| TranscribeError::Engine(e.to_string());
-    let mut ctx = WhisperVadContext::new(vad_model, WhisperVadContextParams::default())
-        .map_err(engine)?;
     // Same values faster-whisper's batched pipeline runs Silero with.
     let mut vad = WhisperVadParams::new();
     vad.set_min_speech_duration(0);
@@ -193,12 +199,27 @@ fn vad_speech_spans(
     Ok(merge_spans(&spans, MAX_CHUNK_S * SAMPLE_RATE))
 }
 
+/// whisper.cpp only honours `params.vad` in `whisper_full`; whisper-rs calls
+/// `whisper_full_with_state`, which ignores it. Used by QwenAsr.
+#[cfg(unix)]
+fn vad_speech_spans(
+    vad_model: &str,
+    samples: &[f32],
+    speech_pad_ms: i32,
+) -> Result<Vec<(usize, usize)>, TranscribeError> {
+    let engine = |e: whisper_rs::WhisperError| TranscribeError::Engine(e.to_string());
+    let mut ctx = WhisperVadContext::new(vad_model, WhisperVadContextParams::default())
+        .map_err(engine)?;
+    vad_speech_spans_with_ctx(&mut ctx, samples, speech_pad_ms)
+}
+
 impl WhisperCpp {
     fn speech_spans(&self, samples: &[f32]) -> Result<Vec<(usize, usize)>, TranscribeError> {
-        if !self.options.use_vad {
+        let Some(vad_lock) = &self.vad_ctx else {
             return Ok(vec![(0, samples.len())]);
-        }
-        vad_speech_spans(&self.vad_model, samples, self.options.speech_pad_ms)
+        };
+        let mut vad = vad_lock.lock().unwrap_or_else(|e| e.into_inner());
+        vad_speech_spans_with_ctx(&mut vad, samples, self.options.speech_pad_ms)
     }
 }
 
@@ -221,7 +242,7 @@ impl Transcriber for WhisperCpp {
         control: &Control,
     ) -> Result<Vec<Segment>, TranscribeError> {
         let engine = |e: whisper_rs::WhisperError| TranscribeError::Engine(e.to_string());
-        let mut state = self.ctx.create_state().map_err(engine)?;
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let spans = self.speech_spans(samples)?;
         let total: usize = spans.iter().map(|(s, e)| e - s).sum::<usize>().max(1);
         let mut finished = 0;

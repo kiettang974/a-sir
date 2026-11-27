@@ -9,6 +9,7 @@
 - **Đã mở rộng bộ vẽ sơ đồ lên 16 mẫu hình có hình minh hoạ và xuất `.drawio`:** Bạn có thể đổi nhanh kiểu sơ đồ (Swimlane, Sequence, Vòng đời trạng thái, Trước – Sau, Phễu, Ma trận 2×2, Biểu đồ KPI, Vòng lặp nhân quả, Bản đồ khái niệm…), chọn 4 cách hiển thị mục **Cần xác nhận**, và xuất file `.drawio` để chỉnh sửa tiếp trong draw.io.
 
 ### Cải thiện & sửa lỗi
+- **Đã tăng tốc chép lời trên máy:** Bật Flash Attention cho Whisper (Metal GPU) và tái sử dụng bộ nhớ trạng thái cùng model Silero VAD giữa các khúc 15 phút, giúp chép file dài mượt hơn và giảm tốn bộ nhớ GPU.
 - **Đã đưa nút Tạo lại tóm tắt lên làm nút chính** trên màn hình Tóm tắt, đặt **Chép email** cạnh **Excel** và **Word** cho gọn thao tác.
 - **Đã tăng chiều cao khung xem sơ đồ lên 70% màn hình**, tự tô vàng các nút có dấu `?`, thu gọn mục **Cần xác nhận** dạng mở/đóng (xem được cả khi phóng to), và bỏ nút **Chỉ lọc tại máy** thừa.
 - **Đã sửa lỗi chữ dài bị tràn khỏi cột trong sơ đồ Swimlane** và bổ sung tự xuống dòng cho toàn bộ hộp/hình thoi.

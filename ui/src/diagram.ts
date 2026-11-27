@@ -202,8 +202,8 @@ type UncertaintyModeOption = {
 const UNCERTAINTY_MODES: UncertaintyModeOption[] = [
   {
     id: "off",
-    label: "Chỉ hiện bên dưới",
-    desc: "Giữ sơ đồ sạch, xem mục chưa chốt dưới khung",
+    label: "Không vẽ trên sơ đồ",
+    desc: "Giữ sơ đồ sạch, chỉ xem danh sách mục chưa chốt bên dưới",
     previewSvg: `<svg viewBox="0 0 48 32" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="14" height="8" rx="1.5" fill="currentColor" fill-opacity="0.12"/><rect x="28" y="4" width="14" height="8" rx="1.5"/><path d="M20 8h8"/><line x1="6" y1="20" x2="42" y2="20" stroke-opacity="0.35"/><line x1="8" y1="25" x2="30" y2="25" stroke-opacity="0.5"/><line x1="8" y1="29" x2="24" y2="29" stroke-opacity="0.35"/></svg>`,
   },
   {
@@ -227,7 +227,7 @@ const UNCERTAINTY_MODES: UncertaintyModeOption[] = [
 ];
 
 function findUncertaintyModeOption(id?: string | null): UncertaintyModeOption {
-  return UNCERTAINTY_MODES.find((m) => m.id === id) ?? UNCERTAINTY_MODES[2];
+  return UNCERTAINTY_MODES.find((m) => m.id === id) ?? UNCERTAINTY_MODES[0];
 }
 
 function findStrategyOption(id?: string | null): DiagramStrategyOption {
@@ -427,7 +427,7 @@ function getState(id: number): JobDiagramState {
       diagram: null,
       rendered: null,
       selectedStrategy: "auto",
-      uncertaintyMode: "inline",
+      uncertaintyMode: "off",
       cache: new Map(),
       exportError: null,
       exportNotice: null,
@@ -568,7 +568,7 @@ async function runGeneration(
   const st = getState(id);
   if (st.running) return;
   const chosen = strategy ?? st.selectedStrategy ?? "auto";
-  const chosenUncertainty = uncertaintyMode ?? st.uncertaintyMode ?? "inline";
+  const chosenUncertainty = uncertaintyMode ?? st.uncertaintyMode ?? "off";
   st.selectedStrategy = chosen;
   st.uncertaintyMode = chosenUncertainty;
   const opt = findStrategyOption(chosen);
@@ -795,12 +795,19 @@ export function diagramPane(
     );
 
     const modalMode = findUncertaintyModeOption(diagram.uncertaintyMode ?? getState(id).uncertaintyMode).id;
-    const modalUncertainties = renderUncertaintiesBlock(
-      diagram,
-      modalMode,
-      (u, idx) => focusUncertaintyOnStage(stage, u, idx, modalMode, false),
-      "diagram-modal-uncertainties",
-    );
+    const modalUncertainties = el("div");
+    const refreshModalUncertainties = () => {
+      const next = renderUncertaintiesBlock(
+        diagram,
+        modalMode,
+        stage.querySelector<SVGSVGElement>("svg"),
+        (u, idx) => focusUncertaintyOnStage(stage, diagram, u, idx, modalMode, false),
+        "diagram-modal-uncertainties",
+      );
+      if (next) {
+        modalUncertainties.replaceWith(next);
+      }
+    };
     const dialog = el(
       "div",
       {
@@ -820,6 +827,7 @@ export function diagramPane(
     );
     document.body.append(backdrop);
     renderModalSvg();
+    refreshModalUncertainties();
   };
 
   const activeAi = () => pickConfiguredProvider(ai);
@@ -891,6 +899,7 @@ export function diagramPane(
 
   const findUncertaintyTarget = (
     svgEl: SVGSVGElement,
+    diagram: ProcessDiagram,
     u: DiagramUncertainty,
     idx: number,
     mode: UncertaintyDisplayMode,
@@ -905,6 +914,13 @@ export function diagramPane(
     if (u.nodeId) {
       const direct = findElementByDataId(svgEl, u.nodeId);
       if (direct) return direct;
+    }
+
+    // If this diagram uses explicit nodeId links and this item intentionally has none,
+    // treat it as a general/non-visual note (do not fuzzy-guess onto another node).
+    const diagramUsesNodeIds = diagram.uncertainties.some((item) => Boolean(item.nodeId?.trim()));
+    if (diagramUsesNodeIds && !u.nodeId?.trim()) {
+      return null;
     }
 
     const texts = Array.from(svgEl.querySelectorAll<SVGTextElement>("text"));
@@ -950,19 +966,12 @@ export function diagramPane(
       }
     }
     if (best) return upgradeTextToShape(svgEl, best);
-
-    const warnCandidates = texts.filter((t) => {
-      const content = (t.textContent ?? "").trim();
-      return content && !isLegendLabel(content) && (isWarnStyled(t) || content.includes("?"));
-    });
-    if (warnCandidates.length > 0) {
-      return upgradeTextToShape(svgEl, warnCandidates[Math.min(idx, warnCandidates.length - 1)]);
-    }
     return null;
   };
 
   const focusUncertaintyOnStage = (
     stageEl: HTMLElement | null,
+    diagram: ProcessDiagram,
     u: DiagramUncertainty,
     idx: number,
     mode: UncertaintyDisplayMode,
@@ -971,7 +980,7 @@ export function diagramPane(
     if (!stageEl || mode === "off") return false;
     const svgEl = stageEl.querySelector<SVGSVGElement>("svg");
     if (!svgEl) return false;
-    const target = findUncertaintyTarget(svgEl, u, idx, mode);
+    const target = findUncertaintyTarget(svgEl, diagram, u, idx, mode);
     if (!target) return false;
 
     if (scrollStageIntoView) {
@@ -1031,11 +1040,11 @@ export function diagramPane(
   const renderUncertaintiesBlock = (
     diagram: ProcessDiagram,
     mode: UncertaintyDisplayMode,
+    svgEl: SVGSVGElement | null,
     onJump: (u: DiagramUncertainty, idx: number) => boolean,
     extraClass = "",
   ): HTMLElement | null => {
     if (diagram.uncertainties.length === 0) return null;
-    const showJump = mode !== "off";
     return el(
       "details",
       { className: `diagram-uncertainties${extraClass ? ` ${extraClass}` : ""}` },
@@ -1048,35 +1057,29 @@ export function diagramPane(
       el(
         "ul",
         { className: "diagram-uncertainty-list" },
-        ...diagram.uncertainties.map((u, idx) =>
-          el(
+        ...diagram.uncertainties.map((u, idx) => {
+          const hasTarget =
+            mode !== "off" &&
+            svgEl !== null &&
+            findUncertaintyTarget(svgEl, diagram, u, idx, mode) !== null;
+          return el(
             "li",
             {},
             el("span", { className: "diagram-q-badge", textContent: `?${idx + 1}` }),
             el("strong", { textContent: u.item || "Chi tiết chưa rõ" }),
             u.reason ? el("span", { textContent: ` — ${u.reason}` }) : null,
-            showJump
+            hasTarget
               ? el("button", {
                   className: "link diagram-jump-link",
                   textContent: mode === "footer" ? "Xem ở khung chú giải" : "Xem trên biểu đồ",
                   onclick: (ev: MouseEvent) => {
                     ev.preventDefault();
-                    const found = onJump(u, idx);
-                    if (!found) {
-                      const btn = ev.currentTarget as HTMLButtonElement | null;
-                      if (btn) {
-                        const prev = btn.textContent;
-                        btn.textContent = "Chưa vẽ trên sơ đồ — thử Tạo lại";
-                        window.setTimeout(() => {
-                          btn.textContent = prev;
-                        }, 2200);
-                      }
-                    }
+                    onJump(u, idx);
                   },
                 })
               : null,
-          ),
-        ),
+          );
+        }),
       ),
     );
   };
@@ -1159,8 +1162,25 @@ export function diagramPane(
       return;
     }
     // Modes "off" and "footer" re-render immediately in Rust with zero AI calls.
+    // Prefer restoring an existing clean cached variant (e.g. "off") when switching back from PA 2/3.
     if (mode === "off" || mode === "footer") {
-      const updated: ProcessDiagram = { ...st.diagram, uncertaintyMode: mode };
+      const exact = st.cache.get(cacheKey(st.selectedStrategy, mode));
+      if (exact) {
+        await activateCachedVariant(
+          st.selectedStrategy,
+          mode,
+          exact,
+          mode === "footer"
+            ? "Đã ghép khung Cần xác nhận vào chân sơ đồ."
+            : "Đã chuyển sang bản sơ đồ không vẽ phần Cần xác nhận.",
+        );
+        return;
+      }
+      const cleanBase =
+        mode === "footer"
+          ? st.cache.get(cacheKey(st.selectedStrategy, "off"))?.diagram ?? st.diagram
+          : st.diagram;
+      const updated: ProcessDiagram = { ...cleanBase, uncertaintyMode: mode };
       try {
         const nextRendered = await invoke<RenderedDiagram>("render_diagram", { diagram: updated });
         st.cache.set(cacheKey(st.selectedStrategy, mode), {
@@ -1478,8 +1498,8 @@ export function diagramPane(
 
       const uncertaintiesSection = st.running
         ? null
-        : renderUncertaintiesBlock(diagram, st.uncertaintyMode, (u, idx) =>
-            focusUncertaintyOnStage(stageEl, u, idx, st.uncertaintyMode, true),
+        : renderUncertaintiesBlock(diagram, st.uncertaintyMode, svg, (u, idx) =>
+            focusUncertaintyOnStage(stageEl, diagram, u, idx, st.uncertaintyMode, true),
           );
 
       const children = [

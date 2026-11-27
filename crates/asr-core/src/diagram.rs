@@ -340,15 +340,15 @@ fn strategy_template(strategy: Option<&str>) -> Option<&'static str> {
 }
 
 fn uncertainty_mode_instruction(mode: Option<&str>) -> Option<&'static str> {
-    match mode.map(str::trim).filter(|s| !s.is_empty()).unwrap_or("inline") {
+    match mode.map(str::trim).filter(|s| !s.is_empty()).unwrap_or("off") {
         "off" | "footer" => Some(
-            "Cách hiển thị phần Cần xác nhận: giữ luồng chính trong sơ đồ sạch gọn, chỉ vẽ các bước đã chốt; ghi đầy đủ mọi điểm còn mơ hồ vào mảng `uncertainties` (để `nodeId: \"\"`, khung chú giải sẽ do app tự ghép ở chân hình khi người dùng bật).",
+            "Cách hiển thị phần Cần xác nhận: KHÔNG vẽ các nút/nhánh màu `warn` hay `legend` Cần xác nhận lên sơ đồ — giữ sơ đồ hoàn toàn sạch gọn theo luồng chính; chỉ liệt kê các điểm còn mơ hồ vào mảng `uncertainties` với `nodeId: \"\"` (khung chú giải sẽ do app tự ghép ở chân hình khi người dùng bật).",
         ),
         "badges-footer" => Some(
-            "Cách hiển thị phần Cần xác nhận (Phương án 3): với MỌI điểm trong mảng `uncertainties`, gắn một chấm `badge` (có `id` riêng như `\"q1\"`, `\"q2\"`) màu `warn` có nhãn `\"?1\"`, `\"?2\"`, ... ngay cạnh đúng bước liên quan trên sơ đồ, và điền đúng `id` đó vào trường `nodeId` của mục tương ứng trong `uncertainties`.",
+            "Cách hiển thị phần Cần xác nhận (Phương án 3): với các điểm cần xác nhận gắn được vào bước/nhánh cụ thể trên luồng, gắn chấm `badge` (có `id` riêng như `\"q1\"`, `\"q2\"`) màu `warn` có nhãn `\"?1\"`, `\"?2\"`, ... ngay cạnh bước liên quan và điền đúng `id` đó vào `nodeId` (nhiều mục cùng xoay quanh 1 bước có thể dùng chung `nodeId`; mục thuần ngữ cảnh/chính sách chung thì để `nodeId: \"\"`).",
         ),
         "inline" => Some(
-            "Cách hiển thị phần Cần xác nhận (Phương án 2 — BẮT BUỘC): với MỌI điểm còn mơ hồ/chưa chốt (được ghi trong mảng `uncertainties`), PHẢI vẽ trực tiếp vào đúng vị trí trong sơ đồ bằng hộp/hình thoi/nút viền nét đứt màu `warn` (`\"dashed\":true,\"color\":\"warn\",\"fill\":\"warn\"`) có `id` riêng (ví dụ `\"u1\"`, `\"u2\"`) kèm dấu `?` cuối nhãn — kể cả khi AI tự chọn dạng sơ đồ (`auto`), và ghi đúng `id` nút đó vào trường `nodeId` của từng mục trong `uncertainties`. Ví dụ nút chưa chốt trong swimlane/sơ đồ: `{\"id\":\"u1\",\"lane\":\"s\",\"row\":2,\"kind\":\"step\",\"text\":\"Nhánh chưa chốt?\",\"dashed\":true,\"color\":\"warn\",\"fill\":\"warn\"}` và mũi tên `{\"from\":\"b2\",\"to\":\"u1\",\"text\":\"Điều kiện?\",\"dashed\":true,\"color\":\"warn\"}`. Đồng thời luôn thêm `legend` cuối mảng `elements`: `{\"t\":\"legend\",\"x\":0,\"y\":400,\"items\":[{\"label\":\"Đã chốt\",\"color\":\"ink\"},{\"label\":\"Cần xác nhận\",\"color\":\"warn\",\"dashed\":true}]}`.",
+            "Cách hiển thị phần Cần xác nhận (Phương án 2): phân tách hợp lý theo logic nghiệp vụ — với mọi mục ảnh hưởng trực tiếp tới **luồng, nhánh rẽ, điều kiện, vai trò, ngưỡng thời gian/tiền**, hãy vẽ trực tiếp vào đúng vị trí trong sơ đồ bằng hộp/hình thoi/nút viền nét đứt màu `warn` (`\"dashed\":true,\"color\":\"warn\",\"fill\":\"warn\"`) có `id` riêng (ví dụ `\"u1\"`, `\"u2\"`) kèm dấu `?` cuối nhãn — kể cả khi AI tự chọn dạng sơ đồ (`auto`), và ghi đúng `id` đó vào trường `nodeId` của mục tương ứng (nhiều câu hỏi cùng xoay quanh 1 bước/nhánh có thể trỏ chung 1 `nodeId`). Với các mục thuần chính sách/ngữ cảnh chung không đặt được thành bước trên sơ đồ thì chỉ ghi vào `uncertainties` với `nodeId: \"\"`. Ví dụ nút chưa chốt: `{\"id\":\"u1\",\"lane\":\"s\",\"row\":2,\"kind\":\"step\",\"text\":\"Nhánh chưa chốt?\",\"dashed\":true,\"color\":\"warn\",\"fill\":\"warn\"}` và mũi tên `{\"from\":\"b2\",\"to\":\"u1\",\"text\":\"Điều kiện?\",\"dashed\":true,\"color\":\"warn\"}`. Khi có nút `warn` trên sơ đồ, thêm `legend` cuối mảng `elements`: `{\"t\":\"legend\",\"x\":0,\"y\":400,\"items\":[{\"label\":\"Đã chốt\",\"color\":\"ink\"},{\"label\":\"Cần xác nhận\",\"color\":\"warn\",\"dashed\":true}]}`.",
         ),
         _ => None,
     }
@@ -643,6 +643,27 @@ fn count_warn_uncertainty_nodes(v: &Value) -> usize {
     }
 }
 
+fn collect_ve_node_ids(v: &Value, ids: &mut HashSet<String>) {
+    match v {
+        Value::Object(map) => {
+            if let Some(id) = map.get("id").and_then(Value::as_str)
+                && !id.trim().is_empty()
+            {
+                ids.insert(id.trim().to_owned());
+            }
+            for child in map.values() {
+                collect_ve_node_ids(child, ids);
+            }
+        }
+        Value::Array(arr) => {
+            for item in arr {
+                collect_ve_node_ids(item, ids);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn missing_inline_uncertainty_issues(
     diagram: &ProcessDiagram,
     uncertainty_mode: Option<&str>,
@@ -650,30 +671,52 @@ fn missing_inline_uncertainty_issues(
     let mode = uncertainty_mode
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or("inline");
+        .unwrap_or("off");
     let total = diagram.uncertainties.len();
-    if (mode == "inline" || mode == "badges-footer")
-        && total > 0
-        && !diagram.ve_elements.is_empty()
+    if !(mode == "inline" || mode == "badges-footer")
+        || total == 0
+        || diagram.ve_elements.is_empty()
     {
-        let drawn: usize = diagram
-            .ve_elements
-            .iter()
-            .map(count_warn_uncertainty_nodes)
-            .sum();
-        if drawn < total {
-            let items = diagram
-                .uncertainties
-                .iter()
-                .map(|u| u.item.as_str())
-                .collect::<Vec<_>>()
-                .join("; ");
-            return vec![format!(
-                "Mảng `uncertainties` có {total} điểm cần xác nhận nhưng `veSpecJson` mới vẽ {drawn}/{total} nút màu `warn`. BẮT BUỘC vẽ ĐỦ cả {total} điểm trực tiếp vào đúng vị trí trên sơ đồ bằng nút/nhánh màu `warn` nét đứt (`\"dashed\":true,\"color\":\"warn\",\"fill\":\"warn\"`) có `id` riêng, điền đúng `id` đó vào `nodeId` của từng mục trong `uncertainties` ({items}), và có `legend`."
-            )];
-        }
+        return Vec::new();
     }
-    Vec::new()
+
+    let mut issues = Vec::new();
+    let drawn: usize = diagram
+        .ve_elements
+        .iter()
+        .map(count_warn_uncertainty_nodes)
+        .sum();
+    if drawn == 0 {
+        let items = diagram
+            .uncertainties
+            .iter()
+            .take(5)
+            .map(|u| u.item.as_str())
+            .collect::<Vec<_>>()
+            .join("; ");
+        issues.push(format!(
+            "Mảng `uncertainties` có {total} điểm cần xác nhận ({items}) nhưng `veSpecJson` chưa vẽ nút màu `warn` nào. Hãy vẽ các điểm ảnh hưởng tới luồng/nhánh/điều kiện trực tiếp lên sơ đồ bằng màu `warn` nét đứt có `id` riêng, điền `nodeId` tương ứng (mục thuần ngữ cảnh chung có thể để `nodeId: \"\"`), và thêm `legend`."
+        ));
+    }
+
+    let mut ve_ids = HashSet::new();
+    for el in &diagram.ve_elements {
+        collect_ve_node_ids(el, &mut ve_ids);
+    }
+    let broken_ids: Vec<&str> = diagram
+        .uncertainties
+        .iter()
+        .filter_map(|u| u.node_id.as_deref())
+        .filter(|nid| !ve_ids.contains(*nid))
+        .collect();
+    if !broken_ids.is_empty() {
+        issues.push(format!(
+            "Các `nodeId` sau trong `uncertainties` không tồn tại trong `veSpecJson`: {}. Hãy sửa lại `nodeId` khớp đúng `id` của nút trong sơ đồ hoặc để `\"\"` nếu là ghi chú chung.",
+            broken_ids.join(", ")
+        ));
+    }
+
+    issues
 }
 
 /// Calls the configured LLM client with optional strategy and uncertainty display mode.

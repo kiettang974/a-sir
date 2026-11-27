@@ -550,15 +550,34 @@ impl Workspace {
         )
     }
 
-    /// Generates a process flowchart from the transcript using the configured Gemini
-    /// model and API key only (no audio, no context notes, no attachments, no meeting note).
+    /// Generates a process flowchart from the transcript using the default configured AI
+    /// provider (falling back to any provider with an API key saved).
     pub fn generate_diagram(&self, transcript: &str) -> Result<ProcessDiagram, DiagramError> {
         if transcript.trim().is_empty() {
             return Err(DiagramError::EmptyTranscript);
         }
-        let model = self.ai_settings().model(Provider::Gemini).to_owned();
-        let client = self.client(Provider::Gemini, Some(&model))?;
-        diagram::generate(&client, &model, transcript)
+        let settings = self.ai_settings();
+        let keys = self.keys();
+        let mut order = vec![settings.default_provider];
+        for p in Provider::ALL {
+            if !order.contains(&p) {
+                order.push(p);
+            }
+        }
+        let provider = order
+            .into_iter()
+            .find(|&p| keys.get(p).ok().flatten().is_some())
+            .ok_or(AiError::MissingKey)?;
+        let model = settings.model(provider).to_owned();
+        let client = self.client(provider, Some(&model))?;
+        let mut out = diagram::generate(&client, &model, transcript)?;
+        out.provider = match provider {
+            Provider::Claude => "Claude",
+            Provider::ChatGpt => "ChatGPT",
+            Provider::Gemini => "Gemini",
+        }
+        .to_owned();
+        Ok(out)
     }
 
     pub fn glossary(&self) -> Vec<Term> {

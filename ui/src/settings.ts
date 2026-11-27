@@ -1635,6 +1635,48 @@ function providerBlock(
     );
   };
 
+  const isModelUnavailableError = (msg: string): boolean => {
+    const lower = msg.toLowerCase();
+    return (
+      lower.includes("404") ||
+      lower.includes("not_found") ||
+      lower.includes("not found") ||
+      lower.includes("limit: 0") ||
+      lower.includes("does not exist") ||
+      lower.includes("model:")
+    );
+  };
+
+  /** Probes accessible models and auto-selects the first working one when the saved model fails. */
+  const autoResolveModel = async (generation: number, originalErr: string): Promise<boolean> => {
+    show("Model đang chọn không khả dụng — đang tự tìm model gọi được trên tài khoản…");
+    try {
+      const models = await invoke<string[]>("list_models", { provider });
+      if (providerModelCache[provider].generation !== generation) return false;
+      providerModelCache[provider].models = models;
+      const probe = await invoke<{ checked: string[]; accessible: string[] }>("probe_accessible_models", {
+        provider,
+        candidates: models,
+        model: modelName,
+      });
+      if (providerModelCache[provider].generation !== generation) return false;
+      providerModelCache[provider].accessible = probe.accessible;
+      if (probe.accessible.length > 0) {
+        const working = probe.accessible[0];
+        await saveModel(working);
+        show(`Model cũ không khả dụng — đã tự chuyển sang ${working} và kết nối thành công.`);
+        return true;
+      }
+      show(originalErr, true);
+      return false;
+    } catch {
+      if (providerModelCache[provider].generation === generation) {
+        show(originalErr, true);
+      }
+      return false;
+    }
+  };
+
   return el(
     "div",
     { className: "provider" },
@@ -1676,7 +1718,21 @@ function providerBlock(
           try {
             await invoke("set_api_key", { provider, key: key.value });
             invalidateProviderCache(provider);
-            reload();
+            const generation = providerModelCache[provider].generation;
+            key.value = "";
+            show("Đã lưu key — đang kiểm tra model khả dụng…");
+            try {
+              await invoke("test_provider", { provider, model: modelName });
+              if (providerModelCache[provider].generation === generation) {
+                reload();
+              }
+            } catch (testErr) {
+              const errText = String(testErr);
+              if (isModelUnavailableError(errText)) {
+                await autoResolveModel(generation, errText);
+              }
+              reload();
+            }
           } catch (e) {
             show(String(e), true);
           }
@@ -1701,16 +1757,27 @@ function providerBlock(
         textContent: "Thử kết nối",
         onclick: async () => {
           show("Đang thử kết nối…");
+          let generation = providerModelCache[provider].generation;
           try {
             if (key.value.trim()) {
               await invoke("set_api_key", { provider, key: key.value });
               invalidateProviderCache(provider);
+              generation = providerModelCache[provider].generation;
               key.value = "";
             }
             await invoke("test_provider", { provider, model: modelName });
+            if (providerModelCache[provider].generation !== generation) return;
             show(`Kết nối được với ${name} bằng model này.`);
           } catch (e) {
-            show(String(e), true);
+            if (providerModelCache[provider].generation !== generation) return;
+            const errText = String(e);
+            if (isModelUnavailableError(errText)) {
+              await autoResolveModel(generation, errText);
+            } else {
+              show(errText, true);
+            }
+          } finally {
+            if (pickerOpen) drawPicker();
           }
         },
       }),

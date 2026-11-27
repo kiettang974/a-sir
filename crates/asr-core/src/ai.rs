@@ -29,19 +29,19 @@ impl Provider {
 
     pub fn default_model(self) -> &'static str {
         match self {
-            Provider::Claude => "claude-sonnet-4-5",
+            Provider::Claude => "claude-sonnet-4-5-20250929",
             Provider::ChatGpt => "gpt-4.1-mini",
-            Provider::Gemini => "gemini-3.8-flash",
+            Provider::Gemini => "gemini-2.5-flash",
         }
     }
 
     pub fn recommended_models(self) -> &'static [&'static str] {
         match self {
             Provider::Claude => &[
-                "claude-sonnet-4-5",
-                "claude-opus-4-5",
-                "claude-haiku-4-5",
+                "claude-sonnet-4-5-20250929",
                 "claude-sonnet-4-20250514",
+                "claude-haiku-4-5-20251001",
+                "claude-opus-4-20250514",
                 "claude-3-7-sonnet-latest",
             ],
             Provider::ChatGpt => &[
@@ -54,14 +54,11 @@ impl Provider {
                 "gpt-5",
             ],
             Provider::Gemini => &[
-                "gemini-3.8-flash",
-                "gemini-3.7-flash",
-                "gemini-3.6-flash",
-                "gemini-3.5-flash",
-                "gemini-4-argon",
-                "gemini-4-carbon",
                 "gemini-2.5-flash",
                 "gemini-2.5-pro",
+                "gemini-2.0-flash",
+                "gemini-3.8-flash",
+                "gemini-3.7-flash",
             ],
         }
     }
@@ -1426,7 +1423,7 @@ mod tests {
         settings.save(&path).unwrap();
         let loaded = AiSettings::load(&path);
         assert_eq!(loaded.default_provider, Provider::Gemini);
-        assert_eq!(loaded.model(Provider::Claude), "claude-sonnet-4-5");
+        assert_eq!(loaded.model(Provider::Claude), Provider::Claude.default_model());
         assert!(
             !fs::read_to_string(&path)
                 .unwrap()
@@ -1447,7 +1444,7 @@ mod tests {
         let loaded = AiSettings::load(&path);
         assert_eq!(loaded.default_provider, Provider::ChatGpt);
         assert_eq!(loaded.model(Provider::ChatGpt), "gpt-4.1");
-        assert_eq!(loaded.model(Provider::Gemini), "gemini-3.8-flash");
+        assert_eq!(loaded.model(Provider::Gemini), Provider::Gemini.default_model());
         assert_eq!(loaded.summary_style, SummaryStyle::WorkEmail);
     }
 

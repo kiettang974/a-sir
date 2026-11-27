@@ -1058,10 +1058,10 @@ function readerPane(): HTMLElement {
           {
             className: "btn-ghost",
             title: diagramBusy
-              ? "Đang phân tích bản chép lời và tạo sơ đồ bằng Gemini…"
+              ? "Đang phân tích bản chép lời và tạo sơ đồ bằng AI…"
               : text !== null && text.trim().length === 0
                 ? "Bản chép lời đang trống nên chưa thể tạo sơ đồ"
-                : "Tạo hoặc mở sơ đồ quy trình từ bản chép lời bằng Gemini",
+                : "Tạo hoặc mở sơ đồ quy trình từ bản chép lời",
             disabled: diagramBusy || text === null || text.trim().length === 0,
             onclick: () => {
               void openOrGenerateDiagram(job.id, {

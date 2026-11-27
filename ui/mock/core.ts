@@ -315,11 +315,16 @@ const commands: Record<string, (a: Args) => unknown | Promise<unknown>> = {
   generate_diagram: async ({ id }: Args) => {
     await sleep(900);
     if (job(id).state.kind !== "done") throw "File này chưa chép lời xong.";
-    if (!state.ai.keys.gemini) throw "Chưa có API key cho nhà cung cấp này";
+    const providers: Provider[] = ["claude", "chatGpt", "gemini"];
+    const usable = providers.filter((p) => Boolean(state.ai.keys[p]));
+    if (usable.length === 0) throw "Chưa có API key cho nhà cung cấp nào";
+    const chosen = usable.includes(state.ai.defaultProvider) ? state.ai.defaultProvider : usable[0];
+    const providerLabel = chosen === "claude" ? "Claude" : chosen === "chatGpt" ? "ChatGPT" : "Gemini";
     return {
       title: "Quy trình duyệt thanh toán (mô phỏng)",
       summary: "Kiểm tra hoá đơn, phân nhánh theo ngưỡng 2 triệu và đường trả lại hồ sơ thiếu chứng từ.",
-      model: state.ai.models.gemini ?? "gemini-3.8-flash",
+      provider: providerLabel,
+      model: state.ai.models[chosen] ?? "gemini-3.8-flash",
       nodes: [
         { id: "n1", kind: "start", label: "Tiếp nhận hồ sơ đề nghị thanh toán", role: "Nhân viên" },
         { id: "n2", kind: "decision", label: "Hồ sơ đủ hoá đơn hợp lệ?", role: "Kế toán" },

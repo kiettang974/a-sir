@@ -54,6 +54,8 @@ pub struct ProcessDiagram {
     #[serde(default)]
     pub uncertainties: Vec<DiagramUncertainty>,
     #[serde(default)]
+    pub provider: String,
+    #[serde(default)]
     pub model: String,
 }
 
@@ -63,7 +65,7 @@ pub enum DiagramError {
     EmptyTranscript,
     #[error("{}", format_insufficient(.0))]
     InsufficientInfo(String),
-    #[error("Dữ liệu sơ đồ từ Gemini không hợp lệ: {0}")]
+    #[error("Dữ liệu sơ đồ từ AI không hợp lệ: {0}")]
     InvalidDiagram(String),
     #[error("{}", format_ai_error(.0))]
     Ai(#[from] AiError),
@@ -88,7 +90,7 @@ fn format_ai_error(err: &AiError) -> String {
                 || lower.contains("context"))
         {
             return format!(
-                "Bản chép lời vượt quá giới hạn ngữ cảnh của model Gemini đang chọn. Hãy đổi sang model có giới hạn lớn hơn trong Cài đặt. Chi tiết: {message}"
+                "Bản chép lời vượt quá giới hạn ngữ cảnh của model AI đang chọn. Hãy đổi sang model có giới hạn lớn hơn trong Cài đặt. Chi tiết: {message}"
             );
         }
     }
@@ -293,6 +295,7 @@ pub fn parse_and_validate(raw: &str, model: &str) -> Result<ProcessDiagram, Diag
         nodes,
         edges,
         uncertainties,
+        provider: String::new(),
         model: model.trim().to_owned(),
     })
 }

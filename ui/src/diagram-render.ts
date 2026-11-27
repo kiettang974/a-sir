@@ -27,6 +27,7 @@ export type ProcessDiagram = {
   nodes: DiagramNode[];
   edges: DiagramEdge[];
   uncertainties: DiagramUncertainty[];
+  provider?: string;
   model: string;
 };
 

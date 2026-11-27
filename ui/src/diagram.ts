@@ -12,7 +12,7 @@ import {
 } from "./diagram-render";
 import { el } from "./dom";
 import { icon } from "./icons";
-import { type AiView, overflowMenu } from "./ipc";
+import { type AiView, overflowMenu, PROVIDER_NAME, PROVIDERS, type Provider } from "./ipc";
 
 type Links = {
   openSettings: () => void;
@@ -72,8 +72,20 @@ export function getDiagramButtonState(id: number): "idle" | "running" | "ready" 
   return "idle";
 }
 
+function pickConfiguredProvider(ai: AiView | null): { provider: Provider; name: string; model: string } | null {
+  if (!ai) return null;
+  const usable = PROVIDERS.filter((p) => Boolean(ai.keys[p]));
+  if (usable.length === 0) return null;
+  const provider = usable.includes(ai.defaultProvider) ? ai.defaultProvider : usable[0];
+  return {
+    provider,
+    name: PROVIDER_NAME[provider],
+    model: ai.models[provider]?.trim() || "",
+  };
+}
+
 /**
- * Opens an existing saved diagram immediately, or starts Gemini generation in place while
+ * Opens an existing saved diagram immediately, or starts AI generation in place while
  * keeping the user on the Reader screen. Never auto-navigates away when generation finishes;
  * the user clicks the button again to open the Diagram screen.
  */
@@ -92,7 +104,7 @@ export async function openOrGenerateDiagram(
     return;
   }
 
-  // Check local saved diagram first (offline-safe, zero Gemini calls).
+  // Check local saved diagram first (offline-safe, zero AI calls).
   try {
     const saved = await invoke<ProcessDiagram | null>("load_diagram", { id });
     if (saved) {
@@ -102,13 +114,13 @@ export async function openOrGenerateDiagram(
       return;
     }
   } catch {
-    // Saved file missing or unreadable; proceed to check Gemini setup.
+    // Saved file missing or unreadable; proceed to check AI setup.
   }
 
   const settings = await invoke<AiView>("ai_settings").catch(() => null);
-  const model = settings?.models.gemini?.trim() || "gemini-3.8-flash";
-  if (!settings?.keys.gemini) {
-    st.error = "Chưa có API key cho Gemini. Hãy thiết lập trong Cài đặt trước khi tạo sơ đồ.";
+  const picked = pickConfiguredProvider(settings);
+  if (!picked) {
+    st.error = "Chưa có API key cho nhà cung cấp AI nào. Hãy thiết lập trong Cài đặt trước khi tạo sơ đồ.";
     st.needsSettings = true;
     callbacks.onOpenDiagram(id);
     return;
@@ -116,7 +128,7 @@ export async function openOrGenerateDiagram(
 
   const unsub = subscribe(id, callbacks.onStateChange);
   try {
-    await runGeneration(id, model);
+    await runGeneration(id, picked.name, picked.model);
   } finally {
     unsub();
   }
@@ -160,18 +172,19 @@ function errorNeedsSettings(message: string): boolean {
 }
 
 /** Runs diagram generation for `id` independently of whichever recording is currently on screen. */
-async function runGeneration(id: number, geminiModel: string) {
+async function runGeneration(id: number, providerName: string, modelName: string) {
   const st = getState(id);
   if (st.running) return;
   const isRegenerate = st.diagram !== null;
+  const tag = modelName ? `${providerName} (${modelName})` : providerName;
   st.running = true;
   st.error = null;
   st.needsSettings = false;
   st.exportError = null;
   st.exportNotice = null;
   st.statusMessage = isRegenerate
-    ? `Đang tạo lại sơ đồ bằng Gemini (${geminiModel})… Bản sơ đồ hiện tại vẫn có thể xem và xuất.`
-    : `Đang phân tích bản chép lời và tạo sơ đồ bằng Gemini (${geminiModel})…`;
+    ? `Đang tạo lại sơ đồ bằng ${tag}… Bản sơ đồ hiện tại vẫn có thể xem và xuất.`
+    : `Đang phân tích bản chép lời và tạo sơ đồ bằng ${tag}…`;
   notify(id);
 
   try {
@@ -228,8 +241,8 @@ export function diagramPane(
   let loadError: string | null = null;
   let zoom = 1;
 
-  const geminiModel = () => ai?.models.gemini?.trim() || "gemini-3.8-flash";
-  const hasGeminiKey = () => Boolean(ai?.keys.gemini);
+  const activeAi = () => pickConfiguredProvider(ai);
+  const hasAnyAiKey = () => activeAi() !== null;
 
   const exportFile = async (format: "png" | "excalidraw") => {
     const st = getState(id);
@@ -271,14 +284,15 @@ export function diagramPane(
 
   const triggerGenerate = () => {
     if (!hasTranscriptText) return;
-    if (!hasGeminiKey()) {
+    const picked = activeAi();
+    if (!picked) {
       const st = getState(id);
-      st.error = "Chưa có API key cho Gemini. Hãy thiết lập trong Cài đặt trước khi tạo sơ đồ.";
+      st.error = "Chưa có API key cho nhà cung cấp AI nào. Hãy thiết lập trong Cài đặt trước khi tạo sơ đồ.";
       st.needsSettings = true;
       draw();
       return;
     }
-    void runGeneration(id, geminiModel());
+    void runGeneration(id, picked.name, picked.model);
   };
 
   const renderNoticeBanner = (st: JobDiagramState): HTMLElement | null => {
@@ -304,7 +318,7 @@ export function diagramPane(
                 onclick: links.openSettings,
               })
             : null,
-          hasTranscriptText && hasGeminiKey()
+          hasTranscriptText && hasAnyAiKey()
             ? el("button", {
                 className: "link",
                 textContent: "Thử lại",
@@ -364,10 +378,13 @@ export function diagramPane(
       const layout = st.layout;
       const diagram = st.diagram;
 
+      const picked = activeAi();
       const overflowItems = [
         {
           label: st.running ? "Đang tạo lại sơ đồ…" : "Tạo lại sơ đồ",
-          title: `Gửi toàn bộ bản chép lời đang mở đến Gemini (${geminiModel()}) để tạo lại`,
+          title: picked
+            ? `Gửi bản chép lời đến ${picked.name}${picked.model ? ` (${picked.model})` : ""} để tạo lại`
+            : "Tạo lại sơ đồ bằng AI đã cấu hình",
           disabled: st.running || !hasTranscriptText,
           onClick: triggerGenerate,
         },
@@ -426,14 +443,16 @@ export function diagramPane(
       svg.setAttribute("width", String(Math.round(layout.width * zoom)));
       svg.setAttribute("height", String(Math.round(layout.height * zoom)));
 
+      const badgeParts = [
+        diagram.provider || picked?.name || "AI",
+        diagram.model || picked?.model || "",
+        `${diagram.nodes.length} bước`,
+      ].filter(Boolean);
+
       const zoomBar = el(
         "div",
         { className: "diagram-toolbar" },
-        el(
-          "span",
-          { className: "diagram-model-tag" },
-          `Gemini · ${diagram.model || geminiModel()} · ${diagram.nodes.length} bước`,
-        ),
+        el("span", { className: "diagram-model-tag", textContent: badgeParts.join(" · ") }),
         el(
           "div",
           { className: "diagram-zoom-group" },
@@ -534,7 +553,7 @@ export function diagramPane(
       ),
     );
 
-    const missingKey = !hasGeminiKey();
+    const missingKey = !hasAnyAiKey();
     const emptyChildren = [
       loadError ? el("p", { className: "status-inline bad", textContent: loadError }) : null,
       renderNoticeBanner(st),
@@ -543,7 +562,7 @@ export function diagramPane(
             "div",
             { className: "diagram-banner bad", role: "alert" },
             el("span", {
-              textContent: "Chưa cấu hình API key Gemini. Mở Cài đặt để nhập key và chọn model.",
+              textContent: "Chưa cấu hình API key cho nhà cung cấp AI nào. Mở Cài đặt để nhập key.",
             }),
             el("button", {
               className: "link",
@@ -598,8 +617,9 @@ export function diagramPane(
       loadedLocal = true;
       draw();
       // Auto-start generation when opening Tạo sơ đồ on a recording with no saved diagram yet.
-      if (!st.diagram && !st.running && !st.error && hasTranscriptText && hasGeminiKey()) {
-        void runGeneration(id, geminiModel());
+      const picked = activeAi();
+      if (!st.diagram && !st.running && !st.error && hasTranscriptText && picked) {
+        void runGeneration(id, picked.name, picked.model);
       }
     } catch (e) {
       loadError = String(e);

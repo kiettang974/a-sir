@@ -6,6 +6,8 @@ import "@fontsource/be-vietnam-pro/vietnamese-600.css";
 import "@fontsource/be-vietnam-pro/latin-600.css";
 import "@fontsource/literata/vietnamese-400.css";
 import "@fontsource/literata/latin-400.css";
+import "@fontsource/patrick-hand/vietnamese-400.css";
+import "@fontsource/patrick-hand/latin-400.css";
 import "./style.css";
 
 import { aiCleanPane, contextTabBody, getAiCleanButtonState, openOrStartAiClean } from "./context";

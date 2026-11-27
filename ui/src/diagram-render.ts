@@ -1,5 +1,7 @@
-//! Self-contained process flowchart layout engine and offline renderers (SVG preview,
-//! HiDPI PNG via Canvas2D, and editable Excalidraw v2 `.excalidraw` JSON).
+//! Self-contained process flowchart layout engine and hand-drawn Excalidraw-style renderers
+//! (Rough.js + Patrick Hand SVG preview, 2x HiDPI PNG via Rough.js Canvas2D, and editable `.excalidraw` v2 JSON).
+
+import rough from "roughjs";
 
 export type NodeKind = "start" | "step" | "decision" | "end";
 
@@ -61,6 +63,7 @@ export type LayoutDiagram = {
 };
 
 const FONT_FAMILY_UI = '"Be Vietnam Pro", -apple-system, BlinkMacSystemFont, sans-serif';
+const FONT_FAMILY_HAND = '"Patrick Hand", "Be Vietnam Pro", cursive, sans-serif';
 const TITLE_FONT_SIZE = 20;
 const TITLE_LINE_HEIGHT = 28;
 const LABEL_FONT_SIZE = 14;
@@ -70,10 +73,63 @@ const ROLE_LINE_HEIGHT = 16;
 const EDGE_FONT_SIZE = 12;
 const EDGE_LINE_HEIGHT = 17;
 
+/** Palette aligned with `drawing-excalidraw-figures` (VÁ 6): solid pastel fills + high-contrast `#111A2B` ink. */
+const SKETCH_COLORS = {
+  bg: "#ffffff",
+  ink: "#111A2B",
+  accent: "#1E5AE8",
+  startFill: "#DBEAFE",
+  stepFill: "#F2F6FB",
+  decisionFill: "#FEF3C7",
+  labelFill: "#FFFFFF",
+  labelBorder: "#5C6B82",
+};
+
+function nodeFillColor(kind: NodeKind): string {
+  if (kind === "start" || kind === "end") return SKETCH_COLORS.startFill;
+  if (kind === "decision") return SKETCH_COLORS.decisionFill;
+  return SKETCH_COLORS.stepFill;
+}
+
+function deterministicSeed(key: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < key.length; i++) {
+    h ^= key.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return Math.abs(h) % 2_000_000_000 || 1337;
+}
+
+function roundedRectSvgPath(x: number, y: number, w: number, h: number, r: number): string {
+  const rad = Math.min(r, w / 2, h / 2);
+  return [
+    `M ${x + rad} ${y}`,
+    `L ${x + w - rad} ${y}`,
+    `Q ${x + w} ${y} ${x + w} ${y + rad}`,
+    `L ${x + w} ${y + h - rad}`,
+    `Q ${x + w} ${y + h} ${x + w - rad} ${y + h}`,
+    `L ${x + rad} ${y + h}`,
+    `Q ${x} ${y + h} ${x} ${y + h - rad}`,
+    `L ${x} ${y + rad}`,
+    `Q ${x} ${y} ${x + rad} ${y}`,
+    "Z",
+  ].join(" ");
+}
+
+function arrowWingPoints(from: Point, to: Point): [Point, Point] {
+  const angle = Math.atan2(to.y - from.y, to.x - from.x);
+  const len = 12;
+  const spread = Math.PI / 6.5;
+  return [
+    { x: to.x - len * Math.cos(angle - spread), y: to.y - len * Math.sin(angle - spread) },
+    { x: to.x - len * Math.cos(angle + spread), y: to.y - len * Math.sin(angle + spread) },
+  ];
+}
+
 const PAD_X = 48;
 const PAD_TOP = 36;
 const PAD_BOTTOM = 44;
-const LAYER_GAP_Y = 82;
+const LAYER_GAP_Y = 96;
 const NODE_GAP_X = 56;
 
 let measureCtx: CanvasRenderingContext2D | null = null;
@@ -384,11 +440,12 @@ export function layoutDiagram(diagram: ProcessDiagram): LayoutDiagram {
       let startPt: Point = { x: srcCx, y: src.y + src.height };
       const endPt: Point = { x: dstCx, y: dst.y };
 
-      // For decision diamonds with multiple outgoing branches, anchor left/right vertices when target is off-center.
+      // Only anchor to left/right vertex of a decision diamond when the target center lies strictly
+      // outside the diamond's horizontal span so the arrow never doubles back across the shape.
       if (src.kind === "decision" && siblings.length >= 2) {
-        if (dstCx < srcCx - 36) {
+        if (dstCx <= src.x - 16) {
           startPt = { x: src.x, y: Math.round(src.y + src.height / 2) };
-        } else if (dstCx > srcCx + 36) {
+        } else if (dstCx >= src.x + src.width + 16) {
           startPt = { x: src.x + src.width, y: Math.round(src.y + src.height / 2) };
         }
       }
@@ -400,16 +457,20 @@ export function layoutDiagram(diagram: ProcessDiagram): LayoutDiagram {
           y: Math.round((startPt.y + endPt.y) / 2),
         };
       } else if (startPt.y < src.y + src.height - 4) {
-        // Exited from side of diamond: go horizontally to target X, then down into target top.
+        // Exited from side of diamond (strictly outside its width): go horizontally to target X,
+        // then drop into target top. Place label on the clear vertical drop below the diamond.
         const elbow: Point = { x: endPt.x, y: startPt.y };
         points = [startPt, elbow, endPt];
+        const safeTopY = Math.max(startPt.y + Math.ceil(labelH / 2) + 14, src.y + src.height - 8);
+        const safeBotY = Math.max(safeTopY, endPt.y - Math.ceil(labelH / 2) - 14);
         labelAnchor = {
-          x: Math.round((startPt.x + elbow.x) / 2),
-          y: startPt.y,
+          x: endPt.x,
+          y: Math.round((safeTopY + safeBotY) / 2),
         };
       } else {
-        // Orthogonal Z-bend between layers.
-        const midY = Math.round(startPt.y + (endPt.y - startPt.y) * 0.5);
+        // Orthogonal Z-bend between layers. Place label on the vertical drop above target so
+        // sibling branches from the same node never overlap each other or the source shape.
+        const midY = Math.round(startPt.y + (endPt.y - startPt.y) * 0.34);
         points = [
           startPt,
           { x: startPt.x, y: midY },
@@ -417,8 +478,8 @@ export function layoutDiagram(diagram: ProcessDiagram): LayoutDiagram {
           endPt,
         ];
         labelAnchor = {
-          x: Math.round((startPt.x + endPt.x) / 2),
-          y: midY,
+          x: endPt.x,
+          y: Math.round((midY + endPt.y) / 2),
         };
       }
     }
@@ -476,7 +537,7 @@ export function layoutDiagram(diagram: ProcessDiagram): LayoutDiagram {
   };
 }
 
-/** Renders the laid-out diagram into an inline SVG element styled by CSS tokens. */
+/** Renders the laid-out diagram into a hand-drawn Rough.js + Patrick Hand SVG matching Excalidraw. */
 export function renderDiagramSvg(layout: LayoutDiagram): SVGSVGElement {
   const ns = "http://www.w3.org/2000/svg";
   const mk = <K extends keyof SVGElementTagNameMap>(
@@ -499,19 +560,7 @@ export function renderDiagramSvg(layout: LayoutDiagram): SVGSVGElement {
     "aria-label": layout.diagram.title,
   });
 
-  // Arrowhead marker
-  const defs = mk("defs", {});
-  const marker = mk("marker", {
-    id: "dg-arrowhead",
-    markerWidth: 10,
-    markerHeight: 8,
-    refX: 8.5,
-    refY: 4,
-    orient: "auto",
-  });
-  marker.append(mk("path", { d: "M0,0.8 L8.8,4 L0,7.2 Z", class: "dg-arrow-head" }));
-  defs.append(marker);
-  svg.append(defs);
+  const rc = rough.svg(svg);
 
   // Background
   svg.append(
@@ -525,11 +574,11 @@ export function renderDiagramSvg(layout: LayoutDiagram): SVGSVGElement {
     }),
   );
 
-  // Title
+  // Title (Patrick Hand)
   layout.titleLines.forEach((line, i) => {
     const t = mk("text", {
       x: layout.width / 2,
-      y: PAD_TOP + 18 + i * TITLE_LINE_HEIGHT,
+      y: PAD_TOP + 20 + i * TITLE_LINE_HEIGHT,
       "text-anchor": "middle",
       class: "dg-title",
     });
@@ -537,50 +586,78 @@ export function renderDiagramSvg(layout: LayoutDiagram): SVGSVGElement {
     svg.append(t);
   });
 
-  // Edges (drawn under nodes)
+  // Hand-drawn edges + Excalidraw open-V arrowheads
   for (const edge of layout.edges) {
-    const d = edge.points
-      .map((p, idx) => `${idx === 0 ? "M" : "L"} ${p.x} ${p.y}`)
-      .join(" ");
+    const seed = deterministicSeed(`edge-${edge.index}-${edge.from}-${edge.to}`);
+    const pts: [number, number][] = edge.points.map((p) => [p.x, p.y]);
     svg.append(
-      mk("path", {
-        d,
-        class: edge.isBackEdge ? "dg-edge dg-edge-back" : "dg-edge",
-        "marker-end": "url(#dg-arrowhead)",
+      rc.linearPath(pts, {
+        stroke: SKETCH_COLORS.ink,
+        strokeWidth: 1.8,
+        roughness: 1.25,
+        bowing: 1.0,
+        seed,
+        strokeLineDash: edge.isBackEdge ? [7, 5] : undefined,
       }),
     );
+    if (edge.points.length >= 2) {
+      const p1 = edge.points[edge.points.length - 2];
+      const p2 = edge.points[edge.points.length - 1];
+      const [w1, w2] = arrowWingPoints(p1, p2);
+      svg.append(
+        rc.linearPath(
+          [
+            [w1.x, w1.y],
+            [p2.x, p2.y],
+            [w2.x, w2.y],
+          ],
+          {
+            stroke: SKETCH_COLORS.ink,
+            strokeWidth: 1.9,
+            roughness: 0.9,
+            bowing: 0.8,
+            seed: seed + 19,
+          },
+        ),
+      );
+    }
   }
 
-  // Nodes
+  // Hand-drawn nodes (solid pastel fills + crisp ink borders)
   for (const node of layout.nodes) {
     const g = mk("g", { class: `dg-node dg-node-${node.kind}` });
+    const seed = deterministicSeed(`node-${node.id}`);
+    const fill = nodeFillColor(node.kind);
+    const shapeOpts = {
+      fill,
+      fillStyle: "solid" as const,
+      stroke: SKETCH_COLORS.ink,
+      strokeWidth: 1.85,
+      roughness: 1.65,
+      bowing: 1.15,
+      seed,
+    };
+
     if (node.kind === "decision") {
       const cx = node.x + node.width / 2;
       const cy = node.y + node.height / 2;
-      const pts = `${cx},${node.y} ${node.x + node.width},${cy} ${cx},${node.y + node.height} ${node.x},${cy}`;
-      g.append(mk("polygon", { points: pts, class: "dg-shape" }));
+      g.append(
+        rc.polygon(
+          [
+            [cx, node.y],
+            [node.x + node.width, cy],
+            [cx, node.y + node.height],
+            [node.x, cy],
+          ],
+          shapeOpts,
+        ),
+      );
     } else if (node.kind === "start" || node.kind === "end") {
       g.append(
-        mk("rect", {
-          x: node.x,
-          y: node.y,
-          width: node.width,
-          height: node.height,
-          rx: Math.min(28, node.height / 2),
-          class: "dg-shape",
-        }),
+        rc.path(roundedRectSvgPath(node.x, node.y, node.width, node.height, Math.min(28, node.height / 2)), shapeOpts),
       );
     } else {
-      g.append(
-        mk("rect", {
-          x: node.x,
-          y: node.y,
-          width: node.width,
-          height: node.height,
-          rx: 10,
-          class: "dg-shape",
-        }),
-      );
+      g.append(rc.path(roundedRectSvgPath(node.x, node.y, node.width, node.height, 12), shapeOpts));
     }
 
     const totalTextH =
@@ -606,7 +683,7 @@ export function renderDiagramSvg(layout: LayoutDiagram): SVGSVGElement {
     node.labelLines.forEach((line, i) => {
       const t = mk("text", {
         x: cx,
-        y: textY + 14 + i * LABEL_LINE_HEIGHT,
+        y: textY + 15 + i * LABEL_LINE_HEIGHT,
         "text-anchor": "middle",
         class: "dg-label",
       });
@@ -617,24 +694,26 @@ export function renderDiagramSvg(layout: LayoutDiagram): SVGSVGElement {
     svg.append(g);
   }
 
-  // Edge labels (drawn on top so they are always legible)
+  // Hand-drawn edge label pills on top
   for (const edge of layout.edges) {
     if (!edge.labelBox || edge.labelLines.length === 0) continue;
     const box = edge.labelBox;
+    const seed = deterministicSeed(`label-${edge.index}-${edge.label}`);
     svg.append(
-      mk("rect", {
-        x: box.x,
-        y: box.y,
-        width: box.width,
-        height: box.height,
-        rx: 6,
-        class: "dg-edge-label-bg",
+      rc.path(roundedRectSvgPath(box.x, box.y, box.width, box.height, 7), {
+        fill: SKETCH_COLORS.labelFill,
+        fillStyle: "solid",
+        stroke: SKETCH_COLORS.labelBorder,
+        strokeWidth: 1.15,
+        roughness: 1.1,
+        bowing: 0.9,
+        seed,
       }),
     );
     edge.labelLines.forEach((line, i) => {
       const t = mk("text", {
         x: box.x + box.width / 2,
-        y: box.y + 16 + i * EDGE_LINE_HEIGHT,
+        y: box.y + 17 + i * EDGE_LINE_HEIGHT,
         "text-anchor": "middle",
         class: "dg-edge-label",
       });
@@ -646,44 +725,7 @@ export function renderDiagramSvg(layout: LayoutDiagram): SVGSVGElement {
   return svg;
 }
 
-function drawRoundedRect(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-  r: number,
-) {
-  const radius = Math.min(r, w / 2, h / 2);
-  ctx.beginPath();
-  ctx.moveTo(x + radius, y);
-  ctx.lineTo(x + w - radius, y);
-  ctx.quadraticCurveTo(x + w, y, x + w, y + radius);
-  ctx.lineTo(x + w, y + h - radius);
-  ctx.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
-  ctx.lineTo(x + radius, y + h);
-  ctx.quadraticCurveTo(x, y + h, x, y + h - radius);
-  ctx.lineTo(x, y + radius);
-  ctx.quadraticCurveTo(x, y, x + radius, y);
-  ctx.closePath();
-}
-
-function drawArrowHead(ctx: CanvasRenderingContext2D, from: Point, to: Point, color: string) {
-  const angle = Math.atan2(to.y - from.y, to.x - from.x);
-  const len = 10;
-  const spread = Math.PI / 7;
-  ctx.save();
-  ctx.fillStyle = color;
-  ctx.beginPath();
-  ctx.moveTo(to.x, to.y);
-  ctx.lineTo(to.x - len * Math.cos(angle - spread), to.y - len * Math.sin(angle - spread));
-  ctx.lineTo(to.x - len * Math.cos(angle + spread), to.y - len * Math.sin(angle + spread));
-  ctx.closePath();
-  ctx.fill();
-  ctx.restore();
-}
-
-/** Renders a 2x HiDPI PNG directly on Canvas2D using the bundled Vietnamese font. */
+/** Renders a 2x HiDPI hand-drawn PNG via Rough.js Canvas2D using bundled Patrick Hand Vietnamese font. */
 export async function renderDiagramPng(layout: LayoutDiagram): Promise<Uint8Array> {
   if (typeof document !== "undefined" && document.fonts?.ready) {
     await document.fonts.ready;
@@ -696,87 +738,83 @@ export async function renderDiagramPng(layout: LayoutDiagram): Promise<Uint8Arra
   if (!ctx) throw new Error("Không khởi tạo được bộ dựng ảnh PNG.");
 
   ctx.scale(scale, scale);
-
-  // Palette aligned with ASR Studio Cobalt/Slate light theme for crisp document insertion.
-  const BG = "#ffffff";
-  const INK = "#0f172a";
-  const INK_SOFT = "#475569";
-  const ACCENT = "#1d4ed8";
-  const ACCENT_SOFT = "#eff6ff";
-  const DECISION_BG = "#f8fafc";
-  const DECISION_BORDER = "#334155";
-  const STEP_BG = "#ffffff";
-  const STEP_BORDER = "#94a3b8";
-  const EDGE_STROKE = "#475569";
-  const EDGE_LABEL_BG = "#f8fafc";
-  const EDGE_LABEL_BORDER = "#cbd5e1";
-
-  ctx.fillStyle = BG;
+  ctx.fillStyle = SKETCH_COLORS.bg;
   ctx.fillRect(0, 0, layout.width, layout.height);
 
+  const rc = rough.canvas(canvas);
+
   // Title
-  ctx.fillStyle = INK;
+  ctx.fillStyle = SKETCH_COLORS.ink;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.font = `600 ${TITLE_FONT_SIZE}px ${FONT_FAMILY_UI}`;
+  ctx.font = `400 24px ${FONT_FAMILY_HAND}`;
   layout.titleLines.forEach((line, i) => {
     ctx.fillText(line, layout.width / 2, PAD_TOP + 12 + i * TITLE_LINE_HEIGHT);
   });
 
-  // Edges
+  // Hand-drawn edges + arrowheads
   for (const edge of layout.edges) {
-    ctx.save();
-    ctx.strokeStyle = EDGE_STROKE;
-    ctx.lineWidth = 1.75;
-    if (edge.isBackEdge) ctx.setLineDash([6, 4]);
-    ctx.beginPath();
-    edge.points.forEach((p, idx) => {
-      if (idx === 0) ctx.moveTo(p.x, p.y);
-      else ctx.lineTo(p.x, p.y);
+    const seed = deterministicSeed(`edge-${edge.index}-${edge.from}-${edge.to}`);
+    const pts: [number, number][] = edge.points.map((p) => [p.x, p.y]);
+    rc.linearPath(pts, {
+      stroke: SKETCH_COLORS.ink,
+      strokeWidth: 1.8,
+      roughness: 1.25,
+      bowing: 1.0,
+      seed,
+      strokeLineDash: edge.isBackEdge ? [7, 5] : undefined,
     });
-    ctx.stroke();
-    ctx.restore();
-
     if (edge.points.length >= 2) {
       const p1 = edge.points[edge.points.length - 2];
       const p2 = edge.points[edge.points.length - 1];
-      drawArrowHead(ctx, p1, p2, EDGE_STROKE);
+      const [w1, w2] = arrowWingPoints(p1, p2);
+      rc.linearPath(
+        [
+          [w1.x, w1.y],
+          [p2.x, p2.y],
+          [w2.x, w2.y],
+        ],
+        {
+          stroke: SKETCH_COLORS.ink,
+          strokeWidth: 1.9,
+          roughness: 0.9,
+          bowing: 0.8,
+          seed: seed + 19,
+        },
+      );
     }
   }
 
-  // Nodes
+  // Hand-drawn nodes
   for (const node of layout.nodes) {
-    ctx.save();
-    if (node.kind === "start" || node.kind === "end") {
-      ctx.fillStyle = ACCENT_SOFT;
-      ctx.strokeStyle = ACCENT;
-      ctx.lineWidth = 2;
-      drawRoundedRect(ctx, node.x, node.y, node.width, node.height, Math.min(28, node.height / 2));
-      ctx.fill();
-      ctx.stroke();
-    } else if (node.kind === "decision") {
+    const seed = deterministicSeed(`node-${node.id}`);
+    const shapeOpts = {
+      fill: nodeFillColor(node.kind),
+      fillStyle: "solid" as const,
+      stroke: SKETCH_COLORS.ink,
+      strokeWidth: 1.85,
+      roughness: 1.65,
+      bowing: 1.15,
+      seed,
+    };
+
+    if (node.kind === "decision") {
       const cx = node.x + node.width / 2;
       const cy = node.y + node.height / 2;
-      ctx.fillStyle = DECISION_BG;
-      ctx.strokeStyle = DECISION_BORDER;
-      ctx.lineWidth = 1.8;
-      ctx.beginPath();
-      ctx.moveTo(cx, node.y);
-      ctx.lineTo(node.x + node.width, cy);
-      ctx.lineTo(cx, node.y + node.height);
-      ctx.lineTo(node.x, cy);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
+      rc.polygon(
+        [
+          [cx, node.y],
+          [node.x + node.width, cy],
+          [cx, node.y + node.height],
+          [node.x, cy],
+        ],
+        shapeOpts,
+      );
+    } else if (node.kind === "start" || node.kind === "end") {
+      rc.path(roundedRectSvgPath(node.x, node.y, node.width, node.height, Math.min(28, node.height / 2)), shapeOpts);
     } else {
-      ctx.fillStyle = STEP_BG;
-      ctx.strokeStyle = STEP_BORDER;
-      ctx.lineWidth = 1.75;
-      drawRoundedRect(ctx, node.x, node.y, node.width, node.height, 10);
-      ctx.fill();
-      ctx.stroke();
+      rc.path(roundedRectSvgPath(node.x, node.y, node.width, node.height, 12), shapeOpts);
     }
-    ctx.restore();
 
     const totalTextH =
       node.labelLines.length * LABEL_LINE_HEIGHT +
@@ -785,36 +823,37 @@ export async function renderDiagramPng(layout: LayoutDiagram): Promise<Uint8Arra
     const cx = node.x + node.width / 2;
 
     if (node.roleLines.length > 0) {
-      ctx.fillStyle = ACCENT;
-      ctx.font = `600 ${ROLE_FONT_SIZE}px ${FONT_FAMILY_UI}`;
+      ctx.fillStyle = SKETCH_COLORS.accent;
+      ctx.font = `600 11px ${FONT_FAMILY_UI}`;
       node.roleLines.forEach((line, i) => {
         ctx.fillText(line, cx, textY + ROLE_LINE_HEIGHT / 2 + i * ROLE_LINE_HEIGHT);
       });
       textY += node.roleLines.length * ROLE_LINE_HEIGHT + 6;
     }
 
-    ctx.fillStyle = INK;
-    ctx.font = `600 ${LABEL_FONT_SIZE}px ${FONT_FAMILY_UI}`;
+    ctx.fillStyle = SKETCH_COLORS.ink;
+    ctx.font = `400 16.5px ${FONT_FAMILY_HAND}`;
     node.labelLines.forEach((line, i) => {
       ctx.fillText(line, cx, textY + LABEL_LINE_HEIGHT / 2 + i * LABEL_LINE_HEIGHT);
     });
   }
 
-  // Edge labels
+  // Hand-drawn edge labels
   for (const edge of layout.edges) {
     if (!edge.labelBox || edge.labelLines.length === 0) continue;
     const box = edge.labelBox;
-    ctx.save();
-    ctx.fillStyle = EDGE_LABEL_BG;
-    ctx.strokeStyle = EDGE_LABEL_BORDER;
-    ctx.lineWidth = 1;
-    drawRoundedRect(ctx, box.x, box.y, box.width, box.height, 6);
-    ctx.fill();
-    ctx.stroke();
-    ctx.restore();
-
-    ctx.fillStyle = INK_SOFT;
-    ctx.font = `500 ${EDGE_FONT_SIZE}px ${FONT_FAMILY_UI}`;
+    const seed = deterministicSeed(`label-${edge.index}-${edge.label}`);
+    rc.path(roundedRectSvgPath(box.x, box.y, box.width, box.height, 7), {
+      fill: SKETCH_COLORS.labelFill,
+      fillStyle: "solid",
+      stroke: SKETCH_COLORS.labelBorder,
+      strokeWidth: 1.15,
+      roughness: 1.1,
+      bowing: 0.9,
+      seed,
+    });
+    ctx.fillStyle = SKETCH_COLORS.ink;
+    ctx.font = `400 14.5px ${FONT_FAMILY_HAND}`;
     edge.labelLines.forEach((line, i) => {
       ctx.fillText(line, box.x + box.width / 2, box.y + 5 + EDGE_LINE_HEIGHT / 2 + i * EDGE_LINE_HEIGHT);
     });
@@ -845,12 +884,12 @@ export function buildExcalidrawFile(layout: LayoutDiagram): string {
     width: Math.round(width),
     height: Math.round(height),
     angle: 0,
-    strokeColor: "#0f172a",
+    strokeColor: SKETCH_COLORS.ink,
     backgroundColor: "transparent",
     fillStyle: "solid",
     strokeWidth: 2,
     strokeStyle: "solid",
-    roughness: 1,
+    roughness: 2,
     opacity: 100,
     groupIds: [] as string[],
     frameId: null,
@@ -898,18 +937,8 @@ export function buildExcalidrawFile(layout: LayoutDiagram): string {
 
     const shape = {
       ...baseElement(shapeId, exType, node.x, node.y, node.width, node.height),
-      strokeColor:
-        node.kind === "start" || node.kind === "end"
-          ? "#1d4ed8"
-          : node.kind === "decision"
-            ? "#334155"
-            : "#475569",
-      backgroundColor:
-        node.kind === "start" || node.kind === "end"
-          ? "#eff6ff"
-          : node.kind === "decision"
-            ? "#f8fafc"
-            : "#ffffff",
+      strokeColor: SKETCH_COLORS.ink,
+      backgroundColor: nodeFillColor(node.kind),
       roundness: exType === "rectangle" ? { type: 3 } : null,
       boundElements: [{ id: textId, type: "text" }],
     };

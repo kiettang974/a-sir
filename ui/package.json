@@ -10,10 +10,12 @@
   "dependencies": {
     "@fontsource/be-vietnam-pro": "^5.3.0",
     "@fontsource/literata": "^5.3.0",
+    "@fontsource/patrick-hand": "^5.3.0",
     "@tauri-apps/api": "^2.12.4",
     "@tauri-apps/plugin-clipboard-manager": "^2.5.0",
     "@tauri-apps/plugin-dialog": "^2.8.4",
-    "@tauri-apps/plugin-opener": "^2.7.2"
+    "@tauri-apps/plugin-opener": "^2.7.2",
+    "roughjs": "^4.6.6"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.12.4",

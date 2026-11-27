@@ -458,10 +458,21 @@ impl HttpClient {
                     ("x-api-key", self.key.clone()),
                     ("anthropic-version", ANTHROPIC_VERSION.to_owned()),
                 ];
-                let content = if binaries.is_empty() {
+                let cache_prompt = max_tokens > 32;
+                let cache_user_text = cache_prompt && full_user.len() >= 3000;
+                let user_text_block = if cache_user_text {
+                    json!({
+                        "type": "text",
+                        "text": full_user,
+                        "cache_control": { "type": "ephemeral" }
+                    })
+                } else {
+                    json!({ "type": "text", "text": full_user })
+                };
+                let content = if binaries.is_empty() && !cache_user_text {
                     json!(full_user)
                 } else {
-                    let mut blocks = vec![json!({ "type": "text", "text": full_user })];
+                    let mut blocks = vec![user_text_block];
                     for (_name, mime, b64) in &binaries {
                         let block_type = if *mime == "application/pdf" {
                             "document"
@@ -479,10 +490,19 @@ impl HttpClient {
                     }
                     Value::Array(blocks)
                 };
+                let system_val = if cache_prompt && !system.trim().is_empty() {
+                    json!([{
+                        "type": "text",
+                        "text": system,
+                        "cache_control": { "type": "ephemeral" }
+                    }])
+                } else {
+                    json!(system)
+                };
                 let mut body = json!({
                     "model": self.model,
                     "max_tokens": max_tokens,
-                    "system": system,
+                    "system": system_val,
                     "messages": [{ "role": "user", "content": content }],
                 });
                 if let Some(schema) = schema {
@@ -1344,8 +1364,24 @@ mod tests {
         assert!(seen.head.starts_with("post /messages "));
         assert!(seen.head.contains("x-api-key: khoa-bi-mat"));
         assert!(seen.head.contains("anthropic-version: 2023-06-01"));
-        assert_eq!(seen.body["system"], "hệ thống");
+        assert_eq!(seen.body["system"][0]["text"], "hệ thống");
+        assert_eq!(seen.body["system"][0]["cache_control"]["type"], "ephemeral");
         assert_eq!(seen.body["output_config"]["format"]["type"], "json_schema");
+    }
+
+    #[test]
+    fn claude_long_transcript_enables_ephemeral_prompt_cache() {
+        let reply = json!({ "stop_reason": "end_turn", "content": [{ "type": "text", "text": "{}" }] });
+        let (url, seen) = serve(200, reply);
+        let client = HttpClient::with_base_url(Provider::Claude, "claude-sonnet-5-5", "k", &url);
+        let long_user = "nội dung cuộc họp dài ".repeat(200);
+        client.complete("quy tắc hệ thống", &long_user, &json!({})).unwrap();
+        let req = seen.recv().unwrap();
+        assert_eq!(req.body["system"][0]["cache_control"]["type"], "ephemeral");
+        assert_eq!(
+            req.body["messages"][0]["content"][0]["cache_control"]["type"],
+            "ephemeral"
+        );
     }
 
     #[test]

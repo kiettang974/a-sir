@@ -194,6 +194,122 @@ type ProfilesConfig = {
 
 type Links = { openSettings: () => void; openContext: () => void; back: () => void; flow: RecordFlowNav };
 
+type NoteRunState = {
+  running: boolean;
+  startedAt: number | null;
+  provider: Provider;
+  profileId: string;
+  useContext: boolean;
+  previousNote?: Note;
+  error: string | null;
+  suggestedModel?: { provider: Provider; model: string };
+  completedNote?: Note;
+};
+
+const EST_NOTE_SECS = 30;
+const noteRuns = new Map<number, NoteRunState>();
+const noteJobListeners = new Map<number, Set<() => void>>();
+const noteGlobalListeners = new Set<(jobId: number) => void>();
+
+export function isNoteGenerating(id: number): boolean {
+  return Boolean(noteRuns.get(id)?.running);
+}
+
+export function subscribeNoteRuns(fn: (jobId: number) => void): () => void {
+  noteGlobalListeners.add(fn);
+  return () => noteGlobalListeners.delete(fn);
+}
+
+function notifyNoteRun(id: number) {
+  const listeners = noteJobListeners.get(id);
+  if (listeners) {
+    for (const fn of listeners) fn();
+  }
+  for (const fn of noteGlobalListeners) fn(id);
+}
+
+function subscribeNoteJob(id: number, fn: () => void): () => void {
+  let set = noteJobListeners.get(id);
+  if (!set) {
+    set = new Set();
+    noteJobListeners.set(id, set);
+  }
+  set.add(fn);
+  return () => {
+    set?.delete(fn);
+    if (set?.size === 0) noteJobListeners.delete(id);
+  };
+}
+
+async function startSummaryRun(
+  id: number,
+  provider: Provider,
+  profileId: string,
+  useContext: boolean,
+  ai: AiView,
+  previousNote?: Note,
+): Promise<void> {
+  if (noteRuns.get(id)?.running) return;
+  const run: NoteRunState = {
+    running: true,
+    startedAt: Date.now(),
+    provider,
+    profileId,
+    useContext,
+    previousNote,
+    error: null,
+    suggestedModel: undefined,
+    completedNote: undefined,
+  };
+  noteRuns.set(id, run);
+  notifyNoteRun(id);
+
+  try {
+    const draft = await invoke<Draft>("summarize_job", { id, provider, profileId, useContext });
+    const note: Note = {
+      greeting: previousNote?.greeting ?? "",
+      intro: previousNote?.intro ?? "",
+      discussion: draft.discussion ?? [],
+      rows: draft.rows.map(toHtmlRow),
+      actions: draft.actions ?? [],
+      pending: draft.pending.map((p) => ({ ...p, row: toHtmlRow(p.row) })),
+      usedModel: draft.usedModel ?? null,
+      fallbackFrom: draft.fallbackFrom ?? null,
+    };
+    await invoke<string>("save_note", {
+      id,
+      draft: note,
+      html: `<!doctype html><html lang="vi"><meta charset="utf-8"><body>${emailHtml(note)}</body></html>`,
+    }).catch(() => {});
+    run.completedNote = note;
+    run.error = null;
+  } catch (e) {
+    const errText = String(e);
+    let suggestedModel: { provider: Provider; model: string } | undefined;
+    let finalError = errText;
+    if (errText.includes("404") || errText.includes("không tồn tại") || errText.includes("ngừng hoạt động")) {
+      try {
+        const check = await invoke<{ ok: boolean; suggestion: string | null }>("validate_saved_model", {
+          provider,
+          model: ai.models[provider] ?? null,
+        });
+        if (!check.ok && check.suggestion) {
+          suggestedModel = { provider, model: check.suggestion };
+          finalError = `${errText} Gợi ý chuyển sang ${check.suggestion}.`;
+        }
+      } catch {
+        // Fall through to normal error display.
+      }
+    }
+    run.error = finalError;
+    run.suggestedModel = suggestedModel;
+  } finally {
+    run.running = false;
+    run.startedAt = null;
+    notifyNoteRun(id);
+  }
+}
+
 /** Fills itself in and keeps its own state, so queue updates can't disturb typing here. */
 export function notePane(id: number, name: string, links: Links): HTMLElement {
   const head = el("header", { className: "reader-head" });
@@ -205,6 +321,14 @@ export function notePane(id: number, name: string, links: Links): HTMLElement {
   const problem = el("span", { className: "problem" });
   player.append(audio, problem);
   const pane = el("section", { className: "reader" }, head, tabs, scroll, player);
+
+  let runningTimer: number | null = null;
+  const stopRunningTimer = () => {
+    if (runningTimer !== null) {
+      window.clearInterval(runningTimer);
+      runningTimer = null;
+    }
+  };
 
   let pendingSeek: number | null = null;
 
@@ -263,6 +387,55 @@ export function notePane(id: number, name: string, links: Links): HTMLElement {
     seekAndPlay(seconds);
   };
 
+  function showRunning(run: NoteRunState) {
+    stopRunningTimer();
+    head.replaceChildren(el("div", { className: "reader-head-top" }, el("h2", { textContent: name })));
+    const fill = el("i");
+    const bar = el("div", { className: "bar" }, fill);
+    const meta = el("p", { className: "diagram-loading-meta" });
+    const tick = () => {
+      const started = run.startedAt ?? Date.now();
+      const elapsedS = Math.max(0, Math.floor((Date.now() - started) / 1000));
+      const pct = Math.min(94, Math.max(8, Math.round((elapsedS / EST_NOTE_SECS) * 90) + 6));
+      fill.style.width = `${pct}%`;
+      const remain = EST_NOTE_SECS - elapsedS;
+      meta.textContent =
+        remain > 2 ? `${elapsedS}s · Ước tính còn ~${remain}s` : `${elapsedS}s · Sắp hoàn tất…`;
+    };
+    tick();
+    runningTimer = window.setInterval(() => {
+      if (!pane.isConnected || !noteRuns.get(id)?.running) {
+        stopRunningTimer();
+        return;
+      }
+      tick();
+    }, 1000);
+
+    const body = el(
+      "div",
+      { className: "note-form", role: "status", ariaLive: "polite" },
+      el("h3", { textContent: "Đang tạo biên bản cuộc họp…" }),
+      el("p", {
+        className: "sending",
+        textContent: `Đang chờ ${PROVIDER_NAME[run.provider]}. Bạn có thể chuyển sang tab khác trong lúc chờ — biên bản sẽ tự lưu khi xong.`,
+      }),
+      el("div", { className: "clean-progress-wrap" }, bar),
+      meta,
+      run.previousNote
+        ? el(
+            "div",
+            { className: "actions wrap" },
+            el("button", {
+              className: "link",
+              textContent: "Xem lại bản nháp cũ trong lúc chờ",
+              onclick: () => showNote(run.previousNote!),
+            }),
+          )
+        : null,
+    );
+    scroll.replaceChildren(body);
+  }
+
   function showForm(
     failure = "",
     previousNote?: Note,
@@ -270,6 +443,7 @@ export function notePane(id: number, name: string, links: Links): HTMLElement {
     selectedUseContext?: boolean,
     suggestedModel?: { provider: Provider; model: string },
   ) {
+    stopRunningTimer();
     head.replaceChildren(el("div", { className: "reader-head-top" }, el("h2", { textContent: name })));
     const body = el("div", { className: "note-form" });
     scroll.replaceChildren(body);
@@ -352,7 +526,7 @@ export function notePane(id: number, name: string, links: Links): HTMLElement {
       const pName = PROVIDER_NAME[select.value as Provider];
       const parts = ["bản chép lời", "từ vựng riêng"];
       if (useCtxBox.checked && ctxInfo.hasAny) {
-        if (ctx.notes.trim()) parts.push("ghi chú ngữ cảnh");
+        if (ctx.notes.trim()) parts.push("ghi chú tài liệu kèm");
         if (ctx.attachments.length > 0) parts.push(`${ctx.attachments.length} tệp đính kèm`);
       }
       return `Nội dung ${parts.join(", ")} sẽ được gửi đến ${pName}.`;
@@ -365,52 +539,11 @@ export function notePane(id: number, name: string, links: Links): HTMLElement {
     };
     select.onchange = syncNotice;
     useCtxBox.onchange = syncNotice;
-    start.onclick = async () => {
+    start.onclick = () => {
       const provider = select.value as Provider;
       const profileId = profileSelect.value;
       const useContext = useCtxBox.checked && ctxInfo.hasAny;
-      start.disabled = true;
-      start.textContent = "Đang tạo tóm tắt…";
-      sending.textContent = `Đang chờ ${PROVIDER_NAME[provider]}. Cuộc họp dài có thể mất vài phút.`;
-      try {
-        const draft = await invoke<Draft>("summarize_job", { id, provider, profileId, useContext });
-        const note: Note = {
-          greeting: previousNote?.greeting ?? "",
-          intro: previousNote?.intro ?? "",
-          discussion: draft.discussion ?? [],
-          rows: draft.rows.map(toHtmlRow),
-          actions: draft.actions ?? [],
-          pending: draft.pending.map((p) => ({ ...p, row: toHtmlRow(p.row) })),
-          usedModel: draft.usedModel ?? null,
-          fallbackFrom: draft.fallbackFrom ?? null,
-        };
-        showNote(note);
-        save(note);
-      } catch (e) {
-        const errText = String(e);
-        if (errText.includes("404") || errText.includes("không tồn tại") || errText.includes("ngừng hoạt động")) {
-          try {
-            const check = await invoke<{ ok: boolean; suggestion: string | null }>("validate_saved_model", {
-              provider,
-              model: ai.models[provider] ?? null,
-            });
-            if (!check.ok && check.suggestion) {
-              const suggested = check.suggestion;
-              showForm(
-                `${errText} Gợi ý chuyển sang ${suggested}.`,
-                previousNote,
-                profileId,
-                useContext,
-                { provider, model: suggested },
-              );
-              return;
-            }
-          } catch {
-            // Fall through to normal error display.
-          }
-        }
-        showForm(errText, previousNote, profileId, useContext);
-      }
+      void startSummaryRun(id, provider, profileId, useContext, ai, previousNote);
     };
     const switchBtn =
       suggestedModel
@@ -445,12 +578,12 @@ export function notePane(id: number, name: string, links: Links): HTMLElement {
           "label",
           { className: "hw-filter-toggle" },
           useCtxBox,
-          el("span", { textContent: "Dùng ngữ cảnh cuộc họp" }),
+          el("span", { textContent: "Dùng tài liệu kèm" }),
         ),
         el("span", { className: "style-desc", textContent: ctxInfo.label }),
         el("button", {
           className: "link",
-          textContent: "Xem tab Ngữ cảnh",
+          textContent: "Xem tab Tài liệu kèm",
           onclick: links.openContext,
         }),
       ),
@@ -915,8 +1048,62 @@ export function notePane(id: number, name: string, links: Links): HTMLElement {
     draw();
   }
 
-  invoke<Note | null>("load_note", { id })
-    .then((saved) => (saved ? showNote(saved) : showForm()))
-    .catch(() => showForm());
+  const syncFromRun = () => {
+    if (!pane.isConnected) return;
+    const run = noteRuns.get(id);
+    if (!run) return;
+    if (run.running) {
+      showRunning(run);
+      return;
+    }
+    if (run.completedNote) {
+      const done = run.completedNote;
+      noteRuns.delete(id);
+      showNote(done);
+      setStatus("Đã lưu nháp");
+      return;
+    }
+    if (run.error) {
+      const { error, previousNote, profileId, useContext, suggestedModel } = run;
+      noteRuns.delete(id);
+      showForm(error, previousNote, profileId, useContext, suggestedModel);
+    }
+  };
+
+  const unsubscribeRun = subscribeNoteJob(id, syncFromRun);
+  const observer = new MutationObserver(() => {
+    if (!pane.isConnected) {
+      stopRunningTimer();
+      unsubscribeRun();
+      observer.disconnect();
+    }
+  });
+  queueMicrotask(() => {
+    if (pane.parentNode) observer.observe(pane.parentNode, { childList: true });
+  });
+
+  const existingRun = noteRuns.get(id);
+  if (existingRun?.running) {
+    showRunning(existingRun);
+  } else if (existingRun?.completedNote) {
+    const done = existingRun.completedNote;
+    noteRuns.delete(id);
+    showNote(done);
+    setStatus("Đã lưu nháp");
+  } else if (existingRun?.error) {
+    const { error, previousNote, profileId, useContext, suggestedModel } = existingRun;
+    noteRuns.delete(id);
+    showForm(error, previousNote, profileId, useContext, suggestedModel);
+  } else {
+    invoke<Note | null>("load_note", { id })
+      .then((saved) => {
+        if (noteRuns.get(id)?.running) return;
+        if (saved) showNote(saved);
+        else showForm();
+      })
+      .catch(() => {
+        if (!noteRuns.get(id)?.running) showForm();
+      });
+  }
   return pane;
 }

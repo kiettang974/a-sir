@@ -99,6 +99,7 @@ export type RecordFlowNav = {
   openSummary: () => void;
   openDiagram: () => void;
   cleanLabel?: string;
+  noteLabel?: string;
   diagramLabel?: string;
 };
 
@@ -106,8 +107,8 @@ export type RecordFlowNav = {
 export function recordFlowTabs(active: RecordFlowTab, nav: RecordFlowNav): HTMLElement {
   const mainSteps: { id: RecordFlowTab; label: string; run: () => void }[] = [
     { id: "transcript", label: "1. Bản chép", run: nav.openTranscript },
-    { id: "aiClean", label: nav.cleanLabel ?? "2. Làm sạch", run: nav.openClean },
-    { id: "note", label: "3. Tóm tắt", run: nav.openSummary },
+    { id: "aiClean", label: nav.cleanLabel ?? "2. Bản làm sạch", run: nav.openClean },
+    { id: "note", label: nav.noteLabel ?? "3. Tóm tắt", run: nav.openSummary },
     { id: "diagram", label: nav.diagramLabel ?? "4. Sơ đồ", run: nav.openDiagram },
   ];
   const makeTab = (item: { id: RecordFlowTab; label: string; run: () => void }) => {

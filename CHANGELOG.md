@@ -1,5 +1,19 @@
 # Lịch sử cập nhật A-Sir
 
+## v0.5.1 — 2026-11-27
+
+### Tính năng mới
+- **Đã thêm bộ nhớ đệm cho nhiều kiểu sơ đồ trên cùng một bản ghi:** Khi thử qua lại giữa `Tự động` và các kiểu sơ đồ khác nhau, A-Sir lưu lại các bản đã vẽ xuống máy, gắn nhãn **Đã có** trong menu chọn kiểu và mở lại tức thì không cần gọi AI lại.
+- **Đã thêm nút Xem trên biểu đồ cho từng mục Cần xác nhận:** Bấm để cuộn thẳng tới đúng nút tương ứng trên sơ đồ, khoanh khung nét đứt xanh và rung nhẹ 2 nhịp giúp định vị nhanh (hỗ trợ cả chế độ phóng to).
+- **Đã đặt mặc định chế độ Không vẽ trên sơ đồ** cho mục Cần xác nhận ở các bản ghi mới, giúp sơ đồ ban đầu sạch gọn và chỉ bật nhánh nét đứt khi bạn cần.
+
+### Cải thiện & sửa lỗi
+- **Đã hỗ trợ chạy ngầm cho tab 3. Tóm tắt và đồng bộ bộ đếm thời gian cho cả 3 tab AI:** Chuyển sang tab khác hoặc bản ghi khác khi đang **2. Bản làm sạch**, **3. Tóm tắt**, hay **4. Sơ đồ** không còn bị mất tiến trình hay reset đồng hồ về `0`. Các tab hiển thị thanh tiến độ, ước lượng thời gian còn lại và tự động lưu kết quả khi xong.
+- **Đã làm gọn màn hình 2. Bản làm sạch lần đầu mở:** Bỏ các đoạn chữ mô tả thừa và chỉ hiển thị nút **Chạy làm sạch**.
+- **Đã hiển thị màn hình loading trên khung xem trước sơ đồ** mỗi khi đổi kiểu hoặc tạo lại sơ đồ.
+- **Đã sửa lỗi chồng chéo đường nối và đè chữ trong sơ đồ Swimlane:** Tự tách điểm xuất phát, tách độ cao đường rẽ ngang khi nhiều nhánh rời cùng một hộp, tăng khoảng hở giữa các hàng lên tối thiểu `52px`, và đẩy nhãn mũi tên dọc ngắn sang cạnh để không đè đầu mũi tên.
+- **Đã đồng bộ nhãn thanh điều hướng** (**1. Bản chép · 2. Bản làm sạch · 3. Tóm tắt · 4. Sơ đồ | Tài liệu kèm**) và sửa chữ `Xem tab Ngữ cảnh` thành `Xem tab Tài liệu kèm`.
+
 ## v0.5.0 — 2026-11-27
 
 ### Tính năng mới

@@ -15,7 +15,7 @@ import { diagramPane, getDiagramButtonState } from "./diagram";
 import { el } from "./dom";
 import { icon } from "./icons";
 import { type LocalModelProgress, overflowMenu, progressBar, type RecordFlowNav, recordFlowTabs } from "./ipc";
-import { notePane } from "./note";
+import { isNoteGenerating, notePane, subscribeNoteRuns } from "./note";
 import { settingsPane } from "./settings";
 import { hasSeenTour, startOnboardingTour } from "./tour";
 
@@ -1262,10 +1262,20 @@ function flowNavFor(job: Job): RecordFlowNav {
       view = "diagram";
       render();
     },
-    cleanLabel: cleanState === "running" ? "2. Đang làm sạch…" : "2. Làm sạch",
+    cleanLabel: cleanState === "running" ? "2. Đang làm sạch…" : "2. Bản làm sạch",
+    noteLabel: isNoteGenerating(job.id) ? "3. Đang tóm tắt…" : "3. Tóm tắt",
     diagramLabel: diagramState === "running" ? "4. Đang tạo sơ đồ…" : "4. Sơ đồ",
   };
 }
+
+subscribeNoteRuns((jobId) => {
+  if (selected !== jobId) return;
+  const tabBtns = root.querySelectorAll<HTMLButtonElement>(".record-flow-tabs [role='tab']");
+  const noteTab = tabBtns[2];
+  if (noteTab) {
+    noteTab.textContent = isNoteGenerating(jobId) ? "3. Đang tóm tắt…" : "3. Tóm tắt";
+  }
+});
 
 function note(message: string) {
   readerNote = message;

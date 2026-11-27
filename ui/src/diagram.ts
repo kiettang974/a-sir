@@ -173,10 +173,20 @@ const DIAGRAM_STRATEGIES: DiagramStrategyOption[] = [
 ];
 
 function parsePreviewSvg(markup: string, className: string): SVGSVGElement {
-  const doc = new DOMParser().parseFromString(markup, "image/svg+xml");
-  const svg = document.importNode(doc.documentElement, true) as unknown as SVGSVGElement;
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", "0 0 48 32");
+  svg.setAttribute("width", className.includes("-sm") ? "24" : "44");
+  svg.setAttribute("height", className.includes("-sm") ? "16" : "30");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "1.5");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
   svg.setAttribute("class", className);
   svg.setAttribute("aria-hidden", "true");
+  const inner = markup.replace(/^<svg[^>]*>/i, "").replace(/<\/svg>\s*$/i, "");
+  svg.innerHTML = inner;
   return svg;
 }
 
@@ -262,6 +272,7 @@ type RenderedDiagram = {
   height: number;
   svg: string;
   excalidrawJson: string;
+  drawioXml: string;
 };
 
 function parseRustSvg(svgMarkup: string, zoom: number, width: number, height: number): SVGSVGElement {
@@ -320,7 +331,7 @@ type JobDiagramState = {
   rendered: RenderedDiagram | null;
   selectedStrategy: DiagramStrategyId;
   uncertaintyMode: UncertaintyDisplayMode;
-  exportError: { format: "png" | "excalidraw"; message: string } | null;
+  exportError: { format: "png" | "drawio"; message: string } | null;
   exportNotice: string | null;
 };
 
@@ -623,6 +634,11 @@ export function diagramPane(
           onclick: () => void exportFile("png"),
         }),
         el("button", {
+          className: "btn-ghost",
+          textContent: "Xuất .drawio",
+          onclick: () => void exportFile("drawio"),
+        }),
+        el("button", {
           className: "btn-primary",
           textContent: "Đóng",
           onclick: close,
@@ -630,6 +646,7 @@ export function diagramPane(
       ),
     );
 
+    const modalUncertainties = renderUncertaintiesBlock(diagram, "diagram-modal-uncertainties");
     const dialog = el(
       "div",
       {
@@ -640,6 +657,7 @@ export function diagramPane(
       },
       modalHead,
       stage,
+      modalUncertainties,
     );
     const backdrop = el(
       "div",
@@ -653,15 +671,15 @@ export function diagramPane(
   const activeAi = () => pickConfiguredProvider(ai);
   const hasAnyAiKey = () => activeAi() !== null;
 
-  const exportFile = async (format: "png" | "excalidraw") => {
+  const exportFile = async (format: "png" | "drawio") => {
     const st = getState(id);
     if (!st.rendered || !st.diagram) return;
     st.exportError = null;
     st.exportNotice = null;
     draw();
 
-    const ext = format === "png" ? "png" : "excalidraw";
-    const filterName = format === "png" ? "Ảnh PNG" : "Tệp Excalidraw";
+    const ext = format === "png" ? "png" : "drawio";
+    const filterName = format === "png" ? "Ảnh PNG" : "Sơ đồ draw.io";
     const defaultPath = `${sanitizeFileStem(st.diagram.title || name)}.${ext}`;
     const chosen = await saveDialog({
       defaultPath,
@@ -674,13 +692,13 @@ export function diagramPane(
       if (format === "png") {
         bytes = await rasterizeSvgToPng(st.rendered.svg, st.rendered.width, st.rendered.height);
       } else {
-        bytes = new TextEncoder().encode(st.rendered.excalidrawJson);
+        bytes = new TextEncoder().encode(st.rendered.drawioXml);
       }
       await invoke<string>("export_diagram_file", {
         path: chosen,
         bytes: Array.from(bytes),
       });
-      st.exportNotice = `Đã xuất tệp ${ext.toUpperCase()}: ${chosen.split(/[\\/]/).pop() ?? chosen}`;
+      st.exportNotice = `Đã xuất tệp .${ext}: ${chosen.split(/[\\/]/).pop() ?? chosen}`;
     } catch (e) {
       st.exportError = {
         format,
@@ -688,6 +706,33 @@ export function diagramPane(
       };
     }
     draw();
+  };
+
+  const renderUncertaintiesBlock = (diagram: ProcessDiagram, extraClass = ""): HTMLElement | null => {
+    if (diagram.uncertainties.length === 0) return null;
+    return el(
+      "details",
+      { className: `diagram-uncertainties${extraClass ? ` ${extraClass}` : ""}` },
+      el(
+        "summary",
+        { className: "diagram-uncertainties-summary" },
+        el("span", { textContent: `Cần xác nhận (${diagram.uncertainties.length})` }),
+        el("span", { className: "diagram-uncertainties-toggle", textContent: "Mở xem ▾" }),
+      ),
+      el(
+        "ul",
+        { className: "diagram-uncertainty-list" },
+        ...diagram.uncertainties.map((u, idx) =>
+          el(
+            "li",
+            {},
+            el("span", { className: "diagram-q-badge", textContent: `?${idx + 1}` }),
+            el("strong", { textContent: u.item || "Chi tiết chưa rõ" }),
+            u.reason ? el("span", { textContent: ` — ${u.reason}` }) : null,
+          ),
+        ),
+      ),
+    );
   };
 
   const triggerGenerate = (
@@ -945,10 +990,10 @@ export function diagramPane(
             "button",
             {
               className: "btn-ghost",
-              title: "Xuất tệp .excalidraw để mở và chỉnh sửa trong Excalidraw",
-              onclick: () => void exportFile("excalidraw"),
+              title: "Xuất tệp .drawio để mở và chỉnh sửa trong draw.io / diagrams.net",
+              onclick: () => void exportFile("drawio"),
             },
-            el("span", { textContent: "Xuất .excalidraw" }),
+            el("span", { textContent: "Xuất .drawio" }),
           ),
           renderStrategyDropdown(st),
           renderUncertaintyDropdown(st),
@@ -1016,26 +1061,7 @@ export function diagramPane(
         el("div", { className: "diagram-stage" }, svg),
       );
 
-      const uncertaintiesSection =
-        diagram.uncertainties.length > 0
-          ? el(
-              "section",
-              { className: "diagram-uncertainties" },
-              el("h3", { textContent: `Cần xác nhận (${diagram.uncertainties.length})` }),
-              el(
-                "ul",
-                { className: "diagram-uncertainty-list" },
-                ...diagram.uncertainties.map((u) =>
-                  el(
-                    "li",
-                    {},
-                    el("strong", { textContent: u.item || "Chi tiết chưa rõ" }),
-                    u.reason ? el("span", { textContent: ` — ${u.reason}` }) : null,
-                  ),
-                ),
-              ),
-            )
-          : null;
+      const uncertaintiesSection = renderUncertaintiesBlock(diagram);
 
       const children = [
         renderNoticeBanner(st),

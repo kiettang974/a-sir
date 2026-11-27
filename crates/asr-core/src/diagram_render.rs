@@ -152,6 +152,7 @@ pub struct RenderedDiagram {
     pub height: f64,
     pub svg: String,
     pub excalidraw_json: String,
+    pub drawio_xml: String,
 }
 
 fn node_fill_color(kind: NodeKind) -> &'static str {
@@ -1833,17 +1834,61 @@ pub fn render_diagram(diagram: &ProcessDiagram) -> Result<RenderedDiagram, Strin
             height: out.height,
             svg: out.svg,
             excalidraw_json: out.excalidraw_json,
+            drawio_xml: out.drawio_xml,
         });
     }
     let layout = layout_diagram(diagram)?;
     let svg = render_svg(&layout);
     let excalidraw_json = build_excalidraw_json(&layout);
+    let drawio_xml = build_legacy_drawio_xml(&layout);
     Ok(RenderedDiagram {
         width: layout.width,
         height: layout.height,
         svg,
         excalidraw_json,
+        drawio_xml,
     })
+}
+
+fn build_legacy_drawio_xml(layout: &LayoutDiagram) -> String {
+    let mut xml = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<mxfile host=\"A-Sir\"><diagram id=\"d1\" name=\"Diagram\"><mxGraphModel pageWidth=\"{}\" pageHeight=\"{}\"><root><mxCell id=\"0\"/><mxCell id=\"1\" parent=\"0\"/>",
+        layout.width.ceil() as i64,
+        layout.height.ceil() as i64,
+    );
+    for (i, n) in layout.nodes.iter().enumerate() {
+        let shape = match n.kind {
+            NodeKind::Decision => "rhombus;whiteSpace=wrap;",
+            NodeKind::Start | NodeKind::End => "rounded=1;arcSize=50;whiteSpace=wrap;",
+            NodeKind::Step => "rounded=1;whiteSpace=wrap;",
+        };
+        let fill = node_fill_color(n.kind);
+        let label = n.label.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;");
+        xml.push_str(&format!(
+            "<mxCell id=\"n{i}\" value=\"{label}\" style=\"{shape}fillColor={fill};strokeColor=#1D2939;\" vertex=\"1\" parent=\"1\"><mxGeometry x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" as=\"geometry\"/></mxCell>",
+            n.x.round(),
+            n.y.round(),
+            n.width.round(),
+            n.height.round(),
+        ));
+    }
+    for (i, e) in layout.edges.iter().enumerate() {
+        if e.points.len() < 2 {
+            continue;
+        }
+        let p0 = e.points[0];
+        let pn = e.points[e.points.len() - 1];
+        let label = e.label.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;");
+        xml.push_str(&format!(
+            "<mxCell id=\"e{i}\" value=\"{label}\" style=\"endArrow=classic;rounded=1;strokeColor=#475467;\" edge=\"1\" parent=\"1\"><mxGeometry relative=\"1\" as=\"geometry\"><mxPoint x=\"{}\" y=\"{}\" as=\"sourcePoint\"/><mxPoint x=\"{}\" y=\"{}\" as=\"targetPoint\"/></mxGeometry></mxCell>",
+            p0.x.round(),
+            p0.y.round(),
+            pn.x.round(),
+            pn.y.round(),
+        ));
+    }
+    xml.push_str("</root></mxGraphModel></diagram></mxfile>");
+    xml
 }
 
 #[cfg(test)]

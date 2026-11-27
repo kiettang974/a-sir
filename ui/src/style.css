@@ -1517,6 +1517,7 @@ select.field { appearance: auto; }
 }
 .diagram-stage-wrap {
   position: relative;
+  flex-shrink: 0;
   border: 1px solid var(--rule);
   border-radius: var(--radius-lg);
   background: var(--card);
@@ -1547,8 +1548,7 @@ select.field { appearance: auto; }
   background: var(--card);
   padding: 48px 18px 18px;
   height: 70vh;
-  min-height: 480px;
-  max-height: 820px;
+  min-height: 520px;
 }
 .diagram-svg,
 .diagram-stage svg.dg,
@@ -1628,27 +1628,71 @@ select.field { appearance: auto; }
   font-weight: 400;
 }
 .diagram-uncertainties {
-  background: var(--card);
-  border: 1px solid var(--rule);
+  flex-shrink: 0;
+  border: 1px solid var(--warn);
   border-radius: var(--radius-md);
-  padding: 14px 16px;
+  background: var(--warn-soft);
+  padding: 0;
+  overflow: hidden;
 }
-.diagram-uncertainties h3 {
-  margin: 0 0 8px;
-  font-size: 13.5px;
+.diagram-uncertainties-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 14px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--ink);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.diagram-uncertainties-summary::-webkit-details-marker {
+  display: none;
+}
+.diagram-uncertainties-toggle {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--warn);
 }
 .diagram-uncertainty-list {
   margin: 0;
-  padding-left: 18px;
+  padding: 10px 14px 12px;
+  list-style: none;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  font-size: 13px;
+  gap: 7px;
+  font-size: 12.5px;
+  line-height: 1.5;
   color: var(--ink-soft);
+  border-top: 1px solid var(--rule);
+}
+.diagram-uncertainty-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.diagram-q-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
+  background: var(--card);
+  border: 1px solid var(--warn);
+  color: var(--warn);
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
 }
 .diagram-uncertainty-list strong { color: var(--ink); }
+.diagram-modal-uncertainties {
+  margin: 0 18px 14px;
+  max-height: 22vh;
+  overflow-y: auto;
+}
 
 /* Audio Playback Dock */
 .player {

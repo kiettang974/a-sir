@@ -252,6 +252,7 @@ pub struct VeOutput {
     pub element_count: usize,
     pub svg: String,
     pub excalidraw_json: String,
+    pub drawio_xml: String,
     pub errors: Vec<String>,
     pub reminders: Vec<String>,
 }
@@ -2979,6 +2980,24 @@ fn compile_scene(
             };
             let label_txt = str_at(e, "text").filter(|s| !s.is_empty());
 
+            // Auto-highlight `?` (decision / uncertainty) shapes in warm amber when no explicit color/fill was set.
+            let is_question_shape = !ghost
+                && color_tok == "ink"
+                && fill_tok.is_none()
+                && label_txt.is_some_and(|txt| {
+                    let trimmed = txt.trim();
+                    trimmed.ends_with('?')
+                        || trimmed.to_lowercase().contains("chưa chốt")
+                        || trimmed.to_lowercase().contains("chưa rõ")
+                });
+            let (shape_stroke, shape_text_color) = if is_question_shape {
+                let warn_stroke = resolve_color("warn")?;
+                bg = resolve_fill(Some("warn"))?;
+                (warn_stroke.clone(), warn_stroke)
+            } else {
+                (stroke_color.clone(), c.clone())
+            };
+
             // _hachure_ro port: visible hachure on soft / narrow shapes
             if matches!(fill_style.as_str(), "hachure" | "cross-hatch") && !ghost
                 && let Some(ft) = fill_tok {
@@ -3024,7 +3043,7 @@ fn compile_scene(
                 y,
                 width: w,
                 height: h,
-                stroke_color,
+                stroke_color: shape_stroke,
                 background_color: bg,
                 fill_style,
                 stroke_width,
@@ -3083,7 +3102,7 @@ fn compile_scene(
                     y: ty,
                     width: tw,
                     height: th,
-                    stroke_color: safe_text_color(&c),
+                    stroke_color: safe_text_color(&shape_text_color),
                     background_color: "transparent".into(),
                     fill_style: "solid".into(),
                     stroke_width: 1.0,
@@ -4828,6 +4847,162 @@ fn scene_to_excalidraw_json(scene: &[SceneEl]) -> String {
     .unwrap_or_else(|_| "{}".into())
 }
 
+fn xml_attr_escape(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\n' => out.push_str("&#xa;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn scene_to_drawio_xml(scene: &[SceneEl]) -> String {
+    let (min_x, min_y, max_x, max_y) = scene_bounds(scene);
+    let ox = min_x - 24.0;
+    let oy = min_y - 24.0;
+    let page_w = ((max_x - min_x) + 64.0).max(400.0).ceil() as i64;
+    let page_h = ((max_y - min_y) + 64.0).max(300.0).ceil() as i64;
+
+    // Collect bound label text by container_id so draw.io shapes own their editable label natively.
+    let mut bound_labels: HashMap<&str, (&str, f64, &str)> = HashMap::new();
+    for e in scene {
+        if e.el_type == "text"
+            && let Some(cid) = e.container_id.as_deref()
+            && let Some(txt) = e.text.as_deref()
+        {
+            bound_labels.insert(cid, (txt, e.font_size, e.stroke_color.as_str()));
+        }
+    }
+
+    let mut xml = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<mxfile host=\"A-Sir\" agent=\"A-Sir\">\n  <diagram id=\"diagram-1\" name=\"Diagram\">\n    <mxGraphModel dx=\"1000\" dy=\"1000\" grid=\"1\" gridSize=\"10\" guides=\"1\" tooltips=\"1\" connect=\"1\" arrows=\"1\" fold=\"1\" page=\"1\" pageScale=\"1\" pageWidth=\"{page_w}\" pageHeight=\"{page_h}\" math=\"0\" shadow=\"0\">\n      <root>\n        <mxCell id=\"0\"/>\n        <mxCell id=\"1\" parent=\"0\"/>\n"
+    );
+
+    let mut cell_id = 2usize;
+    for e in scene {
+        if e.el_type == "text" && e.container_id.is_some() {
+            continue;
+        }
+        let cid = cell_id;
+        cell_id += 1;
+
+        let stroke = if e.stroke_color == "transparent" {
+            "none"
+        } else {
+            e.stroke_color.as_str()
+        };
+        let fill = if e.background_color == "transparent" {
+            "none"
+        } else {
+            e.background_color.as_str()
+        };
+        let dashed = if e.stroke_style == "dashed" || e.stroke_style == "dotted" {
+            "dashed=1;"
+        } else {
+            ""
+        };
+
+        match e.el_type.as_str() {
+            "rectangle" | "diamond" | "ellipse" => {
+                let base_shape = match e.el_type.as_str() {
+                    "diamond" => "rhombus;whiteSpace=wrap;html=0;",
+                    "ellipse" => "ellipse;whiteSpace=wrap;html=0;",
+                    _ => {
+                        if e.roundness.is_some() {
+                            "rounded=1;whiteSpace=wrap;html=0;arcSize=12;"
+                        } else {
+                            "rounded=0;whiteSpace=wrap;html=0;"
+                        }
+                    }
+                };
+                let (label, fs, fcolor) = bound_labels
+                    .get(e.id.as_str())
+                    .copied()
+                    .unwrap_or(("", 15.0, stroke));
+                let font_color = if fcolor == "none" { "#141C26" } else { fcolor };
+                let style = format!(
+                    "{base_shape}fillColor={fill};strokeColor={stroke};strokeWidth={sw};{dashed}fontColor={font_color};fontSize={fs};",
+                    sw = e.stroke_width.round().max(1.0) as i32,
+                    fs = fs.round().max(11.0) as i32,
+                );
+                let gx = (e.x - ox).round();
+                let gy = (e.y - oy).round();
+                let gw = e.width.max(2.0).round();
+                let gh = e.height.max(2.0).round();
+                xml.push_str(&format!(
+                    "        <mxCell id=\"c{cid}\" value=\"{}\" style=\"{style}\" vertex=\"1\" parent=\"1\">\n          <mxGeometry x=\"{gx}\" y=\"{gy}\" width=\"{gw}\" height=\"{gh}\" as=\"geometry\"/>\n        </mxCell>\n",
+                    xml_attr_escape(label),
+                ));
+            }
+            "text" => {
+                let txt = e.text.as_deref().unwrap_or("");
+                let font_color = if stroke == "none" { "#141C26" } else { stroke };
+                let style = format!(
+                    "text;html=0;strokeColor=none;fillColor=none;align={};verticalAlign=middle;whiteSpace=wrap;fontColor={font_color};fontSize={};",
+                    e.text_align,
+                    e.font_size.round().max(11.0) as i32,
+                );
+                let gx = (e.x - ox).round();
+                let gy = (e.y - oy).round();
+                let gw = e.width.max(24.0).round();
+                let gh = e.height.max(18.0).round();
+                xml.push_str(&format!(
+                    "        <mxCell id=\"c{cid}\" value=\"{}\" style=\"{style}\" vertex=\"1\" parent=\"1\">\n          <mxGeometry x=\"{gx}\" y=\"{gy}\" width=\"{gw}\" height=\"{gh}\" as=\"geometry\"/>\n        </mxCell>\n",
+                    xml_attr_escape(txt),
+                ));
+            }
+            "arrow" | "line" => {
+                if e.points.len() < 2 {
+                    continue;
+                }
+                let start_arrow = if e.start_arrowhead.is_some() {
+                    "classic"
+                } else {
+                    "none"
+                };
+                let end_arrow = if e.end_arrowhead.is_some() {
+                    "classic"
+                } else {
+                    "none"
+                };
+                let style = format!(
+                    "endArrow={end_arrow};startArrow={start_arrow};html=0;rounded=1;strokeColor={stroke};strokeWidth={sw};{dashed}",
+                    sw = e.stroke_width.round().max(1.0) as i32,
+                );
+                let p0 = e.points[0];
+                let pn = e.points[e.points.len() - 1];
+                let sx = (e.x + p0.0 - ox).round();
+                let sy = (e.y + p0.1 - oy).round();
+                let tx = (e.x + pn.0 - ox).round();
+                let ty = (e.y + pn.1 - oy).round();
+                xml.push_str(&format!(
+                    "        <mxCell id=\"c{cid}\" value=\"\" style=\"{style}\" edge=\"1\" parent=\"1\">\n          <mxGeometry relative=\"1\" as=\"geometry\">\n            <mxPoint x=\"{sx}\" y=\"{sy}\" as=\"sourcePoint\"/>\n            <mxPoint x=\"{tx}\" y=\"{ty}\" as=\"targetPoint\"/>\n"
+                ));
+                if e.points.len() > 2 {
+                    xml.push_str("            <Array as=\"points\">\n");
+                    for &(px, py) in &e.points[1..e.points.len() - 1] {
+                        let wx = (e.x + px - ox).round();
+                        let wy = (e.y + py - oy).round();
+                        xml.push_str(&format!("              <mxPoint x=\"{wx}\" y=\"{wy}\"/>\n"));
+                    }
+                    xml.push_str("            </Array>\n");
+                }
+                xml.push_str("          </mxGeometry>\n        </mxCell>\n");
+            }
+            _ => {}
+        }
+    }
+
+    xml.push_str("      </root>\n    </mxGraphModel>\n  </diagram>\n</mxfile>\n");
+    xml
+}
+
 // ---------------------------------------------------------------------------
 // Built-in 188 infrastructure icons (MIT License) + `.excalidrawlib` loader
 // ---------------------------------------------------------------------------
@@ -4919,12 +5094,14 @@ pub fn render_spec_elements_with_theme(
     );
     let (width, height, svg) = render_scene_svg(&compiled.scene, theme);
     let excalidraw_json = scene_to_excalidraw_json(&compiled.scene);
+    let drawio_xml = scene_to_drawio_xml(&compiled.scene);
     Ok(VeOutput {
         width,
         height,
         element_count: compiled.scene.len(),
         svg,
         excalidraw_json,
+        drawio_xml,
         errors,
         reminders,
     })
@@ -5104,5 +5281,25 @@ mod tests {
         assert!(n1_text.contains('\n'), "expected long label to wrap onto multiple lines: {n1_text}");
         assert!(n1_x >= 0.0, "box left edge {n1_x} must not overflow left of lane 0");
         assert!(n1_x + n1_w <= 200.0, "box right edge {} must stay inside lane 0 width 200", n1_x + n1_w);
+    }
+
+    #[test]
+    fn question_diamond_is_highlighted_in_amber_and_exports_valid_drawio_xml() {
+        let els = json!([
+            { "t": "diamond", "id": "q", "x": 40, "y": 40, "w": 220, "h": 110, "text": "Thanh toán trong 5-10 phút?" },
+            { "t": "box", "id": "ok", "x": 340, "y": 65, "w": 160, "h": 56, "text": "Giao hàng", "fill": "node" },
+            { "t": "arrow", "from": "q", "to": "ok", "text": "Đã thanh toán" }
+        ]);
+        let out = render_spec_elements(els.as_array().unwrap(), builtin_icons()).unwrap();
+        let warn_stroke = resolve_color("warn").unwrap();
+        let warn_fill = resolve_fill(Some("warn")).unwrap();
+        assert!(
+            out.svg.contains(&warn_stroke) || out.svg.contains(&warn_fill),
+            "expected amber warn highlight ({warn_stroke}/{warn_fill}) for '?' diamond"
+        );
+        assert!(out.drawio_xml.contains("<mxfile"));
+        assert!(out.drawio_xml.contains("rhombus"));
+        assert!(out.drawio_xml.contains("Thanh toán") && out.drawio_xml.contains("phút?"));
+        assert!(out.drawio_xml.contains("edge=\"1\""));
     }
 }

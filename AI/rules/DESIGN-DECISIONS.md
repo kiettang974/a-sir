@@ -50,9 +50,9 @@ Mọi màu, bo góc, bóng đổ và font phải đi qua token trong `:root` c�
 | --- | --- | --- | --- |
 | `Queue` (thanh bên) | `Thêm file` (chân thanh bên) | `Tạm dừng`/`Tiếp tục`, `Xoá hàng chờ`, `Từ app Ghi âm`, `Cấu hình` | Menu `⋯` từng bản ghi (`Huỷ`, `Thử lại`, `Chép lời lại`, `Xoá`) |
 | `Reader` (tab `Bản chép lời` / `Ngữ cảnh`) | `Chép bản chép` | Chuyển thẳng mọi bước qua thanh `recordFlowTabs` (`Bản chép lời · Ngữ cảnh · Bản làm sạch · Tóm tắt · Sơ đồ`); click mốc giờ để nghe lại, click chữ để sửa trực tiếp | `Chép lời lại`, `Mở trong Finder` |
-| `Clean` (tab `Bản làm sạch`) | `Chạy lại làm sạch` | `Chỉ lọc tại máy` | — |
+| `Clean` (tab `Bản làm sạch`) | `Chạy lại làm sạch` | — | — |
 | `Note` (tab `Tóm tắt`) | `Chép email` | `Excel`, `Word` | `Tạo lại biên bản`, `Mở trong Finder` |
-| `Diagram` (tab `Sơ đồ`) | `Tạo sơ đồ` (chưa có) / `Xuất PNG` (đã có) | `Xuất .excalidraw`, dropdown chọn kiểu sơ đồ có hình minh hoạ, thanh zoom (`−`/`+`/toàn màn hình) | `Tạo lại sơ đồ`, `Mở tệp đã lưu trong Finder` |
+| `Diagram` (tab `Sơ đồ`) | `Tạo sơ đồ` (chưa có) / `Xuất PNG` (đã có) | `Xuất .drawio`, dropdown chọn kiểu sơ đồ có hình minh hoạ, dropdown hiển thị Cần xác nhận, thanh zoom (`−`/`+`/toàn màn hình) | `Tạo lại sơ đồ`, `Mở tệp đã lưu trong Finder` |
 | `Settings` (4 tab) | `Lưu thuật ngữ` (tab Thuật ngữ), `Chọn dùng` (model) | `Tải model`, `Xoá`, `Chọn file mẫu`, `Kiểm tra`, `Chọn model` | — |
 | `Voice Memos` | `Chép lời <N> bản ghi` | `Chọn tất cả`/`Bỏ chọn`, ô tìm kiếm | — |
 

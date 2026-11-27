@@ -34,7 +34,14 @@ type ActionItem = {
   evidence?: Evidence[];
 };
 type Pending = { row: Row; reason: string };
-type Draft = { discussion?: string[]; rows: Row[]; actions?: ActionItem[]; pending: Pending[] };
+type Draft = {
+  discussion?: string[];
+  rows: Row[];
+  actions?: ActionItem[];
+  pending: Pending[];
+  usedModel?: string | null;
+  fallbackFrom?: string | null;
+};
 /** The working copy. Row text is HTML by now, because it is edited in place. */
 type Note = Draft & { greeting: string; intro: string };
 
@@ -373,6 +380,8 @@ type ProfilesConfig = {
           rows: draft.rows.map(toHtmlRow),
           actions: draft.actions ?? [],
           pending: draft.pending.map((p) => ({ ...p, row: toHtmlRow(p.row) })),
+          usedModel: draft.usedModel ?? null,
+          fallbackFrom: draft.fallbackFrom ?? null,
         };
         showNote(note);
         save(note);
@@ -834,8 +843,18 @@ type ProfilesConfig = {
           : null,
       );
 
+      const fallbackBanner =
+        note.fallbackFrom && note.usedModel
+          ? el("div", {
+              className: "diagram-banner warn",
+              role: "status",
+              textContent: `Đã dùng ${note.usedModel} do ${note.fallbackFrom} đang quá tải.`,
+            })
+          : null;
+
       scroll.replaceChildren(
         ...[
+          fallbackBanner,
           discussionBlock,
           editable(note.greeting, "note-text", "Lời chào", (h) => { note.greeting = h; saveSoon(); }),
           editable(note.intro, "note-text", "Câu mở đầu", (h) => { note.intro = h; saveSoon(); }),

@@ -283,17 +283,38 @@ async fn off_thread<T: Send + 'static>(
         .map_err(|e| e.to_string())?
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TestConnectionView {
+    ok: bool,
+    transient: bool,
+    message: String,
+}
+
 #[tauri::command]
 async fn test_provider(
     app: State<'_, App>,
     provider: Provider,
     model: String,
-) -> Result<(), String> {
+) -> Result<TestConnectionView, String> {
     let client = app
         .workspace
         .client(provider, Some(&model))
         .map_err(|e| e.to_string())?;
-    off_thread(move || client.ping().map_err(|e| e.to_string())).await
+    off_thread(move || match client.ping() {
+        Ok(()) => Ok(TestConnectionView {
+            ok: true,
+            transient: false,
+            message: "Kết nối thành công.".into(),
+        }),
+        Err(e) if e.is_transient() => Ok(TestConnectionView {
+            ok: false,
+            transient: true,
+            message: "Key và model hợp lệ, nhưng nhà cung cấp đang quá tải. Thử lại sau.".into(),
+        }),
+        Err(e) => Err(e.to_string()),
+    })
+    .await
 }
 
 #[tauri::command]

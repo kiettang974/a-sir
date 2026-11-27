@@ -495,7 +495,8 @@ impl Workspace {
         context_notes: &str,
         attachments: &[AiAttachment],
     ) -> Result<Draft, AiError> {
-        let style = self.ai_settings().summary_style;
+        let settings = self.ai_settings();
+        let style = settings.summary_style;
         let columns = self.active_template_columns();
         let profiles = self.summary_profiles();
         let (enabled, chosen_id) = match profile_id {
@@ -518,16 +519,52 @@ impl Workspace {
         } else {
             SummaryProfileMode::BaOpenKit
         };
-        summary::summarize_with_context(
-            &self.client(provider, None)?,
-            transcript,
-            &self.glossary(),
-            style,
-            &columns,
-            profile_mode,
-            context_notes,
-            attachments,
-        )
+        let glossary = self.glossary();
+        let primary_model = settings.model(provider).to_owned();
+        let mut chain: Vec<(Provider, String)> = vec![(provider, primary_model.clone())];
+        if settings.auto_fallback {
+            for fb in provider.fallback_models() {
+                if *fb != primary_model {
+                    chain.push((provider, (*fb).to_owned()));
+                }
+            }
+            let keys = self.keys();
+            for other in Provider::ALL {
+                if other != provider && keys.get(other).ok().flatten().is_some() {
+                    chain.push((other, settings.model(other).to_owned()));
+                }
+            }
+        }
+
+        let mut last_err: Option<AiError> = None;
+        for (idx, (cand_provider, cand_model)) in chain.iter().enumerate() {
+            let client = self.client(*cand_provider, Some(cand_model))?;
+            match summary::summarize_with_context(
+                &client,
+                transcript,
+                &glossary,
+                style,
+                &columns,
+                profile_mode,
+                context_notes,
+                attachments,
+            ) {
+                Ok(mut draft) => {
+                    draft.used_model = Some(cand_model.clone());
+                    if idx > 0 {
+                        draft.fallback_from = Some(primary_model.clone());
+                    }
+                    return Ok(draft);
+                }
+                Err(e) => {
+                    if !e.is_transient() || idx + 1 == chain.len() {
+                        return Err(e);
+                    }
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(last_err.unwrap_or(AiError::MissingKey))
     }
 
     /// Runs local rule-based + glossary cleanup first, then asks the selected AI provider to

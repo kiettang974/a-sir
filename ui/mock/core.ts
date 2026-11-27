@@ -296,6 +296,7 @@ const commands: Record<string, (a: Args) => unknown | Promise<unknown>> = {
   test_provider: async ({ provider }: Args) => {
     await sleep(600);
     if (!state.ai.keys[provider as Provider]) throw "Chưa có API key cho nhà cung cấp này.";
+    return { ok: true, transient: false, message: "Kết nối thành công." };
   },
   get_glossary: () => {
     if (params.get("glossary") === "error") throw "Không đọc được danh sách thuật ngữ (mô phỏng lỗi).";

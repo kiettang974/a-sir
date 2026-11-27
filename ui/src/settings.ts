@@ -41,6 +41,7 @@ function persistAiSettings(ai: AiView): Promise<unknown> {
       defaultProvider: ai.defaultProvider,
       models: ai.models,
       summaryStyle: ai.summaryStyle ?? "workEmail",
+      autoFallback: ai.autoFallback ?? true,
     },
   });
 }
@@ -879,6 +880,52 @@ function speechSection(
 
 function aiSection(ai: AiView, reload: () => void): HTMLElement {
   const persist = () => persistAiSettings(ai);
+  const fallbackSwitch = el("input", {
+    type: "checkbox",
+    className: "switch-input",
+    checked: ai.autoFallback ?? true,
+    ariaLabel: "Tự chuyển sang model hoặc nhà cung cấp khác khi quá tải",
+  }) as HTMLInputElement;
+  const fallbackText = el("span", {
+    className: "switch-text",
+    textContent: fallbackSwitch.checked ? "Đang bật" : "Đang tắt",
+  });
+  const fallbackStatus = el("p", { className: "provider-status status-inline" });
+  fallbackSwitch.onchange = async () => {
+    const next = fallbackSwitch.checked;
+    ai.autoFallback = next;
+    fallbackText.textContent = next ? "Đang bật" : "Đang tắt";
+    fallbackStatus.textContent = "";
+    try {
+      await persist();
+    } catch (e) {
+      ai.autoFallback = !next;
+      fallbackSwitch.checked = !next;
+      fallbackText.textContent = !next ? "Đang bật" : "Đang tắt";
+      fallbackStatus.textContent = String(e);
+      fallbackStatus.className = "provider-status status-inline bad";
+    }
+  };
+  const fallbackBox = el(
+    "div",
+    { className: "style-box" },
+    el(
+      "div",
+      { className: "hf-head" },
+      el("div", {
+        className: "style-title tpl-label",
+        textContent: "Tự chuyển sang model/provider khác khi model mặc định quá tải",
+      }),
+      el("label", { className: "switch" }, fallbackSwitch, el("span", { className: "switch-track" }), fallbackText),
+    ),
+    el("p", {
+      className: "style-desc",
+      textContent:
+        "Khi gặp lỗi quá tải tạm thời (503/429/529) sau khi đã thử lại 3 lần, app tự dùng model dự phòng hoặc nhà cung cấp khác đã có key.",
+    }),
+    fallbackStatus,
+  );
+
   return el(
     "section",
     {},
@@ -889,6 +936,7 @@ function aiSection(ai: AiView, reload: () => void): HTMLElement {
         "Bản chép lời chỉ được gửi đi khi bạn bấm tạo tóm tắt. Mã API key được lưu riêng trên máy của bạn.",
     }),
     ...PROVIDERS.map((p) => providerBlock(p, ai, persist, reload)),
+    fallbackBox,
   );
 }
 
@@ -1410,9 +1458,10 @@ function providerBlock(
   const name = PROVIDER_NAME[provider];
   const hint = ai.keys[provider];
   const status = el("p", { className: "provider-status" });
-  const show = (text: string, bad = false) => {
+  const show = (text: string, tone: boolean | "bad" | "warn" | "ok" = false) => {
+    const kind = tone === true ? "bad" : tone === false ? "" : tone;
     status.textContent = text;
-    status.className = `provider-status${bad ? " bad" : ""}`;
+    status.className = `provider-status${kind ? ` ${kind}` : ""}`;
   };
 
   const key = el("input", {
@@ -1433,16 +1482,45 @@ function providerBlock(
     ariaLabel: `ID model của ${name}`,
   });
 
+  const runTestConnection = async () => {
+    if (!hint) return;
+    show("Đang thử kết nối…");
+    const generation = providerModelCache[provider].generation;
+    try {
+      const res = await invoke<{ ok: boolean; transient: boolean; message: string }>("test_provider", {
+        provider,
+        model: modelName,
+      });
+      if (providerModelCache[provider].generation !== generation) return;
+      clearValidationBanner();
+      if (res?.transient) {
+        show(res.message || "Key và model hợp lệ, nhưng nhà cung cấp đang quá tải. Thử lại sau.", "warn");
+      } else {
+        show(res?.message || "Kết nối thành công.", "ok");
+      }
+    } catch (e) {
+      if (providerModelCache[provider].generation !== generation) return;
+      const errText = String(e);
+      if (isModelUnavailableError(errText)) {
+        await autoResolveModel(generation, errText);
+      } else {
+        show(errText, "bad");
+      }
+    } finally {
+      if (pickerOpen) drawPicker();
+    }
+  };
+
   const validationBanner = el("div", { className: "model-validation-host" });
   const clearValidationBanner = () => validationBanner.replaceChildren();
   const showDeprecatedBanner = (saved: string, suggestion: string | null) => {
     const msg = suggestion
-      ? `${saved} không còn khả dụng — đổi sang ${suggestion}?`
+      ? `${saved} không còn khả dụng với key này — đổi sang ${suggestion}?`
       : `${saved} không còn trong danh sách model của ${name}. Bấm "Chọn model" để chọn model mới.`;
     validationBanner.replaceChildren(
       el(
         "div",
-        { className: "diagram-banner bad", role: "alert" },
+        { className: "diagram-banner warn", role: "alert" },
         el("span", { textContent: msg }),
         suggestion
           ? el("button", {
@@ -1451,7 +1529,7 @@ function providerBlock(
               onclick: async () => {
                 await saveModel(suggestion);
                 clearValidationBanner();
-                show(`Đã đổi sang ${suggestion}.`);
+                await runTestConnection();
               },
             })
           : null,
@@ -1844,28 +1922,8 @@ function providerBlock(
         className: "link",
         textContent: "Thử kết nối",
         disabled: !hint,
-        title: hint ? `Gọi thử 1 yêu cầu nhỏ tới ${name}` : "Cần lưu API key trước khi thử kết nối",
-        onclick: async () => {
-          if (!hint) return;
-          show("Đang thử kết nối…");
-          const generation = providerModelCache[provider].generation;
-          try {
-            await invoke("test_provider", { provider, model: modelName });
-            if (providerModelCache[provider].generation !== generation) return;
-            clearValidationBanner();
-            show(`Kết nối được với ${name} bằng model ${modelName}.`);
-          } catch (e) {
-            if (providerModelCache[provider].generation !== generation) return;
-            const errText = String(e);
-            if (isModelUnavailableError(errText)) {
-              await autoResolveModel(generation, errText);
-            } else {
-              show(errText, true);
-            }
-          } finally {
-            if (pickerOpen) drawPicker();
-          }
-        },
+        title: hint ? `Gọi thử 1 yêu cầu nhỏ tới ${name}` : "Lưu API key trước",
+        onclick: () => void runTestConnection(),
       }),
     ),
     validationBanner,

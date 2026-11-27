@@ -31,7 +31,15 @@ impl Provider {
         match self {
             Provider::Claude => "claude-sonnet-5-5",
             Provider::ChatGpt => "gpt-4.1-mini",
-            Provider::Gemini => "gemini-2.5-flash",
+            Provider::Gemini => "gemini-3.8-flash",
+        }
+    }
+
+    pub fn fallback_models(self) -> &'static [&'static str] {
+        match self {
+            Provider::Claude => &["claude-haiku-5-5"],
+            Provider::ChatGpt => &["gpt-4o-mini"],
+            Provider::Gemini => &["gemini-3.5-flash-lite", "gemini-3.6-flash"],
         }
     }
 
@@ -39,10 +47,9 @@ impl Provider {
         match self {
             Provider::Claude => &[
                 "claude-sonnet-5-5",
+                "claude-haiku-5-5",
                 "claude-opus-4-5",
                 "claude-haiku-4-5",
-                "claude-sonnet-4-5-20250929",
-                "claude-sonnet-4-20250514",
             ],
             Provider::ChatGpt => &[
                 "gpt-4.1-mini",
@@ -54,10 +61,9 @@ impl Provider {
                 "gpt-5",
             ],
             Provider::Gemini => &[
-                "gemini-2.5-flash",
-                "gemini-2.5-pro",
-                "gemini-2.0-flash",
                 "gemini-3.8-flash",
+                "gemini-3.5-flash-lite",
+                "gemini-3.6-flash",
                 "gemini-3.7-flash",
             ],
         }
@@ -78,6 +84,8 @@ pub enum AiError {
     Unauthorized(String),
     #[error("Nhà cung cấp đang giới hạn lượt gọi hoặc đã hết hạn mức / token ({0})")]
     RateLimited(String),
+    #[error("{message}")]
+    Transient { status: u16, message: String },
     #[error("Nhà cung cấp báo lỗi {status}: {message}")]
     Rejected { status: u16, message: String },
     #[error("Câu trả lời bị cắt vì quá dài, nên không dùng được")]
@@ -92,6 +100,16 @@ pub enum AiError {
     KeyFile(String),
     #[error("Chưa có API key cho nhà cung cấp này")]
     MissingKey,
+}
+
+impl AiError {
+    /// True for temporary provider overload / rate-limit / network errors that may succeed on retry or fallback.
+    pub fn is_transient(&self) -> bool {
+        matches!(
+            self,
+            AiError::Network(_) | AiError::RateLimited(_) | AiError::Transient { .. }
+        )
+    }
 }
 
 /// Optional attachment sent alongside a prompt (plain text or base64 image/PDF).
@@ -160,9 +178,14 @@ impl HttpClient {
         }
     }
 
-    /// Spends a few tokens to check the key and the model name. Only the status matters.
+    /// Spends a few tokens to check the key and the model name. Uses 16 tokens for OpenAI reasoning models.
     pub fn ping(&self) -> Result<(), AiError> {
-        let (url, headers, body) = self.request("Reply OK", "OK", None, 8);
+        let max_tokens = match self.provider {
+            Provider::ChatGpt => 16,
+            Provider::Claude => 5,
+            Provider::Gemini => 8,
+        };
+        let (url, headers, body) = self.request("Reply OK", "ping", None, max_tokens);
         self.send(&url, &headers, &body, PING_TIMEOUT).map(|_| ())
     }
 
@@ -228,13 +251,23 @@ impl HttpClient {
                     None
                 }
                 Provider::Gemini => {
-                    const SKIP_GEMINI: [&str; 6] = [
+                    const SKIP_GEMINI: [&str; 16] = [
                         "embedding",
                         "aqa",
                         "imagen",
                         "veo",
                         "tts",
                         "native-audio",
+                        "live",
+                        "transcribe",
+                        "image",
+                        "nano-banana",
+                        "omni",
+                        "lyria",
+                        "robotics",
+                        "deep-research",
+                        "antigravity",
+                        "computer-use",
                     ];
                     let usable = reply["models"]
                         .as_array()
@@ -560,6 +593,7 @@ impl HttpClient {
         headers: &[(&'static str, String)],
         body: &Value,
     ) -> Result<Value, AiError> {
+        const MAX_RETRIES: u32 = 3;
         let network = |e: reqwest::Error| {
             if e.is_timeout() {
                 AiError::Network(
@@ -570,17 +604,44 @@ impl HttpClient {
                 AiError::Network(e.without_url().to_string())
             }
         };
-        let mut request = client
-            .post(url)
-            .header("content-type", "application/json")
-            .body(body.to_string());
-        for (name, value) in headers {
-            request = request.header(*name, value);
+
+        let body_str = body.to_string();
+        for attempt in 0..=MAX_RETRIES {
+            let mut request = client
+                .post(url)
+                .header("content-type", "application/json")
+                .body(body_str.clone());
+            for (name, value) in headers {
+                request = request.header(*name, value);
+            }
+            let result = match request.send() {
+                Ok(response) => {
+                    let status = response.status().as_u16();
+                    let retry_after = response
+                        .headers()
+                        .get("retry-after")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.trim().parse::<u64>().ok());
+                    match response.text() {
+                        Ok(text) => (check_status(status, &text), retry_after),
+                        Err(e) => (Err(network(e)), retry_after),
+                    }
+                }
+                Err(e) => (Err(network(e)), None),
+            };
+
+            match result {
+                (Ok(val), _) => return Ok(val),
+                (Err(err), retry_after) if err.is_transient() && attempt < MAX_RETRIES => {
+                    let delay = retry_delay(attempt, retry_after);
+                    if !delay.is_zero() {
+                        std::thread::sleep(delay);
+                    }
+                }
+                (Err(err), _) => return Err(err),
+            }
         }
-        let response = request.send().map_err(network)?;
-        let status = response.status().as_u16();
-        let text = response.text().map_err(network)?;
-        check_status(status, &text)
+        unreachable!("loop returns on final attempt")
     }
 
     fn read_text(&self, reply: &Value) -> Result<String, AiError> {
@@ -691,6 +752,21 @@ impl LlmClient for HttpClient {
     }
 }
 
+fn retry_delay(attempt: u32, retry_after_secs: Option<u64>) -> Duration {
+    if cfg!(test) {
+        return Duration::from_millis(1);
+    }
+    if let Some(secs) = retry_after_secs {
+        return Duration::from_secs(secs.clamp(1, 30));
+    }
+    let base_ms = (1000u64.saturating_mul(1u64 << attempt)).min(15_000);
+    let jitter_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| (d.subsec_millis() as u64) % 500)
+        .unwrap_or(0);
+    Duration::from_millis(base_ms + jitter_ms)
+}
+
 fn check_status(status: u16, text: &str) -> Result<Value, AiError> {
     if (200..300).contains(&status) {
         return serde_json::from_str(text).map_err(|e| AiError::Malformed(e.to_string()));
@@ -709,7 +785,15 @@ fn check_status(status: u16, text: &str) -> Result<Value, AiError> {
             "gói hiện tại không có hạn mức cho model này (limit: 0). Mở \"Chọn model\" để xem các model đã thử thành công.".into(),
         ),
         429 => AiError::RateLimited(message),
-        529 => AiError::Rejected {
+        500 => AiError::Transient {
+            status,
+            message: "Nhà cung cấp gặp lỗi nội bộ, thử lại sau.".into(),
+        },
+        502 | 503 | 504 => AiError::Transient {
+            status,
+            message: "Model đang quá tải tạm thời. Thử lại sau ít phút hoặc chọn model khác.".into(),
+        },
+        529 => AiError::Transient {
             status,
             message: "Nhà cung cấp đang quá tải, thử lại sau.".into(),
         },
@@ -1042,6 +1126,7 @@ pub struct AiSettings {
     pub default_provider: Provider,
     pub models: BTreeMap<Provider, String>,
     pub summary_style: SummaryStyle,
+    pub auto_fallback: bool,
 }
 
 impl Default for AiSettings {
@@ -1053,6 +1138,7 @@ impl Default for AiSettings {
                 .map(|p| (*p, p.default_model().to_owned()))
                 .collect(),
             summary_style: SummaryStyle::default(),
+            auto_fallback: true,
         }
     }
 }
@@ -1356,7 +1442,14 @@ mod tests {
         let body = json!({ "error": { "message": "sai key" } });
         let (result, _) = call(Provider::Claude, "m", 401, body.clone());
         assert_eq!(result, Err(AiError::Unauthorized("sai key".into())));
-        let (result, _) = call(Provider::Gemini, "m", 429, body.clone());
+        let (url_429, _rx) = serve_many(vec![
+            (429, body.clone()),
+            (429, body.clone()),
+            (429, body.clone()),
+            (429, body.clone()),
+        ]);
+        let result = HttpClient::with_base_url(Provider::Gemini, "m", "k", &url_429)
+            .complete("s", "u", &json!({}));
         assert_eq!(result, Err(AiError::RateLimited("sai key".into())));
         let (result, _) = call(Provider::ChatGpt, "m", 400, body);
         assert_eq!(
@@ -1602,5 +1695,58 @@ mod tests {
         assert!(!res.ok);
         assert_eq!(res.suggestion.as_deref(), Some("claude-sonnet-5-5"));
         assert_eq!(res.models.len(), 3);
+    }
+
+    #[test]
+    fn transient_503_retries_three_times_and_recovers() {
+        let (url, seen) = serve_many(vec![
+            (503, json!({ "error": { "message": "high demand" } })),
+            (503, json!({ "error": { "message": "high demand" } })),
+            (503, json!({ "error": { "message": "high demand" } })),
+            (200, json!({ "candidates": [{ "content": { "parts": [{ "text": "OK" }] } }] })),
+        ]);
+        let client = HttpClient::with_base_url(Provider::Gemini, "gemini-3.8-flash", "k", &url);
+        client.ping().unwrap();
+        let mut count = 0;
+        while seen.try_recv().is_ok() {
+            count += 1;
+        }
+        assert_eq!(count, 4, "1 initial + 3 retries");
+    }
+
+    #[test]
+    fn unauthorized_401_never_retries() {
+        let (url, seen) = serve_many(vec![
+            (401, json!({ "error": { "message": "invalid api key" } })),
+            (200, json!({ "content": [{ "type": "text", "text": "OK" }] })),
+        ]);
+        let client = HttpClient::with_base_url(Provider::Claude, "claude-sonnet-5-5", "k", &url);
+        let err = client.ping().unwrap_err();
+        assert!(!err.is_transient());
+        assert!(matches!(err, AiError::Unauthorized(_)));
+        let mut count = 0;
+        while seen.try_recv().is_ok() {
+            count += 1;
+        }
+        assert_eq!(count, 1, "401 must not retry");
+    }
+
+    #[test]
+    fn gemini_list_models_strips_prefix_and_excludes_non_chat_models() {
+        let (url, _) = serve(
+            200,
+            json!({
+                "models": [
+                    { "name": "models/gemini-3.8-flash", "supportedGenerationMethods": ["generateContent"] },
+                    { "name": "models/gemini-2.5-flash-tts", "supportedGenerationMethods": ["generateContent"] },
+                    { "name": "models/gemini-live-2.5", "supportedGenerationMethods": ["generateContent"] },
+                    { "name": "models/nano-banana-pro", "supportedGenerationMethods": ["generateContent"] },
+                    { "name": "models/text-embedding-004", "supportedGenerationMethods": ["embedContent"] }
+                ]
+            }),
+        );
+        let client = HttpClient::with_base_url(Provider::Gemini, "m", "k", &url);
+        let models = client.list_models().unwrap();
+        assert_eq!(models, vec!["gemini-3.8-flash".to_owned()]);
     }
 }

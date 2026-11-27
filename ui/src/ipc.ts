@@ -35,6 +35,7 @@ export type AiView = {
   models: Partial<Record<Provider, string>>;
   keys: Partial<Record<Provider, string>>;
   summaryStyle?: SummaryStyle;
+  autoFallback?: boolean;
   recommendedModels?: Partial<Record<Provider, string[]>>;
   summaryStyles?: SummaryStyleOption[];
 };

@@ -16,6 +16,9 @@
   --accent-ring: rgb(29 78 216 / 0.25);
   --fail: #dc2626;
   --fail-soft: rgb(220 38 38 / 0.09);
+  --warn: #b45309;
+  --warn-soft: rgb(245 158 11 / 0.12);
+  --ok: #15803d;
   --selection: rgb(29 78 216 / 0.16);
   --hover-wash: rgb(255 255 255 / 0.72);
   --hover-subtle: rgb(15 23 42 / 0.06);
@@ -1291,6 +1294,13 @@ select.field { appearance: auto; }
   border-color: var(--fail);
   color: var(--fail);
 }
+.diagram-banner.warn {
+  background: var(--warn-soft);
+  border-color: var(--warn);
+  color: var(--warn);
+}
+.provider-status.warn { color: var(--warn); }
+.provider-status.ok { color: var(--ok); }
 .diagram-banner-actions {
   display: flex;
   align-items: center;

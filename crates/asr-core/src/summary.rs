@@ -67,6 +67,12 @@ pub struct Draft {
     #[serde(default)]
     pub actions: Vec<ActionItem>,
     pub pending: Vec<Pending>,
+    /// Model actually used to produce this draft (populated by Workspace).
+    #[serde(default, rename = "usedModel")]
+    pub used_model: Option<String>,
+    /// Original model name when automatic fallback switched away from an overloaded model.
+    #[serde(default, rename = "fallbackFrom")]
+    pub fallback_from: Option<String>,
 }
 
 const RULES: &str = "Bạn soạn biên bản tóm tắt cuộc họp theo chuẩn BA-Kit từ bản chép lời tự động bằng tiếng Việt.
@@ -348,6 +354,8 @@ fn parse(text: &str) -> Result<Draft, AiError> {
                 reason: p.reason,
             })
             .collect(),
+        used_model: None,
+        fallback_from: None,
     })
 }
 

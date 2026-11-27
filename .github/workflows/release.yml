@@ -12,7 +12,104 @@ permissions:
   contents: write
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.version.outputs.ref }}
+      version: ${{ steps.version.outputs.version }}
+      prev_tag: ${{ steps.version.outputs.prev_tag }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve and auto-bump version if needed
+        id: version
+        shell: bash
+        run: |
+          git fetch --tags --force
+          node - <<'EOF'
+          const fs = require('fs');
+          const { execSync } = require('child_process');
+
+          const parseSemver = (s) => {
+            const m = String(s || '').trim().replace(/^v/, '').match(/^(\d+)\.(\d+)\.(\d+)$/);
+            return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+          };
+          const cmp = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+          const fmt = (v) => `${v[0]}.${v[1]}.${v[2]}`;
+
+          const tauriPath = 'app/tauri.conf.json';
+          const tauriJson = JSON.parse(fs.readFileSync(tauriPath, 'utf8'));
+          const fileVer = parseSemver(tauriJson.version);
+          if (!fileVer) throw new Error(`Invalid version in ${tauriPath}: ${tauriJson.version}`);
+
+          const rawTags = execSync('git tag -l "v*"', { encoding: 'utf8' })
+            .split(/\r?\n/)
+            .map((t) => t.trim())
+            .filter(Boolean);
+          const parsedTags = rawTags
+            .map((tag) => ({ tag, ver: parseSemver(tag) }))
+            .filter((x) => x.ver !== null)
+            .sort((a, b) => cmp(a.ver, b.ver));
+          const latest = parsedTags.length ? parsedTags[parsedTags.length - 1] : null;
+
+          let targetVer = fileVer;
+          let bumped = false;
+          const isTagPush = process.env.GITHUB_REF_TYPE === 'tag';
+
+          if (!isTagPush && latest && cmp(fileVer, latest.ver) <= 0) {
+            targetVer = [latest.ver[0], latest.ver[1], latest.ver[2] + 1];
+            bumped = true;
+          }
+
+          const nextVersion = fmt(targetVer);
+          if (bumped) {
+            // Update app/tauri.conf.json
+            const rawTauri = fs.readFileSync(tauriPath, 'utf8');
+            fs.writeFileSync(
+              tauriPath,
+              rawTauri.replace(/"version"\s*:\s*"[^"]+"/, `"version": "${nextVersion}"`),
+            );
+
+            // Update app/Cargo.toml ([package] version)
+            const cargoPath = 'app/Cargo.toml';
+            const rawCargo = fs.readFileSync(cargoPath, 'utf8');
+            fs.writeFileSync(
+              cargoPath,
+              rawCargo.replace(/(name\s*=\s*"asr-studio"\r?\nversion\s*=\s*)"[^"]+"/, `$1"${nextVersion}"`),
+            );
+
+            // Update Cargo.lock (asr-studio package version)
+            const lockPath = 'Cargo.lock';
+            if (fs.existsSync(lockPath)) {
+              const rawLock = fs.readFileSync(lockPath, 'utf8');
+              fs.writeFileSync(
+                lockPath,
+                rawLock.replace(/(name\s*=\s*"asr-studio"\r?\nversion\s*=\s*)"[^"]+"/, `$1"${nextVersion}"`),
+              );
+            }
+
+            execSync('git config user.name "github-actions[bot]"');
+            execSync('git config user.email "41898282+github-actions[bot]@users.noreply.github.com"');
+            execSync('git add app/tauri.conf.json app/Cargo.toml Cargo.lock');
+            execSync(`git commit -m "chore(release): bump version to v${nextVersion} [skip ci]"`);
+            execSync('git push origin HEAD:release');
+          }
+
+          const sha = execSync('git rev-parse HEAD', { encoding: 'utf8' }).trim();
+          const prevTag = latest ? latest.tag : '';
+          const out = process.env.GITHUB_OUTPUT;
+          fs.appendFileSync(out, `ref=${sha}\n`);
+          fs.appendFileSync(out, `version=${nextVersion}\n`);
+          fs.appendFileSync(out, `prev_tag=${prevTag}\n`);
+          console.log(`Prepared release v${nextVersion} (bumped=${bumped}, prev_tag=${prevTag || 'none'}, sha=${sha})`);
+          EOF
+
   build:
+    needs: prepare
     strategy:
       fail-fast: false
       matrix:
@@ -27,6 +124,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
+          fetch-depth: 0
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -96,6 +196,8 @@ jobs:
       - name: Extract release notes from CHANGELOG.md
         id: changelog
         shell: bash
+        env:
+          PREV_TAG: ${{ needs.prepare.outputs.prev_tag }}
         run: |
           VERSION=$(node -p "require('./app/tauri.conf.json').version")
           NOTES=$(awk -v ver="## v${VERSION}" '
@@ -103,8 +205,14 @@ jobs:
             found && /^## v/ { exit }
             found { print }
           ' CHANGELOG.md)
+          if [ -z "$NOTES" ] && [ -n "$PREV_TAG" ]; then
+            COMMITS=$(git log "${PREV_TAG}..HEAD" --no-merges --grep="\[skip ci\]" --invert-grep --pretty=format:"- %s" -n 30 || true)
+            if [ -n "$COMMITS" ]; then
+              NOTES=$(printf "### Thay đổi trong v%s\n%s" "$VERSION" "$COMMITS")
+            fi
+          fi
           if [ -z "$NOTES" ]; then
-            NOTES="Bản phát hành A-Sir v${VERSION} cho macOS (\`.dmg\`) và Windows (\`.exe\` / \`.msi\`)."
+            NOTES="Bản phát hành A-Sir v${VERSION} cho macOS (\`.dmg\`) và Windows (\`.exe\`)."
           fi
           {
             echo "body<<EOF"

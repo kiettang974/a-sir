@@ -397,15 +397,14 @@ fn m_cells(e: &Value) -> Result<Vec<Value>, String> {
     let ws: Option<Vec<f64>> = e.get("widths").and_then(Value::as_array).map(|arr| {
         arr.iter().filter_map(Value::as_f64).collect()
     });
-    if let Some(ref wv) = ws {
-        if wv.len() != labs.len() {
+    if let Some(ref wv) = ws
+        && wv.len() != labs.len() {
             return Err(format!(
                 "cells '{id}': widths has {} items, labels has {}",
                 wv.len(),
                 labs.len()
             ));
         }
-    }
     let marks = e.get("marks").and_then(Value::as_object);
     let size = f64_at(e, "size", 18.0);
     let mut out = Vec::new();
@@ -434,11 +433,10 @@ fn m_cells(e: &Value) -> Result<Vec<Value>, String> {
             "size": size
         });
         for k in ["color", "fill", "fillStyle", "weight", "dashed"] {
-            if let Some(val) = m.and_then(|mv| mv.get(k)).or_else(|| e.get(k)) {
-                if !val.is_null() {
+            if let Some(val) = m.and_then(|mv| mv.get(k)).or_else(|| e.get(k))
+                && !val.is_null() {
                     b.as_object_mut().unwrap().insert(k.into(), val.clone());
                 }
-            }
         }
         out.push(b);
 
@@ -530,11 +528,10 @@ fn m_grid(e: &Value) -> Result<Vec<Value>, String> {
                 "size": size
             });
             for k in ["color", "fill", "fillStyle", "weight"] {
-                if let Some(val) = m.and_then(|mv| mv.get(k)).or_else(|| e.get(k)) {
-                    if !val.is_null() {
+                if let Some(val) = m.and_then(|mv| mv.get(k)).or_else(|| e.get(k))
+                    && !val.is_null() {
                         b.as_object_mut().unwrap().insert(k.into(), val.clone());
                     }
-                }
             }
             out.push(b);
         }
@@ -710,13 +707,12 @@ fn m_code(e: &Value) -> Result<Vec<Value>, String> {
     }
     can += 32.0;
 
-    if let Some(ew) = e.get("w").and_then(Value::as_f64) {
-        if ew < can - 8.0 {
+    if let Some(ew) = e.get("w").and_then(Value::as_f64)
+        && ew < can - 8.0 {
             return Err(format!(
                 "code '{id}': w {ew:.0} is narrower than its longest line or title needs (about {can:.0})"
             ));
         }
-    }
     let w = e.get("w").and_then(Value::as_f64).unwrap_or(can);
     let th = if title.is_some() { 26.0 } else { 0.0 };
     let h = lines.len() as f64 * fs * 1.3 + 24.0 + th;
@@ -842,11 +838,10 @@ fn m_plot(e: &Value) -> Result<Vec<Value>, String> {
             for s in ls {
                 if let Some(pts) = s.get("points").and_then(Value::as_array) {
                     for p in pts {
-                        if let Some(arr) = p.as_array() {
-                            if let Some(py) = arr.get(1).and_then(Value::as_f64) {
+                        if let Some(arr) = p.as_array()
+                            && let Some(py) = arr.get(1).and_then(Value::as_f64) {
                                 vmax = vmax.max(py);
                             }
-                        }
                     }
                 }
             }
@@ -859,8 +854,8 @@ fn m_plot(e: &Value) -> Result<Vec<Value>, String> {
     }
 
     let pid = str_at(e, "id").unwrap_or("plot");
-    if let Some(bs) = bars {
-        if !bs.is_empty() {
+    if let Some(bs) = bars
+        && !bs.is_empty() {
             let slot = w / bs.len() as f64;
             let bw = (slot * 0.62).min(70.0);
             for (i, b) in bs.iter().enumerate() {
@@ -888,7 +883,6 @@ fn m_plot(e: &Value) -> Result<Vec<Value>, String> {
                 }
             }
         }
-    }
 
     if let Some(ls) = lines {
         for s in ls {
@@ -962,6 +956,9 @@ fn m_sequence(e: &Value) -> Result<Vec<Value>, String> {
         .get("actors")
         .and_then(Value::as_array)
         .ok_or("sequence: missing 'actors'")?;
+    if acts.is_empty() {
+        return Err("sequence: 'actors' cannot be empty".into());
+    }
     let msgs = e
         .get("messages")
         .and_then(Value::as_array)
@@ -1162,7 +1159,7 @@ fn m_sequence(e: &Value) -> Result<Vec<Value>, String> {
         let n_prefix = opt_val_str(m, "n").map(|n| format!("{n}. ")).unwrap_or_default();
         let nhan = format!("{n_prefix}{}", str_at(m, "text").unwrap_or(""));
         if nhan.contains('\n') {
-            return Err(format!("sequence: message text '{}' must be one line", &nhan));
+            return Err(format!("sequence: message text '{}' must be one line", nhan));
         }
 
         let from_id = str_at(m, "from").ok_or("sequence: message missing 'from'")?;
@@ -1327,11 +1324,10 @@ fn m_tree(e: &Value) -> Result<Vec<Value>, String> {
             "size": f64_at(n, "size", def_size)
         });
         for k in ["color", "fill", "fillStyle", "dashed", "sharp", "weight"] {
-            if let Some(v) = n.get(k).or_else(|| e.get(k)) {
-                if !v.is_null() {
+            if let Some(v) = n.get(k).or_else(|| e.get(k))
+                && !v.is_null() {
                     b.as_object_mut().unwrap().insert(k.into(), v.clone());
                 }
-            }
         }
         out.push(b);
 
@@ -2359,51 +2355,45 @@ fn m_group(e: &Value, icons: &HashMap<String, Value>) -> Result<Vec<Value>, Stri
             }
             if let Some(pts) = obj.get_mut("points").and_then(Value::as_array_mut) {
                 for p in pts.iter_mut() {
-                    if let Some(arr) = p.as_array_mut() {
-                        if let (Some(px), Some(py)) = (
+                    if let Some(arr) = p.as_array_mut()
+                        && let (Some(px), Some(py)) = (
                             arr.first().and_then(Value::as_f64),
                             arr.get(1).and_then(Value::as_f64),
                         ) {
                             arr[0] = json!(px + dx);
                             arr[1] = json!(py + dy);
                         }
-                    }
                 }
             }
-            if obj.get("t").and_then(Value::as_str) == Some("raw") {
-                if let Some(raw_els) = obj.get_mut("elements").and_then(Value::as_array_mut) {
+            if obj.get("t").and_then(Value::as_str) == Some("raw")
+                && let Some(raw_els) = obj.get_mut("elements").and_then(Value::as_array_mut) {
                     for r in raw_els.iter_mut() {
                         if let Some(ro) = r.as_object_mut() {
                             let rx = ro.get("x").and_then(Value::as_f64).unwrap_or(0.0);
                             let ry = ro.get("y").and_then(Value::as_f64).unwrap_or(0.0);
                             ro.insert("x".into(), json!(rx + dx));
                             ro.insert("y".into(), json!(ry + dy));
-                            if dim {
-                                if let Some(sc) = ro.get("strokeColor").and_then(Value::as_str) {
-                                    if sc != "transparent" {
+                            if dim
+                                && let Some(sc) = ro.get("strokeColor").and_then(Value::as_str)
+                                    && sc != "transparent" {
                                         ro.insert("strokeColor".into(), json!(token_light("muted").unwrap()));
                                     }
-                                }
-                            }
                         }
                     }
                 }
-            }
             if dim {
                 obj.insert("color".into(), json!("muted"));
-                if let Some(f) = obj.get("fill").and_then(Value::as_str) {
-                    if !f.is_empty() && f != "code" {
+                if let Some(f) = obj.get("fill").and_then(Value::as_str)
+                    && !f.is_empty() && f != "code" {
                         obj.insert("fill".into(), json!("soft"));
                     }
-                }
             }
             if let Some(pre) = prefix {
                 for k in ["id", "from", "to"] {
-                    if let Some(s) = obj.get(k).and_then(Value::as_str).map(str::to_owned) {
-                        if !s.is_empty() {
+                    if let Some(s) = obj.get(k).and_then(Value::as_str).map(str::to_owned)
+                        && !s.is_empty() {
                             obj.insert(k.into(), json!(format!("{pre}{s}")));
                         }
-                    }
                 }
             }
         }
@@ -2623,10 +2613,17 @@ struct LintArrow {
     head_count: usize,
 }
 
+struct CompiledScene {
+    scene: Vec<SceneEl>,
+    hinh: HashMap<String, AnchorInfo>,
+    lint_arrows: Vec<LintArrow>,
+    goc: Vec<Value>,
+}
+
 fn compile_scene(
     spec_els: &[Value],
     icons: &HashMap<String, Value>,
-) -> Result<(Vec<SceneEl>, HashMap<String, AnchorInfo>, Vec<LintArrow>, Vec<Value>), String> {
+) -> Result<CompiledScene, String> {
     let els = expand_all(spec_els, icons)?;
     let mut hinh: HashMap<String, AnchorInfo> = HashMap::new();
     for e in &els {
@@ -2779,12 +2776,12 @@ fn compile_scene(
             let label_txt = str_at(e, "text").filter(|s| !s.is_empty());
 
             // _hachure_ro port: visible hachure on soft / narrow shapes
-            if matches!(fill_style.as_str(), "hachure" | "cross-hatch") && !ghost {
-                if let Some(ft) = fill_tok {
+            if matches!(fill_style.as_str(), "hachure" | "cross-hatch") && !ghost
+                && let Some(ft) = fill_tok {
                     if ft == "soft" {
                         bg = line_hex.to_owned();
-                    } else if w.min(h) < HACH_HEP && label_txt.is_none() {
-                        if let Some(sat) = token_light(ft) {
+                    } else if w.min(h) < HACH_HEP && label_txt.is_none()
+                        && let Some(sat) = token_light(ft) {
                             scene.push(SceneEl {
                                 id: format!("{id}~hach"),
                                 el_type: el_type.clone(),
@@ -2814,9 +2811,7 @@ fn compile_scene(
                             });
                             bg = "transparent".into();
                         }
-                    }
                 }
-            }
 
             scene.push(SceneEl {
                 id: id.clone(),
@@ -3007,8 +3002,8 @@ fn compile_scene(
             if pts.len() < 2 {
                 continue;
             }
-            if t == "arrow" {
-                if let Some(aid) = str_at(e, "id") {
+            if t == "arrow"
+                && let Some(aid) = str_at(e, "id") {
                     let (mx, my) = if pts.len() > 2 {
                         pts[pts.len() / 2]
                     } else {
@@ -3029,7 +3024,6 @@ fn compile_scene(
                         },
                     );
                 }
-            }
 
             let (x0, y0) = pts[0];
             let mut rel: Vec<(f64, f64)> = pts.iter().map(|&(px, py)| (px - x0, py - y0)).collect();
@@ -3191,8 +3185,8 @@ fn compile_scene(
             }
 
             // Arrow label (bound or detached)
-            if t == "arrow" {
-                if let Some(txt) = str_at(e, "text").filter(|s| !s.is_empty()) {
+            if t == "arrow"
+                && let Some(txt) = str_at(e, "text").filter(|s| !s.is_empty()) {
                     let tu_do = e.get("labelAt").is_some()
                         || e.get("labelDx").is_some()
                         || e.get("labelDy").is_some();
@@ -3200,7 +3194,8 @@ fn compile_scene(
                     let tw = rong_chu(txt, sz);
                     let th = cao_chu(txt, sz);
 
-                    let segs: Vec<((f64, f64), (f64, f64), f64)> = pts
+                    type Seg2D = ((f64, f64), (f64, f64), f64);
+                    let segs: Vec<Seg2D> = pts
                         .windows(2)
                         .map(|w| (w[0], w[1], (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1)))
                         .collect();
@@ -3297,7 +3292,6 @@ fn compile_scene(
                         });
                     }
                 }
-            }
         } else if t == "text" {
             let x = req_f64(e, "x", "text")?;
             let y = req_f64(e, "y", "text")?;
@@ -3345,7 +3339,12 @@ fn compile_scene(
     }
 
     scene.extend(raw_els);
-    Ok((scene, hinh, lint_arrows, els))
+    Ok(CompiledScene {
+        scene,
+        hinh,
+        lint_arrows,
+        goc: els,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -3379,9 +3378,9 @@ fn seg_intersects_rect_inset(p: (f64, f64), q: (f64, f64), x: f64, y: f64, w: f6
     t1 - t0 > 0.02
 }
 
-fn overlap_area(ax: f64, ay: f64, aw: f64, ah: f64, bx: f64, by: f64, bw: f64, bh: f64) -> f64 {
-    let w = (ax + aw).min(bx + bw) - ax.max(bx);
-    let h = (ay + ah).min(by + bh) - ay.max(by);
+fn overlap_area(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> f64 {
+    let w = (a.0 + a.2).min(b.0 + b.2) - a.0.max(b.0);
+    let h = (a.1 + a.3).min(b.1 + b.3) - a.1.max(b.1);
     w.max(0.0) * h.max(0.0)
 }
 
@@ -3397,10 +3396,10 @@ fn lint_scene(
 
     // 1. Text overflows containing shape
     for e in scene {
-        if e.el_type == "text" {
-            if let Some(cid) = e.container_id.as_deref() {
-                if let Some(c) = by.get(cid) {
-                    if matches!(c.el_type.as_str(), "rectangle" | "ellipse" | "diamond")
+        if e.el_type == "text"
+            && let Some(cid) = e.container_id.as_deref()
+                && let Some(c) = by.get(cid)
+                    && matches!(c.el_type.as_str(), "rectangle" | "ellipse" | "diamond")
                         && c.stroke_color != "transparent"
                     {
                         let he = match c.el_type.as_str() {
@@ -3416,9 +3415,6 @@ fn lint_scene(
                             ));
                         }
                     }
-                }
-            }
-        }
     }
 
     // 2. Arrow crosses non-endpoint shape & short arrow check
@@ -3492,7 +3488,7 @@ fn lint_scene(
             if f.id == o.id || seen_pairs.contains(&(o.id.as_str(), f.id.as_str())) {
                 continue;
             }
-            let area = overlap_area(f.x, f.y, f.width, f.height, o.x, o.y, o.width, o.height);
+            let area = overlap_area((f.x, f.y, f.width, f.height), (o.x, o.y, o.width, o.height));
             let min_a = (f.width * f.height).min(o.width * o.height);
             if min_a > 0.0 && area > 0.18 * min_a {
                 seen_pairs.insert((f.id.as_str(), o.id.as_str()));
@@ -3508,16 +3504,14 @@ fn lint_scene(
     // 4. Too many accent colors
     let mut accents: HashSet<&str> = HashSet::new();
     for e in goc {
-        if let Some(c) = str_at(e, "color") {
-            if is_accent(c) {
+        if let Some(c) = str_at(e, "color")
+            && is_accent(c) {
                 accents.insert(c);
             }
-        }
-        if let Some(f) = str_at(e, "fill") {
-            if is_accent(f) {
+        if let Some(f) = str_at(e, "fill")
+            && is_accent(f) {
                 accents.insert(f);
             }
-        }
     }
     if accents.len() > 3 {
         reminders.push(format!("{} accent colors used (recommend <= 3)", accents.len()));
@@ -3737,25 +3731,26 @@ fn rough_ellipse_stroke(cx: f64, cy: f64, rx: f64, ry: f64, roughness: f64, rng:
     out
 }
 
-/// Generates SVG `<g clip-path=...>` for Excalidraw-style hachure / cross-hatch fills.
-fn push_hachure_fill(
-    defs: &mut String,
-    body: &mut String,
-    clip_id: &str,
-    clip_shape_svg: &str,
-    bx: f64,
-    by: f64,
-    bw: f64,
-    bh: f64,
-    color: &str,
+struct HachureSpec<'a> {
+    clip_id: &'a str,
+    clip_shape_svg: &'a str,
+    bounds: (f64, f64, f64, f64),
+    color: &'a str,
     stroke_w: f64,
     cross: bool,
-    opacity_attr: &str,
-    rng: &mut Rng,
-) {
-    let _ = write!(defs, "<clipPath id=\"{clip_id}\">{clip_shape_svg}</clipPath>");
-    let gap = (stroke_w * 4.0).max(5.5);
-    let line_w = (stroke_w * 0.55).max(0.8);
+    opacity_attr: &'a str,
+}
+
+/// Generates SVG `<g clip-path=...>` for Excalidraw-style hachure / cross-hatch fills.
+fn push_hachure_fill(defs: &mut String, body: &mut String, spec: &HachureSpec<'_>, rng: &mut Rng) {
+    let (bx, by, bw, bh) = spec.bounds;
+    let _ = write!(
+        defs,
+        "<clipPath id=\"{}\">{}</clipPath>",
+        spec.clip_id, spec.clip_shape_svg
+    );
+    let gap = (spec.stroke_w * 4.0).max(5.5);
+    let line_w = (spec.stroke_w * 0.55).max(0.8);
     let mut d = String::new();
     // 45-degree diagonal hatch
     let mut offset = -bh;
@@ -3767,7 +3762,7 @@ fn push_hachure_fill(
         push_rough_line(&mut d, x1, y1, x2, y2, 0.45, rng);
         offset += gap;
     }
-    if cross {
+    if spec.cross {
         let mut offset = -bh;
         while offset < bw + bh {
             let x1 = bx + offset;
@@ -3780,21 +3775,34 @@ fn push_hachure_fill(
     }
     let _ = write!(
         body,
-        "<g clip-path=\"url(#{clip_id})\"{opacity_attr}><path d=\"{d}\" fill=\"none\" stroke=\"{color}\" stroke-width=\"{}\" stroke-linecap=\"round\"/></g>",
+        "<g clip-path=\"url(#{})\"{}><path d=\"{d}\" fill=\"none\" stroke=\"{}\" stroke-width=\"{}\" stroke-linecap=\"round\"/></g>",
+        spec.clip_id,
+        spec.opacity_attr,
+        spec.color,
         fmt_n(line_w)
     );
 }
 
+struct ArrowHeadStyle<'a> {
+    kind: &'a str,
+    color: &'a str,
+    stroke_w: f64,
+    paper_color: &'a str,
+}
+
 fn push_arrowhead(
     out: &mut String,
-    kind: &str,
     from: (f64, f64),
     to: (f64, f64),
-    color: &str,
-    stroke_w: f64,
-    paper_color: &str,
+    style: &ArrowHeadStyle<'_>,
     rng: &mut Rng,
 ) {
+    let ArrowHeadStyle {
+        kind,
+        color,
+        stroke_w,
+        paper_color,
+    } = *style;
     let ang = (to.1 - from.1).atan2(to.0 - from.0);
     let ux = ang.cos();
     let uy = ang.sin();
@@ -3938,11 +3946,10 @@ fn render_scene_svg(scene: &[SceneEl]) -> (f64, f64, String) {
     // Map arrow_id -> bound label rect for SVG mask gap cutting
     let mut arrow_label_rect: HashMap<&str, (f64, f64, f64, f64)> = HashMap::new();
     for e in scene {
-        if e.el_type == "text" {
-            if let Some(cid) = e.container_id.as_deref() {
+        if e.el_type == "text"
+            && let Some(cid) = e.container_id.as_deref() {
                 arrow_label_rect.insert(cid, (e.x + ox - 5.0, e.y + oy - 2.0, e.width + 10.0, e.height + 4.0));
             }
-        }
     }
 
     let mut defs = String::new();
@@ -3993,16 +4000,15 @@ fn render_scene_svg(scene: &[SceneEl]) -> (f64, f64, String) {
                         push_hachure_fill(
                             &mut defs,
                             &mut body,
-                            &clip_id,
-                            &clip_svg,
-                            x,
-                            y,
-                            e.width,
-                            e.height,
-                            &bg,
-                            e.stroke_width,
-                            e.fill_style == "cross-hatch",
-                            &op_attr,
+                            &HachureSpec {
+                                clip_id: &clip_id,
+                                clip_shape_svg: &clip_svg,
+                                bounds: (x, y, e.width, e.height),
+                                color: &bg,
+                                stroke_w: e.stroke_width,
+                                cross: e.fill_style == "cross-hatch",
+                                opacity_attr: &op_attr,
+                            },
                             &mut rng,
                         );
                     }
@@ -4037,16 +4043,15 @@ fn render_scene_svg(scene: &[SceneEl]) -> (f64, f64, String) {
                         push_hachure_fill(
                             &mut defs,
                             &mut body,
-                            &clip_id,
-                            &clip_svg,
-                            x,
-                            y,
-                            e.width,
-                            e.height,
-                            &bg,
-                            e.stroke_width,
-                            e.fill_style == "cross-hatch",
-                            &op_attr,
+                            &HachureSpec {
+                                clip_id: &clip_id,
+                                clip_shape_svg: &clip_svg,
+                                bounds: (x, y, e.width, e.height),
+                                color: &bg,
+                                stroke_w: e.stroke_width,
+                                cross: e.fill_style == "cross-hatch",
+                                opacity_attr: &op_attr,
+                            },
                             &mut rng,
                         );
                     }
@@ -4080,16 +4085,15 @@ fn render_scene_svg(scene: &[SceneEl]) -> (f64, f64, String) {
                         push_hachure_fill(
                             &mut defs,
                             &mut body,
-                            &clip_id,
-                            &clip_svg,
-                            x,
-                            y,
-                            e.width,
-                            e.height,
-                            &bg,
-                            e.stroke_width,
-                            e.fill_style == "cross-hatch",
-                            &op_attr,
+                            &HachureSpec {
+                                clip_id: &clip_id,
+                                clip_shape_svg: &clip_svg,
+                                bounds: (x, y, e.width, e.height),
+                                color: &bg,
+                                stroke_w: e.stroke_width,
+                                cross: e.fill_style == "cross-hatch",
+                                opacity_attr: &op_attr,
+                            },
                             &mut rng,
                         );
                     }
@@ -4139,16 +4143,15 @@ fn render_scene_svg(scene: &[SceneEl]) -> (f64, f64, String) {
                         push_hachure_fill(
                             &mut defs,
                             &mut body,
-                            &clip_id,
-                            &clip_svg,
-                            bx0,
-                            by0,
-                            bx1 - bx0,
-                            by1 - by0,
-                            &bg,
-                            e.stroke_width,
-                            e.fill_style == "cross-hatch",
-                            &op_attr,
+                            &HachureSpec {
+                                clip_id: &clip_id,
+                                clip_shape_svg: &clip_svg,
+                                bounds: (bx0, by0, bx1 - bx0, by1 - by0),
+                                color: &bg,
+                                stroke_w: e.stroke_width,
+                                cross: e.fill_style == "cross-hatch",
+                                opacity_attr: &op_attr,
+                            },
                             &mut rng,
                         );
                     }
@@ -4187,10 +4190,32 @@ fn render_scene_svg(scene: &[SceneEl]) -> (f64, f64, String) {
                     let paper = token_light("paper").unwrap();
                     if let Some(ref end_h) = e.end_arrowhead {
                         let n = abs_pts.len();
-                        push_arrowhead(&mut body, end_h, abs_pts[n - 2], abs_pts[n - 1], &stroke, e.stroke_width, paper, &mut rng);
+                        push_arrowhead(
+                            &mut body,
+                            abs_pts[n - 2],
+                            abs_pts[n - 1],
+                            &ArrowHeadStyle {
+                                kind: end_h,
+                                color: &stroke,
+                                stroke_w: e.stroke_width,
+                                paper_color: paper,
+                            },
+                            &mut rng,
+                        );
                     }
                     if let Some(ref start_h) = e.start_arrowhead {
-                        push_arrowhead(&mut body, start_h, abs_pts[1], abs_pts[0], &stroke, e.stroke_width, paper, &mut rng);
+                        push_arrowhead(
+                            &mut body,
+                            abs_pts[1],
+                            abs_pts[0],
+                            &ArrowHeadStyle {
+                                kind: start_h,
+                                color: &stroke,
+                                stroke_w: e.stroke_width,
+                                paper_color: paper,
+                            },
+                            &mut rng,
+                        );
                     }
                 }
             }
@@ -4333,14 +4358,19 @@ pub fn render_spec_elements(
     spec_els: &[Value],
     icons: &HashMap<String, Value>,
 ) -> Result<VeOutput, String> {
-    let (scene, hinh, lint_arrows, goc) = compile_scene(spec_els, icons)?;
-    let (errors, reminders) = lint_scene(&scene, &hinh, &lint_arrows, &goc);
-    let (width, height, svg) = render_scene_svg(&scene);
-    let excalidraw_json = scene_to_excalidraw_json(&scene);
+    let compiled = compile_scene(spec_els, icons)?;
+    let (errors, reminders) = lint_scene(
+        &compiled.scene,
+        &compiled.hinh,
+        &compiled.lint_arrows,
+        &compiled.goc,
+    );
+    let (width, height, svg) = render_scene_svg(&compiled.scene);
+    let excalidraw_json = scene_to_excalidraw_json(&compiled.scene);
     Ok(VeOutput {
         width,
         height,
-        element_count: scene.len(),
+        element_count: compiled.scene.len(),
         svg,
         excalidraw_json,
         errors,

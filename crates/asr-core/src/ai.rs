@@ -809,7 +809,7 @@ fn check_status(status: u16, text: &str) -> Result<Value, AiError> {
             status,
             message: "Nhà cung cấp gặp lỗi nội bộ, thử lại sau.".into(),
         },
-        502 | 503 | 504 => AiError::Transient {
+        502..=504 => AiError::Transient {
             status,
             message: "Model đang quá tải tạm thời. Thử lại sau ít phút hoặc chọn model khác.".into(),
         },

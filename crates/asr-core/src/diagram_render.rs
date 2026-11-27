@@ -356,18 +356,26 @@ fn points_intersect_any_intermediate(
     false
 }
 
+struct LabelSolverCtx<'a> {
+    nodes: &'a [LayoutNode],
+    placed_labels: &'a [Rect],
+    title_obstacle: Rect,
+    all_edge_segments: &'a [(usize, Point, Point)],
+}
+
 /// Finds a guaranteed collision-free `Rect` for an edge label.
 fn place_edge_label(
     edge_idx: usize,
     points: &[Point],
-    label_w: f64,
-    label_h: f64,
+    label_size: (f64, f64),
     preferred: Point,
-    nodes: &[LayoutNode],
-    placed_labels: &[Rect],
-    title_obstacle: Rect,
-    all_edge_segments: &[(usize, Point, Point)],
+    ctx: &LabelSolverCtx<'_>,
 ) -> Rect {
+    let (label_w, label_h) = label_size;
+    let nodes = ctx.nodes;
+    let placed_labels = ctx.placed_labels;
+    let title_obstacle = ctx.title_obstacle;
+    let all_edge_segments = ctx.all_edge_segments;
     let mut candidates: Vec<(Point, f64)> = Vec::new();
     candidates.push((preferred, 0.0));
 
@@ -528,11 +536,12 @@ pub fn layout_diagram(diagram: &ProcessDiagram) -> Result<LayoutDiagram, String>
                 edge.from, edge.to
             ));
         }
-        outgoing
-            .get_mut(edge.from.as_str())
-            .unwrap()
-            .push(edge.to.as_str());
-        *in_degree.get_mut(edge.to.as_str()).unwrap() += 1;
+        if let Some(list) = outgoing.get_mut(edge.from.as_str()) {
+            list.push(edge.to.as_str());
+        }
+        if let Some(deg) = in_degree.get_mut(edge.to.as_str()) {
+            *deg += 1;
+        }
     }
 
     // Classify cycle back-edges via DFS starting from start/root nodes.
@@ -1002,13 +1011,14 @@ pub fn layout_diagram(diagram: &ProcessDiagram) -> Result<LayoutDiagram, String>
             let rect = place_edge_label(
                 index,
                 &routed_points[index],
-                label_w,
-                label_h,
+                (label_w, label_h),
                 preferred_anchors[index],
-                &layout_nodes,
-                &placed_labels,
-                title_obstacle,
-                &all_edge_segments,
+                &LabelSolverCtx {
+                    nodes: &layout_nodes,
+                    placed_labels: &placed_labels,
+                    title_obstacle,
+                    all_edge_segments: &all_edge_segments,
+                },
             );
             right_most_x = right_most_x.max(rect.right() + 18.0);
             placed_labels.push(rect);
@@ -1119,17 +1129,16 @@ fn fmt_num(v: f64) -> String {
     }
 }
 
-/// Appends Rough.js-style double-stroke cubic Bézier sketch of a line segment.
-fn push_rough_line(
-    out: &mut String,
-    x1: f64,
-    y1: f64,
-    x2: f64,
-    y2: f64,
+#[derive(Clone, Copy)]
+struct RoughStyle {
     roughness: f64,
     bowing: f64,
-    rng: &mut Rng,
-) {
+}
+
+/// Appends Rough.js-style double-stroke cubic Bézier sketch of a line segment.
+fn push_rough_line(out: &mut String, from: Point, to: Point, style: RoughStyle, rng: &mut Rng) {
+    let (x1, y1, x2, y2) = (from.x, from.y, to.x, to.y);
+    let RoughStyle { roughness, bowing } = style;
     let len = (x2 - x1).hypot(y2 - y1);
     if len < 0.5 {
         return;
@@ -1173,20 +1182,20 @@ fn push_rough_line(
 
 fn rough_polyline_path(points: &[Point], roughness: f64, bowing: f64, rng: &mut Rng) -> String {
     let mut out = String::new();
+    let style = RoughStyle { roughness, bowing };
     for seg in points.windows(2) {
-        push_rough_line(
-            &mut out, seg[0].x, seg[0].y, seg[1].x, seg[1].y, roughness, bowing, rng,
-        );
+        push_rough_line(&mut out, seg[0], seg[1], style, rng);
     }
     out
 }
 
 fn rough_polygon_stroke(points: &[Point], roughness: f64, bowing: f64, rng: &mut Rng) -> String {
     let mut out = String::new();
+    let style = RoughStyle { roughness, bowing };
     for i in 0..points.len() {
         let a = points[i];
         let b = points[(i + 1) % points.len()];
-        push_rough_line(&mut out, a.x, a.y, b.x, b.y, roughness, bowing, rng);
+        push_rough_line(&mut out, a, b, style, rng);
     }
     out
 }
@@ -1207,23 +1216,20 @@ fn rounded_rect_fill_path(x: f64, y: f64, w: f64, h: f64, r: f64) -> String {
     )
 }
 
-fn rough_rounded_rect_stroke(
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-    r: f64,
-    roughness: f64,
-    bowing: f64,
-    rng: &mut Rng,
-) -> String {
+fn rough_rounded_rect_stroke(rect: Rect, r: f64, style: RoughStyle, rng: &mut Rng) -> String {
+    let Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    } = rect;
     let rad = r.min(w / 2.0).min(h / 2.0);
     let mut out = String::new();
     // Four straight edges with hand-drawn double strokes
-    push_rough_line(&mut out, x + rad, y, x + w - rad, y, roughness, bowing, rng);
-    push_rough_line(&mut out, x + w, y + rad, x + w, y + h - rad, roughness, bowing, rng);
-    push_rough_line(&mut out, x + w - rad, y + h, x + rad, y + h, roughness, bowing, rng);
-    push_rough_line(&mut out, x, y + h - rad, x, y + rad, roughness, bowing, rng);
+    push_rough_line(&mut out, Point { x: x + rad, y }, Point { x: x + w - rad, y }, style, rng);
+    push_rough_line(&mut out, Point { x: x + w, y: y + rad }, Point { x: x + w, y: y + h - rad }, style, rng);
+    push_rough_line(&mut out, Point { x: x + w - rad, y: y + h }, Point { x: x + rad, y: y + h }, style, rng);
+    push_rough_line(&mut out, Point { x, y: y + h - rad }, Point { x, y: y + rad }, style, rng);
 
     // Four rounded corners (drawn twice with subtle jitter to match the double-stroke edges)
     let corners = [
@@ -1234,7 +1240,7 @@ fn rough_rounded_rect_stroke(
     ];
     for (sx, sy, cx, cy, ex, ey) in corners {
         for pass in 0..2 {
-            let j = roughness * if pass == 0 { 0.85 } else { 0.55 };
+            let j = style.roughness * if pass == 0 { 0.85 } else { 0.55 };
             let _ = write!(
                 out,
                 "M {} {} Q {} {} {} {} ",
@@ -1381,7 +1387,10 @@ pub fn render_svg(layout: &LayoutDiagram) -> String {
                 let rad = 28.0_f64.min(node.height / 2.0);
                 let fill_d = rounded_rect_fill_path(node.x, node.y, node.width, node.height, rad);
                 let stroke_d = rough_rounded_rect_stroke(
-                    node.x, node.y, node.width, node.height, rad, 1.65, 1.15, &mut rng,
+                    node.rect(),
+                    rad,
+                    RoughStyle { roughness: 1.65, bowing: 1.15 },
+                    &mut rng,
                 );
                 let _ = write!(
                     svg,
@@ -1392,7 +1401,10 @@ pub fn render_svg(layout: &LayoutDiagram) -> String {
             NodeKind::Step => {
                 let fill_d = rounded_rect_fill_path(node.x, node.y, node.width, node.height, 12.0);
                 let stroke_d = rough_rounded_rect_stroke(
-                    node.x, node.y, node.width, node.height, 12.0, 1.65, 1.15, &mut rng,
+                    node.rect(),
+                    12.0,
+                    RoughStyle { roughness: 1.65, bowing: 1.15 },
+                    &mut rng,
                 );
                 let _ = write!(
                     svg,
@@ -1447,13 +1459,9 @@ pub fn render_svg(layout: &LayoutDiagram) -> String {
         let fill_d =
             rounded_rect_fill_path(box_rect.x, box_rect.y, box_rect.width, box_rect.height, 7.0);
         let stroke_d = rough_rounded_rect_stroke(
-            box_rect.x,
-            box_rect.y,
-            box_rect.width,
-            box_rect.height,
+            box_rect,
             7.0,
-            1.1,
-            0.9,
+            RoughStyle { roughness: 1.1, bowing: 0.9 },
             &mut rng,
         );
         let _ = write!(

@@ -275,6 +275,12 @@ const commands: Record<string, (a: Args) => unknown | Promise<unknown>> = {
     if (settings.summaryStyle) (state.ai as Record<string, unknown>).summaryStyle = settings.summaryStyle;
   },
   list_models: ({ provider }: Args) => MODELS[provider as Provider] ?? [],
+  validate_saved_model: ({ provider, model }: Args) => {
+    const models = MODELS[provider as Provider] ?? [];
+    const saved = String(model ?? state.ai.models[provider as Provider] ?? "");
+    const ok = models.includes(saved);
+    return { ok, models, suggestion: ok ? null : (models[0] ?? null) };
+  },
   probe_accessible_models: ({ candidates, model }: Args) => {
     const checked = [...new Set<string>([model, ...candidates].filter(Boolean))].slice(0, 2);
     return { checked, accessible: checked.slice(0, 1) };

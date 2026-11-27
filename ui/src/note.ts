@@ -260,6 +260,7 @@ type ProfilesConfig = {
     previousNote?: Note,
     selectedProfileId?: string,
     selectedUseContext?: boolean,
+    suggestedModel?: { provider: Provider; model: string },
   ) {
     head.replaceChildren(el("h2", { textContent: name }), back);
     const body = el("div", { className: "note-form" });
@@ -280,7 +281,7 @@ type ProfilesConfig = {
       ),
     ])
       .then(([ai, profiles, ctx]) =>
-        drawForm(body, ai, profiles, ctx, failure, previousNote, selectedProfileId, selectedUseContext),
+        drawForm(body, ai, profiles, ctx, failure, previousNote, selectedProfileId, selectedUseContext, suggestedModel),
       )
       .catch((e) => body.replaceChildren(el("p", { className: "problem problem-text", textContent: String(e) })));
   }
@@ -294,6 +295,7 @@ type ProfilesConfig = {
     previousNote?: Note,
     selectedProfileId?: string,
     selectedUseContext?: boolean,
+    suggestedModel?: { provider: Provider; model: string },
   ) {
     const usable = PROVIDERS.filter((p) => ai.keys[p]);
     if (usable.length === 0) {
@@ -375,12 +377,55 @@ type ProfilesConfig = {
         showNote(note);
         save(note);
       } catch (e) {
-        showForm(String(e), previousNote, profileId, useContext);
+        const errText = String(e);
+        if (errText.includes("404") || errText.includes("không tồn tại") || errText.includes("ngừng hoạt động")) {
+          try {
+            const check = await invoke<{ ok: boolean; suggestion: string | null }>("validate_saved_model", {
+              provider,
+              model: ai.models[provider] ?? null,
+            });
+            if (!check.ok && check.suggestion) {
+              const suggested = check.suggestion;
+              showForm(
+                `${errText} Gợi ý chuyển sang ${suggested}.`,
+                previousNote,
+                profileId,
+                useContext,
+                { provider, model: suggested },
+              );
+              return;
+            }
+          } catch {
+            // Fall through to normal error display.
+          }
+        }
+        showForm(errText, previousNote, profileId, useContext);
       }
     };
-    body.replaceChildren(
+    const switchBtn =
+      suggestedModel
+        ? el("button", {
+            className: "btn-primary",
+            textContent: `Đổi sang ${suggestedModel.model} và thử lại`,
+            onclick: async () => {
+              switchBtn!.disabled = true;
+              const nextModels = { ...ai.models, [suggestedModel.provider]: suggestedModel.model };
+              await invoke("save_ai_settings", {
+                settings: {
+                  defaultProvider: ai.defaultProvider,
+                  models: nextModels,
+                  summaryStyle: ai.summaryStyle ?? "workEmail",
+                },
+              });
+              showForm("", previousNote, profileSelect.value, useCtxBox.checked);
+            },
+          })
+        : null;
+
+    const formChildren: (HTMLElement | null)[] = [
       el("h3", { textContent: "Tạo biên bản cuộc họp" }),
-      failure ? el("p", { className: "problem problem-text", textContent: failure }) : "",
+      failure ? el("p", { className: "problem problem-text", textContent: failure }) : null,
+      switchBtn ? el("div", { className: "actions wrap" }, switchBtn) : null,
       el("label", {}, "Soạn bằng", select),
       el("label", {}, "Profile tóm tắt", profileSelect),
       el(
@@ -412,7 +457,8 @@ type ProfilesConfig = {
             })
           : null,
       ),
-    );
+    ];
+    body.replaceChildren(...formChildren.filter((n): n is HTMLElement => n !== null));
   }
 
   let savedPage = "";

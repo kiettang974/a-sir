@@ -188,17 +188,70 @@ type LoadState<T> =
   | { kind: "ready"; data: T }
   | { kind: "error"; message: string };
 
+type ModelValidation = {
+  ok: boolean;
+  models: string[];
+  suggestion: string | null;
+};
+
 type ProviderCache = {
   models: string[] | null;
   accessible: string[] | null;
+  fetchedAt: number;
   generation: number;
 };
 
-// Session cache for provider model lists; invalidated when a provider's key changes or is deleted.
+const MODEL_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const MODEL_CACHE_KEY = "asr-ai-model-cache-v1";
+
+function loadPersistedModelCache(): Partial<Record<Provider, { models: string[]; fetchedAt: number }>> {
+  try {
+    const raw = localStorage.getItem(MODEL_CACHE_KEY);
+    if (!raw) return {};
+    return JSON.parse(raw) as Partial<Record<Provider, { models: string[]; fetchedAt: number }>>;
+  } catch {
+    return {};
+  }
+}
+
+function persistProviderModels(provider: Provider, models: string[], fetchedAt: number) {
+  try {
+    const current = loadPersistedModelCache();
+    current[provider] = { models, fetchedAt };
+    localStorage.setItem(MODEL_CACHE_KEY, JSON.stringify(current));
+  } catch {
+    // Ignore storage quota issues.
+  }
+}
+
+function clearPersistedProviderModels(provider: Provider) {
+  try {
+    const current = loadPersistedModelCache();
+    delete current[provider];
+    localStorage.setItem(MODEL_CACHE_KEY, JSON.stringify(current));
+  } catch {
+    // Ignore storage quota issues.
+  }
+}
+
+function isCacheFresh(cache: ProviderCache): boolean {
+  return cache.models !== null && Date.now() - cache.fetchedAt < MODEL_CACHE_TTL_MS;
+}
+
+const persistedCache = loadPersistedModelCache();
+const initCache = (p: Provider): ProviderCache => {
+  const saved = persistedCache[p];
+  if (saved && Array.isArray(saved.models) && Date.now() - saved.fetchedAt < MODEL_CACHE_TTL_MS) {
+    return { models: saved.models, accessible: null, fetchedAt: saved.fetchedAt, generation: 0 };
+  }
+  return { models: null, accessible: null, fetchedAt: 0, generation: 0 };
+};
+
+// Session + 24h localStorage cache for provider model lists; invalidated when a key changes or is deleted.
 const providerModelCache: Record<Provider, ProviderCache> = {
-  claude: { models: null, accessible: null, generation: 0 },
-  chatGpt: { models: null, accessible: null, generation: 0 },
-  gemini: { models: null, accessible: null, generation: 0 },
+  claude: initCache("claude"),
+  chatGpt: initCache("chatGpt"),
+  gemini: initCache("gemini"),
 };
 
 // Module-level local-model download state so switching away from Settings and coming back
@@ -246,7 +299,9 @@ async function startLocalModelDownload(modelId: string) {
 function invalidateProviderCache(provider: Provider) {
   providerModelCache[provider].models = null;
   providerModelCache[provider].accessible = null;
+  providerModelCache[provider].fetchedAt = 0;
   providerModelCache[provider].generation += 1;
+  clearPersistedProviderModels(provider);
 }
 
 function formatBytes(bytes: number): string {
@@ -1372,22 +1427,48 @@ function providerBlock(
   const modelInput = el("input", {
     className: "field",
     value: modelName,
-    placeholder: "Nhập ID model",
+    readOnly: true,
+    placeholder: hint ? "Bấm \"Chọn model\" để chọn từ danh sách" : "Lưu API key để chọn model",
+    title: "Bấm \"Chọn model\" để chọn model hợp lệ từ danh sách của nhà cung cấp",
     ariaLabel: `ID model của ${name}`,
-    onchange: () => saveModel(modelInput.value),
   });
+
+  const validationBanner = el("div", { className: "model-validation-host" });
+  const clearValidationBanner = () => validationBanner.replaceChildren();
+  const showDeprecatedBanner = (saved: string, suggestion: string | null) => {
+    const msg = suggestion
+      ? `${saved} không còn khả dụng — đổi sang ${suggestion}?`
+      : `${saved} không còn trong danh sách model của ${name}. Bấm "Chọn model" để chọn model mới.`;
+    validationBanner.replaceChildren(
+      el(
+        "div",
+        { className: "diagram-banner bad", role: "alert" },
+        el("span", { textContent: msg }),
+        suggestion
+          ? el("button", {
+              className: "link",
+              textContent: `Đổi sang ${suggestion}`,
+              onclick: async () => {
+                await saveModel(suggestion);
+                clearValidationBanner();
+                show(`Đã đổi sang ${suggestion}.`);
+              },
+            })
+          : null,
+      ),
+    );
+  };
 
   const saveModel = async (value: string) => {
     modelName = value.trim();
     modelInput.value = modelName;
     ai.models[provider] = modelName;
     await persist();
+    clearValidationBanner();
     show("Đã lưu model.");
     if (pickerOpen) drawPicker();
   };
 
-  // Lazy model picker state (US-CFG-02): never fetches on mount; only fetches when opened.
-  // When an API key is saved, automatically probes accessible models and filters by default.
   let pickerOpen = false;
   let pickerLoading = false;
   let probing = false;
@@ -1398,15 +1479,17 @@ function providerBlock(
   const toggleBtn = el("button", {
     className: "link",
     textContent: "Chọn model",
+    disabled: !hint,
     title: hint
-      ? "Tự lọc và hiển thị các model tài khoản gọi được"
-      : "Chọn từ danh sách gợi ý mới nhất (lưu API key để lọc model gọi được)",
+      ? "Lấy danh sách model trực tiếp từ nhà cung cấp (lưu cache 24 giờ)"
+      : "Cần lưu API key trước khi chọn model",
     onclick: () => {
+      if (!hint) return;
       pickerOpen = !pickerOpen;
       toggleBtn.textContent = pickerOpen ? "Đóng danh sách" : "Chọn model";
       if (pickerOpen) {
         const cache = providerModelCache[provider];
-        if (hint && (cache.models === null || cache.accessible === null) && !pickerLoading && !probing) {
+        if ((!isCacheFresh(cache) || cache.accessible === null) && !pickerLoading && !probing) {
           fetchProviderModels(false);
         } else {
           drawPicker();
@@ -1420,22 +1503,25 @@ function providerBlock(
   const fetchProviderModels = async (force: boolean) => {
     if (!hint) return;
     const cache = providerModelCache[provider];
-    if (!force && cache.models !== null && cache.accessible !== null) {
+    if (!force && isCacheFresh(cache) && cache.accessible !== null) {
       drawPicker();
       return;
     }
     const generation = ++cache.generation;
-    pickerLoading = force || cache.models === null;
+    pickerLoading = force || !isCacheFresh(cache);
     probing = true;
     pickerError = null;
     drawPicker();
     try {
       // Step 1: fast list_models (~0.3-0.6s), render immediately without blocking on probing.
-      let models = cache.models;
-      if (force || models === null) {
+      let models = isCacheFresh(cache) && !force ? cache.models : null;
+      if (models === null) {
         models = await invoke<string[]>("list_models", { provider });
         if (providerModelCache[provider].generation !== generation) return;
+        const now = Date.now();
         cache.models = models;
+        cache.fetchedAt = now;
+        persistProviderModels(provider, models, now);
         pickerLoading = false;
         if (pickerOpen) drawPicker();
       }
@@ -1677,7 +1763,7 @@ function providerBlock(
     }
   };
 
-  return el(
+  const block = el(
     "div",
     { className: "provider" },
     el(
@@ -1755,19 +1841,17 @@ function providerBlock(
       el("button", {
         className: "link",
         textContent: "Thử kết nối",
+        disabled: !hint,
+        title: hint ? `Gọi thử 1 yêu cầu nhỏ tới ${name}` : "Cần lưu API key trước khi thử kết nối",
         onclick: async () => {
+          if (!hint) return;
           show("Đang thử kết nối…");
-          let generation = providerModelCache[provider].generation;
+          const generation = providerModelCache[provider].generation;
           try {
-            if (key.value.trim()) {
-              await invoke("set_api_key", { provider, key: key.value });
-              invalidateProviderCache(provider);
-              generation = providerModelCache[provider].generation;
-              key.value = "";
-            }
             await invoke("test_provider", { provider, model: modelName });
             if (providerModelCache[provider].generation !== generation) return;
-            show(`Kết nối được với ${name} bằng model này.`);
+            clearValidationBanner();
+            show(`Kết nối được với ${name} bằng model ${modelName}.`);
           } catch (e) {
             if (providerModelCache[provider].generation !== generation) return;
             const errText = String(e);
@@ -1782,9 +1866,45 @@ function providerBlock(
         },
       }),
     ),
+    validationBanner,
     pickerHost,
     status,
   );
+
+  // On Settings mount, validate the saved model against the live (or 24h-cached) catalog.
+  if (hint && modelName) {
+    const cache = providerModelCache[provider];
+    const generation = cache.generation;
+    if (isCacheFresh(cache) && cache.models) {
+      if (!cache.models.includes(modelName)) {
+        const fam = ["opus", "sonnet", "haiku", "flash-lite", "flash", "pro", "nano", "mini"].find((f) =>
+          modelName.toLowerCase().includes(f),
+        );
+        const suggestion =
+          (fam ? cache.models.find((m) => m.toLowerCase().includes(fam)) : undefined) ??
+          cache.models[0] ??
+          null;
+        showDeprecatedBanner(modelName, suggestion);
+      }
+    } else {
+      invoke<ModelValidation>("validate_saved_model", { provider, model: modelName })
+        .then((res) => {
+          if (providerModelCache[provider].generation !== generation) return;
+          const now = Date.now();
+          cache.models = res.models;
+          cache.fetchedAt = now;
+          persistProviderModels(provider, res.models, now);
+          if (!res.ok) {
+            showDeprecatedBanner(modelName, res.suggestion);
+          }
+        })
+        .catch(() => {
+          // Offline or transient error on settings open: stay quiet so user can still work.
+        });
+    }
+  }
+
+  return block;
 }
 
 function glossarySection(initial: Term[]): HTMLElement {

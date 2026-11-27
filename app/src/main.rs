@@ -9,7 +9,7 @@ use std::sync::Mutex;
 
 use audio_server::AudioServer;
 
-use asr_core::ai::{AiSettings, ModelProbe, Provider, SummaryStyle, SummaryStyleInfo};
+use asr_core::ai::{AiSettings, ModelProbe, ModelValidation, Provider, SummaryStyle, SummaryStyleInfo};
 use asr_core::clean::AiCleanProposal;
 use asr_core::context::{
     ACCEPTED_EXTENSIONS, ContextAttachment, MAX_FILE_BYTES, MAX_TOTAL_BYTES, MeetingContext,
@@ -309,6 +309,25 @@ async fn list_models(app: State<'_, App>, provider: Provider) -> Result<Vec<Stri
             .map_err(|e| e.to_string())
     })
     .await
+}
+
+#[tauri::command]
+async fn validate_saved_model(
+    app: State<'_, App>,
+    provider: Provider,
+    model: Option<String>,
+) -> Result<ModelValidation, String> {
+    let saved = model
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| app.workspace.ai_settings().model(provider).to_owned());
+    let client = app
+        .workspace
+        .client(provider, Some(""))
+        .map_err(|e| e.to_string())?;
+    off_thread(move || client.validate_saved_model(&saved).map_err(|e| e.to_string())).await
 }
 
 #[tauri::command]
@@ -1060,6 +1079,7 @@ fn main() {
             delete_api_key,
             test_provider,
             list_models,
+            validate_saved_model,
             probe_accessible_models,
             summary_profiles,
             set_profiles_enabled,

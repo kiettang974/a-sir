@@ -29,7 +29,7 @@ impl Provider {
 
     pub fn default_model(self) -> &'static str {
         match self {
-            Provider::Claude => "claude-sonnet-4-5-20250929",
+            Provider::Claude => "claude-sonnet-5-5",
             Provider::ChatGpt => "gpt-4.1-mini",
             Provider::Gemini => "gemini-2.5-flash",
         }
@@ -38,11 +38,11 @@ impl Provider {
     pub fn recommended_models(self) -> &'static [&'static str] {
         match self {
             Provider::Claude => &[
+                "claude-sonnet-5-5",
+                "claude-opus-4-5",
+                "claude-haiku-4-5",
                 "claude-sonnet-4-5-20250929",
                 "claude-sonnet-4-20250514",
-                "claude-haiku-4-5-20251001",
-                "claude-opus-4-20250514",
-                "claude-3-7-sonnet-latest",
             ],
             Provider::ChatGpt => &[
                 "gpt-4.1-mini",
@@ -131,6 +131,14 @@ pub struct ModelProbe {
     pub accessible: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelValidation {
+    pub ok: bool,
+    pub models: Vec<String>,
+    pub suggestion: Option<String>,
+}
+
 pub struct HttpClient {
     provider: Provider,
     model: String,
@@ -201,12 +209,33 @@ impl HttpClient {
                         .flatten()
                 }
                 Provider::ChatGpt => {
-                    models.extend(ids(&reply["data"], "id").filter(|id| is_chat_model(id)));
-                    // Newest-looking first, as the other two providers order theirs.
-                    models.sort_by(|a, b| b.cmp(a));
+                    let mut items: Vec<(String, i64)> = reply["data"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|m| {
+                            let id = m["id"].as_str()?;
+                            if !is_chat_model(id) {
+                                return None;
+                            }
+                            let created = m["created"].as_i64().unwrap_or(0);
+                            Some((id.to_owned(), created))
+                        })
+                        .collect();
+                    // Newest first by created timestamp, falling back to lexicographic descending.
+                    items.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.0.cmp(&a.0)));
+                    models.extend(items.into_iter().map(|(id, _)| id));
                     None
                 }
                 Provider::Gemini => {
+                    const SKIP_GEMINI: [&str; 6] = [
+                        "embedding",
+                        "aqa",
+                        "imagen",
+                        "veo",
+                        "tts",
+                        "native-audio",
+                    ];
                     let usable = reply["models"]
                         .as_array()
                         .into_iter()
@@ -219,9 +248,12 @@ impl HttpClient {
                                 })
                         });
                     models.extend(usable.filter_map(|m| {
-                        m["name"]
-                            .as_str()
-                            .map(|n| n.trim_start_matches("models/").to_owned())
+                        let id = m["name"].as_str()?.trim_start_matches("models/");
+                        let lower = id.to_ascii_lowercase();
+                        if SKIP_GEMINI.iter().any(|w| lower.contains(w)) {
+                            return None;
+                        }
+                        Some(id.to_owned())
                     }));
                     reply["nextPageToken"]
                         .as_str()
@@ -233,6 +265,24 @@ impl HttpClient {
                 return Ok(models);
             }
         }
+    }
+
+    /// Validates `saved` against the live model catalog from this provider and suggests
+    /// the newest same-family replacement when `saved` is no longer listed.
+    pub fn validate_saved_model(&self, saved: &str) -> Result<ModelValidation, AiError> {
+        let models = self.list_models()?;
+        let trimmed = saved.trim();
+        let ok = !trimmed.is_empty() && models.iter().any(|m| m == trimmed);
+        let suggestion = if ok {
+            None
+        } else {
+            pick_replacement(trimmed, &models)
+        };
+        Ok(ModelValidation {
+            ok,
+            models,
+            suggestion,
+        })
     }
 
     /// Checks the selected model and up to five other candidates in parallel.
@@ -649,10 +699,20 @@ fn check_status(status: u16, text: &str) -> Result<Value, AiError> {
     Err(match status {
         401 | 403 => AiError::Unauthorized(message),
         402 => AiError::RateLimited(format!("tài khoản AI đã hết số dư / hết token: {message}")),
+        404 => AiError::Rejected {
+            status,
+            message: format!(
+                "Model không tồn tại hoặc đã ngừng hoạt động. Bấm \"Chọn model\" để lấy danh sách mới. ({message})"
+            ),
+        },
         429 if message.contains("limit: 0") => AiError::RateLimited(
             "gói hiện tại không có hạn mức cho model này (limit: 0). Mở \"Chọn model\" để xem các model đã thử thành công.".into(),
         ),
         429 => AiError::RateLimited(message),
+        529 => AiError::Rejected {
+            status,
+            message: "Nhà cung cấp đang quá tải, thử lại sau.".into(),
+        },
         _ => AiError::Rejected { status, message },
     })
 }
@@ -666,8 +726,8 @@ fn ids<'a>(list: &'a Value, field: &'a str) -> impl Iterator<Item = String> + 'a
 
 /// OpenAI lists every model it serves; only chat models can write a meeting note.
 fn is_chat_model(id: &str) -> bool {
-    const NOT_CHAT: [&str; 11] = [
-        "embedding",
+    const NOT_CHAT: [&str; 13] = [
+        "embed",
         "tts",
         "whisper",
         "dall-e",
@@ -677,10 +737,39 @@ fn is_chat_model(id: &str) -> bool {
         "moderation",
         "transcribe",
         "search",
+        "computer-use",
+        "babbage",
         "davinci",
     ];
-    (id.starts_with("gpt-") || id.starts_with("chatgpt-") || id.starts_with('o'))
-        && !NOT_CHAT.iter().any(|word| id.contains(word))
+    let lower = id.to_ascii_lowercase();
+    let include = lower.starts_with("gpt-")
+        || lower.starts_with("chatgpt-")
+        || (lower.starts_with('o') && lower.as_bytes().get(1).is_some_and(u8::is_ascii_digit));
+    include && !NOT_CHAT.iter().any(|word| lower.contains(word))
+}
+
+/// Picks the newest replacement in the same model family (sonnet/opus/haiku, flash/pro, mini...).
+pub fn pick_replacement(saved: &str, models: &[String]) -> Option<String> {
+    const FAMILIES: [&str; 8] = [
+        "opus",
+        "sonnet",
+        "haiku",
+        "flash-lite",
+        "flash",
+        "pro",
+        "nano",
+        "mini",
+    ];
+    let saved_lower = saved.to_ascii_lowercase();
+    let family = FAMILIES.iter().find(|&&f| saved_lower.contains(f)).copied();
+    if let Some(fam) = family
+        && let Some(found) = models
+            .iter()
+            .find(|m| m.to_ascii_lowercase().contains(fam))
+    {
+        return Some(found.clone());
+    }
+    models.first().cloned()
 }
 
 /// Keeps only modern text/chat models so legacy versions don't clutter the picker.
@@ -1493,5 +1582,25 @@ mod tests {
         let err = check_status(429, body).unwrap_err();
         assert!(err.to_string().contains("limit: 0"));
         assert!(err.to_string().contains("Chọn model"));
+    }
+
+    #[test]
+    fn validate_saved_model_suggests_same_family_replacement() {
+        let (url, _) = serve(
+            200,
+            json!({
+                "data": [
+                    { "id": "claude-opus-5-5" },
+                    { "id": "claude-sonnet-5-5" },
+                    { "id": "claude-haiku-4-5" }
+                ],
+                "has_more": false
+            }),
+        );
+        let client = HttpClient::with_base_url(Provider::Claude, "claude-sonnet-4-5", "k", &url);
+        let res = client.validate_saved_model("claude-sonnet-4-5").unwrap();
+        assert!(!res.ok);
+        assert_eq!(res.suggestion.as_deref(), Some("claude-sonnet-5-5"));
+        assert_eq!(res.models.len(), 3);
     }
 }

@@ -1418,21 +1418,35 @@ fn m_tree(e: &Value) -> Result<Vec<Value>, String> {
                 id
             });
         let w = f64_at(n, "w", nw);
-        let h = f64_at(n, "h", nh);
+        let sz = f64_at(n, "size", def_size);
+        let shape = str_at(n, "shape").unwrap_or("box");
+        let raw_txt = str_at(n, "text").unwrap_or("");
+        let max_inner_w = if shape == "diamond" {
+            (w * 0.54).max(48.0)
+        } else {
+            (w - 20.0).max(48.0)
+        };
+        let wrapped_txt = wrap_swimlane_text(raw_txt, sz, max_inner_w);
+        let min_h = if shape == "diamond" {
+            (cao_chu(&wrapped_txt, sz) * 1.85 + 24.0).max(nh)
+        } else {
+            (cao_chu(&wrapped_txt, sz) + 20.0).max(nh)
+        };
+        let h = f64_at(n, "h", min_h).max(min_h);
         let (x, y) = if ngang {
             (ex + lvl as f64 * (nw + dy), ey + ctr - h / 2.0)
         } else {
             (ex + ctr - w / 2.0, ey + lvl as f64 * (nh + dy))
         };
         let mut b = json!({
-            "t": str_at(n, "shape").unwrap_or("box"),
+            "t": shape,
             "id": nid,
             "x": x,
             "y": y,
             "w": w,
             "h": h,
-            "text": str_at(n, "text").unwrap_or(""),
-            "size": f64_at(n, "size", def_size)
+            "text": wrapped_txt,
+            "size": sz
         });
         for k in ["color", "fill", "fillStyle", "dashed", "sharp", "weight"] {
             if let Some(v) = n.get(k).or_else(|| e.get(k))
@@ -1657,6 +1671,42 @@ fn m_end(e: &Value) -> Result<Vec<Value>, String> {
     ])
 }
 
+fn wrap_swimlane_text(text: &str, size: f64, max_w: f64) -> String {
+    if text.is_empty() || max_w <= 20.0 {
+        return text.to_owned();
+    }
+    let mut out_lines = Vec::new();
+    for para in text.split('\n') {
+        let trimmed = para.trim();
+        if trimmed.is_empty() {
+            out_lines.push(String::new());
+            continue;
+        }
+        if rong_chu(trimmed, size) <= max_w {
+            out_lines.push(trimmed.to_owned());
+            continue;
+        }
+        let mut current = String::new();
+        for word in trimmed.split_whitespace() {
+            if current.is_empty() {
+                current.push_str(word);
+            } else {
+                let candidate = format!("{current} {word}");
+                if rong_chu(&candidate, size) <= max_w {
+                    current = candidate;
+                } else {
+                    out_lines.push(current);
+                    current = word.to_owned();
+                }
+            }
+        }
+        if !current.is_empty() {
+            out_lines.push(current);
+        }
+    }
+    out_lines.join("\n")
+}
+
 fn m_swimlane(e: &Value) -> Result<Vec<Value>, String> {
     let ex = req_f64(e, "x", "swimlane")?;
     let ey = req_f64(e, "y", "swimlane")?;
@@ -1668,26 +1718,55 @@ fn m_swimlane(e: &Value) -> Result<Vec<Value>, String> {
         .get("nodes")
         .and_then(Value::as_array)
         .ok_or("swimlane: missing 'nodes'")?;
-    let rh = f64_at(e, "rowH", 110.0);
+    let rh_base = f64_at(e, "rowH", 110.0);
     let hh = f64_at(e, "headH", 40.0);
     let nw = f64_at(e, "nw", 150.0);
     let nh = f64_at(e, "nh", 56.0);
     let size = f64_at(e, "size", 16.0);
     let lane_w_def = f64_at(e, "laneW", 190.0);
 
-    let co = |n: &Value| -> (f64, f64) {
+    // Base lane widths before wrapping/expanding for wide nodes.
+    let mut lane_widths: Vec<(String, f64)> = Vec::with_capacity(lanes.len());
+    let mut lane_idx_map: HashMap<String, usize> = HashMap::new();
+    for (k, ln) in lanes.iter().enumerate() {
+        let lid = str_at(ln, "id").ok_or("swimlane: lane missing 'id'")?;
+        let label = str_at(ln, "label").unwrap_or("");
+        let w = f64_at(ln, "w", lane_w_def).max(rong_chu(label, 17.0) + 32.0);
+        lane_idx_map.insert(lid.to_owned(), k);
+        lane_widths.push((lid.to_owned(), w));
+    }
+
+    // Wrap each node's text to fit cleanly inside its lane and compute (wrapped, w, h).
+    let mut wrapped_texts: Vec<String> = Vec::with_capacity(nodes.len());
+    let mut node_sizes: Vec<(f64, f64)> = Vec::with_capacity(nodes.len());
+    let mut max_node_h: f64 = 0.0;
+    for n in nodes {
         let k = str_at(n, "kind").unwrap_or("step");
         let sz = f64_at(n, "size", size);
         let tx = str_at(n, "text").unwrap_or("");
+        let lane = str_at(n, "lane").unwrap_or("");
+        let base_lw = lane_idx_map
+            .get(lane)
+            .map(|&idx| lane_widths[idx].1)
+            .unwrap_or(lane_w_def);
+
         if matches!(k, "start" | "end" | "merge") {
-            return (26.0, 26.0);
+            wrapped_texts.push(tx.to_owned());
+            node_sizes.push((26.0, 26.0));
+            continue;
         }
         if k == "decision" {
+            let max_text_w = (base_lw * 0.48).max(76.0);
+            let wrapped = if n.get("w").is_some() {
+                tx.to_owned()
+            } else {
+                wrap_swimlane_text(tx, sz, max_text_w)
+            };
             let w = n
                 .get("w")
                 .and_then(Value::as_f64)
-                .unwrap_or_else(|| (nw * 1.1).max(rong_chu(tx, sz) * 2.0 + 44.0));
-            let dong: f64 = tx
+                .unwrap_or_else(|| (nw * 1.1).max(rong_chu(&wrapped, sz) * 2.0 + 44.0));
+            let dong: f64 = wrapped
                 .split('\n')
                 .map(|l| ((rong_chu(l, sz) + 8.0) / (w / 2.0 - 8.0).max(1.0)).ceil().max(1.0))
                 .sum();
@@ -1695,22 +1774,41 @@ fn m_swimlane(e: &Value) -> Result<Vec<Value>, String> {
                 .get("h")
                 .and_then(Value::as_f64)
                 .unwrap_or_else(|| (nh * 1.5).max(dong * sz * 1.25 * 2.0 + 34.0));
-            return (w, h);
+            if let Some(&idx) = lane_idx_map.get(lane) {
+                lane_widths[idx].1 = lane_widths[idx].1.max(w + 28.0);
+            }
+            max_node_h = max_node_h.max(h);
+            wrapped_texts.push(wrapped);
+            node_sizes.push((w, h));
+            continue;
         }
+        let max_text_w = (base_lw - 56.0).max(104.0);
+        let wrapped = if n.get("w").is_some() {
+            tx.to_owned()
+        } else {
+            wrap_swimlane_text(tx, sz, max_text_w)
+        };
         let w = n
             .get("w")
             .and_then(Value::as_f64)
-            .unwrap_or_else(|| nw.max(rong_chu(tx, sz) + 30.0));
+            .unwrap_or_else(|| nw.max(rong_chu(&wrapped, sz) + 30.0).min(base_lw - 20.0).max(nw.min(base_lw - 20.0)));
         let h = n
             .get("h")
             .and_then(Value::as_f64)
-            .unwrap_or_else(|| nh.max(cao_chu(tx, sz) + 26.0));
-        (w, h)
-    };
+            .unwrap_or_else(|| nh.max(cao_chu(&wrapped, sz) + 26.0));
+        if let Some(&idx) = lane_idx_map.get(lane) {
+            lane_widths[idx].1 = lane_widths[idx].1.max(w + 24.0);
+        }
+        max_node_h = max_node_h.max(h);
+        wrapped_texts.push(wrapped);
+        node_sizes.push((w, h));
+    }
+
+    let rh = rh_base.max(max_node_h + 28.0);
 
     let mut day = ey + hh;
-    for n in nodes {
-        let (_, h) = co(n);
+    for (idx, n) in nodes.iter().enumerate() {
+        let (_, h) = node_sizes[idx];
         let row = f64_at(n, "row", 0.0);
         let dy = f64_at(n, "dy", 0.0);
         day = day.max(ey + hh + 8.0 + row * rh + rh / 2.0 + dy + h / 2.0);
@@ -1723,8 +1821,8 @@ fn m_swimlane(e: &Value) -> Result<Vec<Value>, String> {
     let mut li: HashMap<String, usize> = HashMap::new();
 
     for (k, ln) in lanes.iter().enumerate() {
-        let w = f64_at(ln, "w", lane_w_def);
-        let lid = str_at(ln, "id").ok_or("swimlane: lane missing 'id'")?;
+        let w = lane_widths[k].1;
+        let lid = lane_widths[k].0.as_str();
         cx.insert(lid.to_owned(), x + w / 2.0);
         li.insert(lid.to_owned(), k);
         out.push(ghost_box(
@@ -1766,7 +1864,7 @@ fn m_swimlane(e: &Value) -> Result<Vec<Value>, String> {
         w: f64,
     }
     let mut info: HashMap<String, NodeMeta> = HashMap::new();
-    for n in nodes {
+    for (idx, n) in nodes.iter().enumerate() {
         let nid = str_at(n, "id").ok_or("swimlane: node missing 'id'")?;
         let lane = str_at(n, "lane").ok_or("swimlane: node missing 'lane'")?;
         let &lane_cx = cx
@@ -1776,7 +1874,7 @@ fn m_swimlane(e: &Value) -> Result<Vec<Value>, String> {
         let row = f64_at(n, "row", 0.0);
         let mx = lane_cx + f64_at(n, "dx", 0.0);
         let my = ey + hh + 8.0 + row * rh + rh / 2.0 + f64_at(n, "dy", 0.0);
-        let (w, h) = co(n);
+        let (w, h) = node_sizes[idx];
         info.insert(
             nid.to_owned(),
             NodeMeta {
@@ -1803,8 +1901,10 @@ fn m_swimlane(e: &Value) -> Result<Vec<Value>, String> {
             "size": f64_at(n, "size", size),
             "color": str_at(n, "color").unwrap_or("ink")
         });
-        if let Some(txt) = str_at(n, "text") {
-            b.as_object_mut().unwrap().insert("text".into(), json!(txt));
+        if str_at(n, "text").is_some() {
+            b.as_object_mut()
+                .unwrap()
+                .insert("text".into(), json!(wrapped_texts[idx]));
         }
         for k in ["fill", "fillStyle", "dashed", "weight"] {
             if let Some(v) = n.get(k) {
@@ -2947,8 +3047,23 @@ fn compile_scene(
 
             if let Some(txt) = label_txt {
                 let fs = f64_at(e, "size", 20.0);
-                let tw = rong_chu(txt, fs);
-                let th = cao_chu(txt, fs);
+                let is_ghost = bool_at(e, "ghost", false) || c == "transparent";
+                let rendered_txt = if !is_ghost && w > 36.0 {
+                    let max_inner_w = match t {
+                        "diamond" => (w * 0.56).max(24.0),
+                        "ellipse" => (w * 0.72).max(24.0),
+                        _ => (w - 16.0).max(24.0),
+                    };
+                    if rong_chu(txt, fs) > max_inner_w {
+                        wrap_swimlane_text(txt, fs, max_inner_w)
+                    } else {
+                        txt.to_owned()
+                    }
+                } else {
+                    txt.to_owned()
+                };
+                let tw = rong_chu(&rendered_txt, fs);
+                let th = cao_chu(&rendered_txt, fs);
                 let align = str_at(e, "align").unwrap_or("center").to_owned();
                 let valign = str_at(e, "valign").unwrap_or("middle").to_owned();
                 let tx = match align.as_str() {
@@ -2980,7 +3095,7 @@ fn compile_scene(
                     closed: false,
                     start_arrowhead: None,
                     end_arrowhead: None,
-                    text: Some(txt.to_owned()),
+                    text: Some(rendered_txt),
                     font_size: fs,
                     mono: false,
                     text_align: align,
@@ -4822,6 +4937,15 @@ pub fn render_spec_elements(
     render_spec_elements_with_theme(spec_els, icons, ThemeMode::Light)
 }
 
+/// Returns `(min_x, min_y, max_x, max_y)` of the compiled scene before viewport padding.
+pub fn spec_bounds(
+    spec_els: &[Value],
+    icons: &HashMap<String, Value>,
+) -> Result<(f64, f64, f64, f64), String> {
+    let compiled = compile_scene(spec_els, icons)?;
+    Ok(scene_bounds(&compiled.scene))
+}
+
 pub fn render_spec_json(spec_json: &str, icons: &HashMap<String, Value>) -> Result<VeOutput, String> {
     let spec: Value = serde_json::from_str(spec_json).map_err(|e| format!("invalid spec JSON: {e}"))?;
     let els = spec
@@ -4933,5 +5057,52 @@ mod tests {
             count += 1;
         }
         assert_eq!(count, 30);
+    }
+
+    #[test]
+    fn swimlane_wraps_long_vietnamese_step_text_inside_its_lane() {
+        let spec = json!({
+            "t": "swimlane",
+            "x": 0,
+            "y": 0,
+            "laneW": 200,
+            "rowH": 106,
+            "lanes": [
+                { "id": "user", "label": "Người dùng" },
+                { "id": "sys", "label": "Hệ thống Long Châu" }
+            ],
+            "nodes": [
+                { "id": "s", "lane": "user", "row": 0, "kind": "start" },
+                {
+                    "id": "n1",
+                    "lane": "user",
+                    "row": 1,
+                    "kind": "step",
+                    "text": "Nhập thông tin liên hệ và ghi chú bệnh/nhu cầu thuốc"
+                },
+                {
+                    "id": "n2",
+                    "lane": "sys",
+                    "row": 2,
+                    "kind": "step",
+                    "text": "Nhận yêu cầu, chuyển cho dược sĩ"
+                }
+            ],
+            "edges": [
+                { "from": "s", "to": "n1" },
+                { "from": "n1", "to": "n2", "text": "Gửi yêu cầu" }
+            ]
+        });
+        let expanded = m_swimlane(&spec).unwrap();
+        let n1 = expanded
+            .iter()
+            .find(|el| str_at(el, "id") == Some("n1"))
+            .expect("node n1 present");
+        let n1_x = n1["x"].as_f64().unwrap();
+        let n1_w = n1["w"].as_f64().unwrap();
+        let n1_text = n1["text"].as_str().unwrap();
+        assert!(n1_text.contains('\n'), "expected long label to wrap onto multiple lines: {n1_text}");
+        assert!(n1_x >= 0.0, "box left edge {n1_x} must not overflow left of lane 0");
+        assert!(n1_x + n1_w <= 200.0, "box right edge {} must stay inside lane 0 width 200", n1_x + n1_w);
     }
 }

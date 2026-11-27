@@ -4,8 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 
 import { el } from "./dom";
-import { icon } from "./icons";
-import { type AiView, PROVIDER_NAME, PROVIDERS } from "./ipc";
+import { type AiView, PROVIDER_NAME, PROVIDERS, type RecordFlowNav, recordFlowTabs } from "./ipc";
 
 export type ContextAttachment = {
   id: string;
@@ -96,7 +95,6 @@ export function contextTabBody(jobId: number): HTMLElement {
       },
     });
 
-    const maxFileMb = Math.round(ctx.maxFileBytes / (1024 * 1024));
     const maxTotalMb = Math.round(ctx.maxTotalBytes / (1024 * 1024));
     const usedBytes = ctx.attachments.reduce((sum, a) => sum + a.bytes, 0);
 
@@ -185,11 +183,6 @@ export function contextTabBody(jobId: number): HTMLElement {
         "div",
         { className: "context-card" },
         el("h3", { textContent: "Ghi chú cuộc họp" }),
-        el("p", {
-          className: "hint",
-          textContent:
-            "Lưu riêng cho bản ghi này. Ghi chú chỉ lưu tại máy và chỉ gửi cho AI khi bạn chủ động bấm chạy AI có dùng ngữ cảnh.",
-        }),
         notesInput,
         el("div", { className: "actions wrap" }, saveNotesBtn, noteStatus),
       ),
@@ -204,7 +197,7 @@ export function contextTabBody(jobId: number): HTMLElement {
         ),
         el("p", {
           className: "hint",
-          textContent: `Hỗ trợ PNG, JPG/JPEG, PDF, TXT, Markdown · tối đa ${maxFileMb} MB/tệp, tổng ${maxTotalMb} MB (${formatBytes(usedBytes)} đã dùng). App lưu bản sao riêng nên tệp vẫn dùng được nếu tệp gốc đổi tên hoặc di chuyển.`,
+          textContent: `PNG, JPG, PDF, TXT, MD · ${formatBytes(usedBytes)} / ${maxTotalMb} MB`,
         }),
         errorBox,
         fileList,
@@ -225,6 +218,7 @@ type AiCleanCallbacks = {
   openContext: () => void;
   openSummary: () => void;
   onSaved: (path: string) => void;
+  flow: RecordFlowNav;
 };
 
 type SavedAiClean = {
@@ -341,33 +335,22 @@ export function aiCleanPane(jobId: number, title: string, cb: AiCleanCallbacks):
 
   const renderHead = (busy = false) => {
     head.replaceChildren(
-      el("h2", { textContent: `Làm sạch bản chép — ${title}` }),
+      el("div", { className: "reader-head-top" }, el("h2", { textContent: title })),
       el(
         "div",
         { className: "reader-actions" },
-        el(
-          "button",
-          {
-            className: "btn-primary",
-            title: "Mở bảng tóm tắt biên bản",
-            onclick: cb.openSummary,
-          },
-          icon("summary", 15),
-          el("span", { textContent: "Tóm tắt" }),
-        ),
         el("button", {
-          className: "btn-ghost",
-          textContent: "Chạy lại",
+          className: "btn-primary",
+          textContent: busy ? "Đang làm sạch…" : "Chạy lại làm sạch",
           disabled: busy,
           onclick: runAuto,
         }),
         el("button", {
           className: "btn-ghost",
-          textContent: "Mở tab Ngữ cảnh",
+          textContent: "Chỉ lọc tại máy",
           disabled: busy,
-          onclick: cb.openContext,
+          onclick: runLocalOnly,
         }),
-        el("button", { className: "link", textContent: "Về bản chép lời", onclick: cb.back }),
       ),
     );
   };
@@ -558,5 +541,5 @@ export function aiCleanPane(jobId: number, title: string, cb: AiCleanCallbacks):
       })
       .catch(() => runAuto());
   }
-  return el("section", { className: "reader" }, head, scroll);
+  return el("section", { className: "reader" }, head, recordFlowTabs("aiClean", cb.flow), scroll);
 }

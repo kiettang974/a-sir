@@ -49,9 +49,10 @@ Mọi màu, bo góc, bóng đổ và font phải đi qua token trong `:root` c�
 | Màn hình | Slot chính (1 nút `.btn-primary` / `.add`) | Slot phụ (`.btn-ghost` / `.link`) | Menu tràn (`⋯`) |
 | --- | --- | --- | --- |
 | `Queue` (thanh bên) | `Thêm file` (chân thanh bên) | `Tạm dừng`/`Tiếp tục`, `Xoá hàng chờ`, `Từ app Ghi âm`, `Cấu hình` | Menu `⋯` từng bản ghi (`Huỷ`, `Thử lại`, `Chép lời lại`, `Xoá`) |
-| `Reader` (đọc bản chép) | `Tóm tắt` | `Tạo sơ đồ`, `Làm sạch`, `Chép` | `Chép lời lại`, `Mở trong Finder` |
-| `Diagram` (sơ đồ quy trình) | `Tạo sơ đồ` (chưa có kết quả) / `Xuất PNG` (đã có kết quả) | `Xuất .excalidraw`, điều khiển zoom | `Tạo lại sơ đồ`, `Mở tệp đã lưu trong Finder`, `Về bản chép lời` |
-| `Note` (biên bản họp) | `Chép gửi email` | `Xuất Excel`, `Xuất Word` | `Tạo lại bảng tóm tắt`, `Mở trong Finder`, `Về bản chép lời` |
+| `Reader` (tab `Bản chép lời` / `Ngữ cảnh`) | `Chép bản chép` | Chuyển thẳng mọi bước qua thanh `recordFlowTabs` (`Bản chép lời · Ngữ cảnh · Bản làm sạch · Tóm tắt · Sơ đồ`); click mốc giờ để nghe lại, click chữ để sửa trực tiếp | `Chép lời lại`, `Mở trong Finder` |
+| `Clean` (tab `Bản làm sạch`) | `Chạy lại làm sạch` | `Chỉ lọc tại máy` | — |
+| `Note` (tab `Tóm tắt`) | `Chép email` | `Excel`, `Word` | `Tạo lại biên bản`, `Mở trong Finder` |
+| `Diagram` (tab `Sơ đồ`) | `Tạo sơ đồ` (chưa có) / `Xuất PNG` (đã có) | `Xuất .excalidraw`, dropdown chọn kiểu sơ đồ có hình minh hoạ, thanh zoom (`−`/`+`/toàn màn hình) | `Tạo lại sơ đồ`, `Mở tệp đã lưu trong Finder` |
 | `Settings` (4 tab) | `Lưu thuật ngữ` (tab Thuật ngữ), `Chọn dùng` (model) | `Tải model`, `Xoá`, `Chọn file mẫu`, `Kiểm tra`, `Chọn model` | — |
 | `Voice Memos` | `Chép lời <N> bản ghi` | `Chọn tất cả`/`Bỏ chọn`, ô tìm kiếm | — |
 
@@ -67,3 +68,6 @@ Mọi màu, bo góc, bóng đổ và font phải đi qua token trong `:root` c�
 | `UI-06` | Không dùng viền trái màu dày (`border-left` / `inset 3px 0`) trên thẻ hoặc dòng danh sách để báo chọn; dùng nền thẻ + viền mảnh đồng bộ hệ màu. | 2026-11-26 | kietta | `ui/src/style.css` | Còn hiệu lực | Bậc 5 — `impeccable detect` |
 | `UI-07` | Dùng một màu nhấn duy nhất (`--accent`, xanh lam đậm Cobalt) xuyên suốt toàn app trên hệ trung tính Slate lạnh đồng nhất; không trộn xám ấm/lạnh. | 2026-11-26 | kietta | `ui/src/style.css`, `DESIGN.md` | Còn hiệu lực | Bậc 3 — `DESIGN.md` & review |
 | `UI-08` | Số liệu, mốc giờ, thời lượng và STT luôn bật `font-variant-numeric: tabular-nums`; đoạn đọc bản chép giữ độ rộng tối ưu `66ch`. | 2026-11-26 | kietta | `ui/src/style.css` | Còn hiệu lực | Bậc 3 — `ui/src/style.css` |
+| `UI-09` | Mọi màn hình chi tiết bản ghi (`Bản chép lời`, `Ngữ cảnh`, `Bản làm sạch`, `Tóm tắt`, `Sơ đồ`) dùng chung thanh luồng `recordFlowTabs` ngay dưới `.reader-head` (tiêu đề dòng trên, thanh nút `.reader-actions` dòng dưới). | 2026-11-27 | kietta | `ui/src/ipc.ts`, `ui/src/main.ts`, `ui/src/note.ts`, `ui/src/diagram.ts`, `ui/src/context.ts` | Còn hiệu lực | Bậc 4 — `recordFlowTabs` trong `ui/src/ipc.ts` |
+| `UI-10` | Nút có chú thích hover dùng CSS tooltip tức thì (`data-tip` hiện sau `60ms`, không dùng `title` gốc bị trễ trên macOS) và luôn giữ `aria-label`. | 2026-11-27 | kietta | `ui/src/dom.ts`, `ui/src/style.css` | Còn hiệu lực | Bậc 4 — `el()` trong `ui/src/dom.ts` |
+| `UI-11` | Không hiển thị đoạn `.hint` giải thích dư thừa cho tính năng/nút đã tự rõ nghĩa và không render ô nhập rỗng không nhãn (chỉ hiện khi có dữ liệu hoặc người dùng chủ động bật). | 2026-11-27 | kietta | `ui/src/note.ts`, `ui/src/settings.ts`, `ui/src/context.ts` | Còn hiệu lực | Bậc 3 — Sổ luật & checklist review |

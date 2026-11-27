@@ -866,11 +866,6 @@ function speechSection(
         onclick: () => invoke("open_models_dir"),
       }),
     ),
-    el("p", {
-      className: "hint",
-      textContent:
-        "Mọi model đều chạy thẳng trên máy. Đổi model sẽ áp dụng cho bản ghi mới; bản đang chạy dở vẫn tiếp tục đến xong.",
-    }),
     resourceBox,
     hfBox,
     hwFilterWrap,
@@ -914,15 +909,10 @@ function aiSection(ai: AiView, reload: () => void): HTMLElement {
       { className: "hf-head" },
       el("div", {
         className: "style-title tpl-label",
-        textContent: "Tự chuyển sang model/provider khác khi model mặc định quá tải",
+        textContent: "Tự chuyển model/provider khi quá tải",
       }),
       el("label", { className: "switch" }, fallbackSwitch, el("span", { className: "switch-track" }), fallbackText),
     ),
-    el("p", {
-      className: "style-desc",
-      textContent:
-        "Khi gặp lỗi quá tải tạm thời (503/429/529) sau khi đã thử lại 3 lần, app tự dùng model dự phòng hoặc nhà cung cấp khác đã có key.",
-    }),
     fallbackStatus,
   );
 
@@ -930,11 +920,6 @@ function aiSection(ai: AiView, reload: () => void): HTMLElement {
     "section",
     {},
     el("h3", { textContent: "Tài khoản AI tóm tắt" }),
-    el("p", {
-      className: "hint",
-      textContent:
-        "Bản chép lời chỉ được gửi đi khi bạn bấm tạo tóm tắt. Mã API key được lưu riêng trên máy của bạn.",
-    }),
     ...PROVIDERS.map((p) => providerBlock(p, ai, persist, reload)),
     fallbackBox,
   );
@@ -1164,24 +1149,25 @@ function minutesSection(ai: AiView): HTMLElement {
     if (tpl.docx) activeParts.push(`Word: ${tpl.docx}`);
     tplLabel.textContent = !enabled
       ? activeParts.length
-        ? `Đã lưu sẵn ${activeParts.join(" · ")} (bật công tắc để áp dụng khi xuất).`
+        ? activeParts.join(" · ")
         : ""
       : activeParts.length
-        ? `Đang bật — ${activeParts.join(" · ")}`
-        : "Đang bật — đang dùng mẫu mặc định (Word & Excel). Chọn file riêng bên dưới nếu muốn thay.";
+        ? activeParts.join(" · ")
+        : "";
     tplLabel.hidden = !tplLabel.textContent;
     const detected: string[] = [];
     if (enabled && tpl.excel && tpl.excelColumns?.length) {
-      detected.push(`Cột Excel nhận diện: ${tpl.excelColumns.join(" | ")}`);
+      detected.push(`Excel: ${tpl.excelColumns.join(" | ")}`);
     }
     if (enabled && tpl.docx && tpl.docxColumns?.length) {
-      detected.push(`Cột Word nhận diện: ${tpl.docxColumns.join(" | ")}`);
+      detected.push(`Word: ${tpl.docxColumns.join(" | ")}`);
     }
     tplCols.textContent = detected.length
-      ? `${detected.join(" — ")}. AI sẽ điền khớp các cột này khi tạo tóm tắt.`
+      ? detected.join(" — ")
       : enabled
-        ? `Cột mẫu mặc định: ${defaultTemplateCols.join(" | ")}. Bạn có thể nạp file Word (.docx) hoặc Excel (.xlsx) riêng để thay thế.`
-        : "Bật công tắc góc phải nếu bạn muốn áp dụng mẫu biên bản Word (.docx) hoặc Excel (.xlsx).";
+        ? defaultTemplateCols.join(" | ")
+        : "";
+    tplCols.hidden = !tplCols.textContent;
     renderTemplatePreview(tpl);
     const buttons: HTMLElement[] = [
       el("button", {
@@ -1438,11 +1424,6 @@ function minutesSection(ai: AiView): HTMLElement {
     "section",
     {},
     el("h3", { textContent: "Cách viết & xuất biên bản" }),
-    el("p", {
-      className: "hint",
-      textContent:
-        "Chọn profile tóm tắt, văn phong viết biên bản và tuỳ chọn bật file mẫu Word (.docx) hoặc Excel (.xlsx) khi cần.",
-    }),
     profileBlock,
     styleBlock,
     templateBlock,
@@ -2046,11 +2027,6 @@ function glossarySection(initial: Term[]): HTMLElement {
     "section",
     {},
     el("h3", { textContent: "Từ vựng & tên riêng" }),
-    el("p", {
-      className: "hint",
-      textContent:
-        "Thêm tên sản phẩm, từ viết tắt hoặc tên riêng hay bị nghe nhầm. App sẽ dùng danh sách này để nghe chuẩn hơn, sửa chính tả và viết biên bản đúng tên.",
-    }),
     el(
       "div",
       { className: "terms-wrap" },
@@ -2222,11 +2198,6 @@ function updateSection(): HTMLElement {
     "section",
     {},
     el("h3", { textContent: "Cập nhật phần mềm" }),
-    el("p", {
-      className: "hint",
-      textContent:
-        "Kiểm tra phiên bản A-Sir mới nhất (macOS và Windows) từ GitHub Releases.",
-    }),
     el(
       "div",
       { className: "style-box" },

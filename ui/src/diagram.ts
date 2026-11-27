@@ -4,7 +4,225 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 
 import { el } from "./dom";
 import { icon } from "./icons";
-import { type AiView, overflowMenu, PROVIDER_NAME, PROVIDERS, type Provider } from "./ipc";
+import {
+  type AiView,
+  ensureMenuDismissListeners,
+  overflowMenu,
+  PROVIDER_NAME,
+  PROVIDERS,
+  type Provider,
+  type RecordFlowNav,
+  recordFlowTabs,
+} from "./ipc";
+
+export type DiagramStrategyId =
+  | "auto"
+  | "process-flow"
+  | "state-machine"
+  | "explained-flow"
+  | "decision"
+  | "before-after"
+  | "interaction"
+  | "architecture"
+  | "layer-stack"
+  | "data-model"
+  | "incident"
+  | "mechanism"
+  | "funnel"
+  | "matrix-2x2"
+  | "threshold-plot"
+  | "causal-loop"
+  | "concept-map";
+
+type DiagramStrategyGroup = "Quy trình & Sản phẩm" | "Kỹ thuật & Dữ liệu" | "Kinh doanh & Tư duy";
+
+type DiagramStrategyOption = {
+  id: DiagramStrategyId;
+  group: DiagramStrategyGroup;
+  label: string;
+  desc: string;
+  previewSvg: string;
+};
+
+const STRATEGY_GROUPS: DiagramStrategyGroup[] = [
+  "Quy trình & Sản phẩm",
+  "Kỹ thuật & Dữ liệu",
+  "Kinh doanh & Tư duy",
+];
+
+const DIAGRAM_STRATEGIES: DiagramStrategyOption[] = [
+  {
+    id: "auto",
+    group: "Quy trình & Sản phẩm",
+    label: "Tự động theo nội dung",
+    desc: "AI tự chọn dạng sơ đồ phù hợp nhất",
+    previewSvg: `<svg viewBox="0 0 48 32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M24 5l2.2 5.8L32 13l-5.8 2.2L24 21l-2.2-5.8L16 13l5.8-2.2z" fill="currentColor" fill-opacity="0.14"/><path d="M11 21l1.2 3L15 25l-2.8 1-1.2 3-1.2-3L7 25l2.8-1z"/><path d="M36 20l1 2.2 2.2 1-2.2 1-1 2.2-1-2.2-2.2-1 2.2-1z"/></svg>`,
+  },
+  {
+    id: "process-flow",
+    group: "Quy trình & Sản phẩm",
+    label: "Swimlane theo vai trò",
+    desc: "Quy trình nhiều bộ phận, vai trò",
+    previewSvg: `<svg viewBox="0 0 48 32" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="42" height="26" rx="2"/><line x1="17" y1="3" x2="17" y2="29" stroke-opacity="0.4"/><line x1="31" y1="3" x2="31" y2="29" stroke-opacity="0.4"/><line x1="3" y1="9" x2="45" y2="9" stroke-opacity="0.4"/><rect x="5.5" y="12" width="9" height="5" rx="1" fill="currentColor" fill-opacity="0.14"/><rect x="19.5" y="18" width="9" height="5" rx="1" fill="currentColor" fill-opacity="0.14"/><rect x="33.5" y="21" width="9" height="5" rx="1" fill="currentColor" fill-opacity="0.14"/><path d="M14.5 14.5h3v6h2"/><path d="M28.5 20.5h3v3h2"/></svg>`,
+  },
+  {
+    id: "state-machine",
+    group: "Quy trình & Sản phẩm",
+    label: "Vòng đời trạng thái",
+    desc: "Chuyển trạng thái đơn hàng, hồ sơ",
+    previewSvg: `<svg viewBox="0 0 48 32" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="16" r="2.6" fill="currentColor"/><rect x="13" y="11" width="11" height="10" rx="2" fill="currentColor" fill-opacity="0.14"/><rect x="30" y="5" width="11" height="8" rx="2"/><rect x="30" y="19" width="11" height="8" rx="2" stroke-dasharray="2 2"/><path d="M8.6 16H13M24 14l6-4M24 18l6 4"/></svg>`,
+  },
+  {
+    id: "explained-flow",
+    group: "Quy trình & Sản phẩm",
+    label: "Hướng dẫn từng bước",
+    desc: "Cột bước đánh số kèm ví dụ bên cạnh",
+    previewSvg: `<svg viewBox="0 0 48 32" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="8" r="2.5" fill="currentColor"/><rect x="12" y="4.5" width="14" height="7" rx="1.5" fill="currentColor" fill-opacity="0.14"/><rect x="31" y="4.5" width="13" height="7" rx="1.5" stroke-opacity="0.6"/><circle cx="7" cy="22" r="2.5" fill="currentColor"/><rect x="12" y="18.5" width="14" height="7" rx="1.5"/><rect x="31" y="18.5" width="13" height="7" rx="1.5" stroke-opacity="0.6"/><path d="M19 11.5v7M26 8h5M26 22h5" stroke-dasharray="2 2"/></svg>`,
+  },
+  {
+    id: "decision",
+    group: "Quy trình & Sản phẩm",
+    label: "Cây quyết định",
+    desc: "Điều kiện rẽ nhánh tới kết luận",
+    previewSvg: `<svg viewBox="0 0 48 32" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><polygon points="24,3 32,9 24,15 16,9" fill="currentColor" fill-opacity="0.14"/><rect x="5" y="21" width="13" height="7" rx="1.5"/><rect x="30" y="21" width="13" height="7" rx="1.5" fill="currentColor" fill-opacity="0.18"/><path d="M16 9H11.5v12M32 9h4.5v12"/></svg>`,
+  },
+  {
+    id: "before-after",
+    group: "Quy trình & Sản phẩm",
+    label: "Trước – Sau",
+    desc: "So sánh hiện trạng và đề xuất mới",
+    previewSvg: `<svg viewBox="0 0 48 32" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="24" rx="2" stroke-dasharray="2 2" stroke-opacity="0.5"/><rect x="27" y="4" width="18" height="24" rx="2"/><rect x="6" y="10" width="12" height="5" rx="1" stroke-opacity="0.5"/><rect x="6" y="19" width="12" height="5" rx="1"/><rect x="30" y="10" width="12" height="5" rx="1" stroke-opacity="0.5"/><rect x="30" y="19" width="12" height="5" rx="1" fill="currentColor" fill-opacity="0.22"/><path d="M22 16h4m-1.5-2l1.5 2-1.5 2"/></svg>`,
+  },
+  {
+    id: "interaction",
+    group: "Kỹ thuật & Dữ liệu",
+    label: "Tuần tự tương tác (Sequence)",
+    desc: "Ai gọi ai, luồng API / trao đổi",
+    previewSvg: `<svg viewBox="0 0 48 32" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="10" height="5" rx="1" fill="currentColor" fill-opacity="0.14"/><rect x="19" y="3" width="10" height="5" rx="1" fill="currentColor" fill-opacity="0.14"/><rect x="34" y="3" width="10" height="5" rx="1" fill="currentColor" fill-opacity="0.14"/><line x1="9" y1="8" x2="9" y2="29" stroke-dasharray="2 2" stroke-opacity="0.5"/><line x1="24" y1="8" x2="24" y2="29" stroke-dasharray="2 2" stroke-opacity="0.5"/><line x1="39" y1="8" x2="39" y2="29" stroke-dasharray="2 2" stroke-opacity="0.5"/><path d="M9 13h14m-2-2l2 2-2 2"/><path d="M24 19h14m-2-2l2 2-2 2"/><path d="M39 25H10m2-2l-2 2 2 2"/></svg>`,
+  },
+  {
+    id: "architecture",
+    group: "Kỹ thuật & Dữ liệu",
+    label: "Kiến trúc hệ thống",
+    desc: "Dịch vụ, luồng Ghi/Đọc, DB & hàng đợi",
+    previewSvg: `<svg viewBox="0 0 48 32" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="10" width="10" height="12" rx="1.5" fill="currentColor" fill-opacity="0.12"/><rect x="19" y="5" width="11" height="8" rx="1.5"/><rect x="19" y="19" width="11" height="8" rx="1.5"/><ellipse cx="40" cy="12" rx="4.5" ry="2"/><path d="M35.5 12v8c0 1.1 2 2 4.5 2s4.5-.9 4.5-2v-8"/><path d="M13 14l6-4M13 18l6 4M30 9l5.5 4M30 23l5.5-4"/></svg>`,
+  },
+  {
+    id: "layer-stack",
+    group: "Kỹ thuật & Dữ liệu",
+    label: "Kiến trúc phân tầng",
+    desc: "Xếp lớp nền tảng → nghiệp vụ → kênh",
+    previewSvg: `<svg viewBox="0 0 48 32" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="36" height="6" rx="1.5"/><rect x="6" y="13" width="36" height="6" rx="1.5" fill="currentColor" fill-opacity="0.2"/><rect x="6" y="22" width="36" height="6" rx="1.5"/><path d="M24 10v3M24 19v3"/></svg>`,
+  },
+  {
+    id: "data-model",
+    group: "Kỹ thuật & Dữ liệu",
+    label: "Mô hình dữ liệu (ER)",
+    desc: "Thực thể, khoá chính và quan hệ bảng",
+    previewSvg: `<svg viewBox="0 0 48 32" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="15" height="20" rx="1.5"/><line x1="3" y1="11.5" x2="18" y2="11.5"/><line x1="6" y1="16" x2="14" y2="16" stroke-opacity="0.5"/><line x1="6" y1="20" x2="15" y2="20" stroke-opacity="0.5"/><rect x="30" y="6" width="15" height="20" rx="1.5"/><line x1="30" y1="11.5" x2="45" y2="11.5"/><line x1="33" y1="16" x2="41" y2="16" stroke-opacity="0.5"/><line x1="33" y1="20" x2="42" y2="20" stroke-opacity="0.5"/><path d="M18 16h12M21 13.5v5M30 16l-3.5-2.5M30 16l-3.5 2.5"/></svg>`,
+  },
+  {
+    id: "incident",
+    group: "Kỹ thuật & Dữ liệu",
+    label: "Phân tích sự cố (4 chặng)",
+    desc: "Chuyện gì → Vì sao → Tác động → Phòng ngừa",
+    previewSvg: `<svg viewBox="0 0 48 32" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="19" height="9" rx="1.5"/><rect x="26" y="5" width="19" height="9" rx="1.5" fill="currentColor" fill-opacity="0.14"/><rect x="3" y="18" width="19" height="9" rx="1.5"/><rect x="26" y="18" width="19" height="9" rx="1.5"/><circle cx="7" cy="9.5" r="2" fill="currentColor"/><circle cx="30" cy="9.5" r="2" fill="currentColor"/><circle cx="7" cy="22.5" r="2" fill="currentColor"/><circle cx="30" cy="22.5" r="2" fill="currentColor"/><path d="M22 9.5h4M22 22.5h4"/></svg>`,
+  },
+  {
+    id: "mechanism",
+    group: "Kỹ thuật & Dữ liệu",
+    label: "Cơ chế & Trục thời gian",
+    desc: "Dải ô, timeout, hoạt động bên trong",
+    previewSvg: `<svg viewBox="0 0 48 32" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="25" x2="44" y2="25"/><path d="M42 23l2 2-2 2"/><rect x="6" y="7" width="12" height="5" rx="1" fill="currentColor" fill-opacity="0.14"/><rect x="14" y="14" width="18" height="5" rx="1" fill="currentColor" fill-opacity="0.22"/><line x1="32" y1="5" x2="32" y2="25" stroke-dasharray="2 2"/><line x1="10" y1="23" x2="10" y2="27"/><line x1="22" y1="23" x2="22" y2="27"/><line x1="34" y1="23" x2="34" y2="27"/></svg>`,
+  },
+  {
+    id: "funnel",
+    group: "Kinh doanh & Tư duy",
+    label: "Phễu chuyển đổi (Funnel)",
+    desc: "Tỷ lệ rơi từng bước bán hàng / tuyển dụng",
+    previewSvg: `<svg viewBox="0 0 48 32" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><polygon points="6,4 42,4 37,11 11,11" fill="currentColor" fill-opacity="0.1"/><polygon points="12,13 36,13 32,20 16,20" fill="currentColor" fill-opacity="0.18"/><polygon points="17,22 31,22 28,28 20,28" fill="currentColor" fill-opacity="0.28"/></svg>`,
+  },
+  {
+    id: "matrix-2x2",
+    group: "Kinh doanh & Tư duy",
+    label: "Ma trận 2×2",
+    desc: "So sánh ưu tiên, rủi ro – giá trị",
+    previewSvg: `<svg viewBox="0 0 48 32" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 27V4m-2 2l2-2 2 2"/><path d="M8 27h35m-2-2l2 2-2 2"/><rect x="12" y="6" width="13" height="8" rx="1"/><rect x="27" y="6" width="13" height="8" rx="1" fill="currentColor" fill-opacity="0.22"/><rect x="12" y="16" width="13" height="8" rx="1"/><rect x="27" y="16" width="13" height="8" rx="1"/></svg>`,
+  },
+  {
+    id: "threshold-plot",
+    group: "Kinh doanh & Tư duy",
+    label: "Biểu đồ ngưỡng & KPI",
+    desc: "So sánh số liệu và điểm vượt ngưỡng",
+    previewSvg: `<svg viewBox="0 0 48 32" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 27V5M7 27h36"/><rect x="11" y="17" width="6" height="10" rx="1" fill="currentColor" fill-opacity="0.14"/><rect x="20" y="12" width="6" height="15" rx="1" fill="currentColor" fill-opacity="0.14"/><rect x="29" y="7" width="6" height="20" rx="1" fill="currentColor" fill-opacity="0.28"/><line x1="7" y1="11" x2="43" y2="11" stroke-dasharray="2 2"/></svg>`,
+  },
+  {
+    id: "causal-loop",
+    group: "Kinh doanh & Tư duy",
+    label: "Vòng lặp nhân quả",
+    desc: "Tác động qua lại & điểm đòn bẩy",
+    previewSvg: `<svg viewBox="0 0 48 32" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="17" y="3" width="14" height="6" rx="2" fill="currentColor" fill-opacity="0.14"/><rect x="17" y="23" width="14" height="6" rx="2"/><path d="M31 6c7 2 8 15 1 19m2-1l-2 1 1-2"/><path d="M17 26c-7-2-8-15-1-19m-2 1l2-1-1 2"/></svg>`,
+  },
+  {
+    id: "concept-map",
+    group: "Kinh doanh & Tư duy",
+    label: "Bản đồ khái niệm",
+    desc: "Liên kết ý chính có động từ nối",
+    previewSvg: `<svg viewBox="0 0 48 32" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="24" cy="16" rx="7" ry="4.5" fill="currentColor" fill-opacity="0.2"/><rect x="3" y="5" width="10" height="6" rx="1.5"/><rect x="3" y="21" width="10" height="6" rx="1.5"/><rect x="35" y="5" width="10" height="6" rx="1.5"/><rect x="35" y="21" width="10" height="6" rx="1.5"/><path d="M13 9l5 4M13 23l5-4M30 13l5-4M30 19l5 4"/></svg>`,
+  },
+];
+
+function parsePreviewSvg(markup: string, className: string): SVGSVGElement {
+  const doc = new DOMParser().parseFromString(markup, "image/svg+xml");
+  const svg = document.importNode(doc.documentElement, true) as unknown as SVGSVGElement;
+  svg.setAttribute("class", className);
+  svg.setAttribute("aria-hidden", "true");
+  return svg;
+}
+
+export type UncertaintyDisplayMode = "off" | "footer" | "inline" | "badges-footer";
+
+type UncertaintyModeOption = {
+  id: UncertaintyDisplayMode;
+  label: string;
+  desc: string;
+  previewSvg: string;
+};
+
+const UNCERTAINTY_MODES: UncertaintyModeOption[] = [
+  {
+    id: "off",
+    label: "Chỉ hiện bên dưới",
+    desc: "Giữ sơ đồ sạch, xem mục chưa chốt dưới khung",
+    previewSvg: `<svg viewBox="0 0 48 32" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="14" height="8" rx="1.5" fill="currentColor" fill-opacity="0.12"/><rect x="28" y="4" width="14" height="8" rx="1.5"/><path d="M20 8h8"/><line x1="6" y1="20" x2="42" y2="20" stroke-opacity="0.35"/><line x1="8" y1="25" x2="30" y2="25" stroke-opacity="0.5"/><line x1="8" y1="29" x2="24" y2="29" stroke-opacity="0.35"/></svg>`,
+  },
+  {
+    id: "footer",
+    label: "Khung chân hình (PA 1)",
+    desc: "Tự ghép khung nét đứt vàng dưới sơ đồ, không cần gọi AI",
+    previewSvg: `<svg viewBox="0 0 48 32" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="3" width="14" height="8" rx="1.5"/><rect x="28" y="3" width="14" height="8" rx="1.5"/><path d="M20 7h8"/><rect x="6" y="16" width="36" height="13" rx="2" stroke-dasharray="3 2" fill="currentColor" fill-opacity="0.16"/><line x1="10" y1="21" x2="32" y2="21"/><line x1="10" y1="25" x2="26" y2="25" stroke-opacity="0.6"/></svg>`,
+  },
+  {
+    id: "inline",
+    label: "Nhánh nét đứt trong luồng (PA 2)",
+    desc: "AI vẽ thẳng hộp/nhánh nét đứt vàng ngay tại bước liên quan",
+    previewSvg: `<svg viewBox="0 0 48 32" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="14" height="9" rx="1.5"/><rect x="30" y="4" width="14" height="9" rx="1.5"/><path d="M18 8.5h12"/><rect x="26" y="19" width="18" height="9" rx="1.5" stroke-dasharray="3 2" fill="currentColor" fill-opacity="0.18"/><path d="M11 13v10.5h15" stroke-dasharray="2 2"/></svg>`,
+  },
+  {
+    id: "badges-footer",
+    label: "Mốc ?1, ?2 + Khung chú giải (PA 3)",
+    desc: "Gắn chấm ?1, ?2 trên bước liên quan + bảng chú giải chân hình",
+    previewSvg: `<svg viewBox="0 0 48 32" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="4" width="14" height="8" rx="1.5"/><rect x="29" y="4" width="14" height="8" rx="1.5"/><path d="M19 8h10"/><circle cx="19" cy="4" r="3" fill="currentColor"/><circle cx="43" cy="4" r="3" fill="currentColor"/><rect x="5" y="17" width="38" height="12" rx="2" stroke-dasharray="3 2" fill="currentColor" fill-opacity="0.16"/><line x1="10" y1="21.5" x2="34" y2="21.5"/><line x1="10" y1="25.5" x2="28" y2="25.5" stroke-opacity="0.6"/></svg>`,
+  },
+];
+
+function findUncertaintyModeOption(id?: string | null): UncertaintyModeOption {
+  return UNCERTAINTY_MODES.find((m) => m.id === id) ?? UNCERTAINTY_MODES[2];
+}
+
+function findStrategyOption(id?: string | null): DiagramStrategyOption {
+  return DIAGRAM_STRATEGIES.find((s) => s.id === id) ?? DIAGRAM_STRATEGIES[0];
+}
 
 export type NodeKind = "start" | "step" | "decision" | "end";
 
@@ -35,6 +253,8 @@ export type ProcessDiagram = {
   uncertainties: DiagramUncertainty[];
   provider?: string;
   model: string;
+  strategy?: string | null;
+  uncertaintyMode?: string | null;
 };
 
 type RenderedDiagram = {
@@ -87,6 +307,7 @@ type Links = {
   openSettings: () => void;
   openSummary: () => void;
   back: () => void;
+  flow: RecordFlowNav;
 };
 
 type JobDiagramState = {
@@ -97,6 +318,8 @@ type JobDiagramState = {
   savedPath: string | null;
   diagram: ProcessDiagram | null;
   rendered: RenderedDiagram | null;
+  selectedStrategy: DiagramStrategyId;
+  uncertaintyMode: UncertaintyDisplayMode;
   exportError: { format: "png" | "excalidraw"; message: string } | null;
   exportNotice: string | null;
 };
@@ -115,6 +338,8 @@ function getState(id: number): JobDiagramState {
       savedPath: null,
       diagram: null,
       rendered: null,
+      selectedStrategy: "auto",
+      uncertaintyMode: "inline",
       exportError: null,
       exportNotice: null,
     };
@@ -241,23 +466,39 @@ function errorNeedsSettings(message: string): boolean {
 }
 
 /** Runs diagram generation for `id` independently of whichever recording is currently on screen. */
-async function runGeneration(id: number, providerName: string, modelName: string) {
+async function runGeneration(
+  id: number,
+  providerName: string,
+  modelName: string,
+  strategy?: DiagramStrategyId,
+  uncertaintyMode?: UncertaintyDisplayMode,
+) {
   const st = getState(id);
   if (st.running) return;
+  const chosen = strategy ?? st.selectedStrategy ?? "auto";
+  const chosenUncertainty = uncertaintyMode ?? st.uncertaintyMode ?? "inline";
+  st.selectedStrategy = chosen;
+  st.uncertaintyMode = chosenUncertainty;
+  const opt = findStrategyOption(chosen);
   const isRegenerate = st.diagram !== null;
   const tag = modelName ? `${providerName} (${modelName})` : providerName;
+  const styleHint = chosen === "auto" ? "" : ` theo kiểu ${opt.label}`;
   st.running = true;
   st.error = null;
   st.needsSettings = false;
   st.exportError = null;
   st.exportNotice = null;
   st.statusMessage = isRegenerate
-    ? `Đang tạo lại sơ đồ bằng ${tag}… Bản sơ đồ hiện tại vẫn có thể xem và xuất.`
-    : `Đang phân tích bản chép lời và tạo sơ đồ bằng ${tag}…`;
+    ? `Đang tạo lại sơ đồ${styleHint} bằng ${tag}… Bản sơ đồ hiện tại vẫn có thể xem và xuất.`
+    : `Đang phân tích bản chép lời và tạo sơ đồ${styleHint} bằng ${tag}…`;
   notify(id);
 
   try {
-    const nextDiagram = await invoke<ProcessDiagram>("generate_diagram", { id });
+    const nextDiagram = await invoke<ProcessDiagram>("generate_diagram", {
+      id,
+      strategy: chosen === "auto" ? null : chosen,
+      uncertaintyMode: chosenUncertainty,
+    });
     let nextRendered: RenderedDiagram;
     try {
       nextRendered = await invoke<RenderedDiagram>("render_diagram", { diagram: nextDiagram });
@@ -300,8 +541,9 @@ export function diagramPane(
   links: Links,
 ): HTMLElement {
   const head = el("header", { className: "reader-head" });
+  const tabs = recordFlowTabs("diagram", links.flow);
   const scroll = el("div", { className: "diagram-scroll" });
-  const pane = el("section", { className: "reader" }, head, scroll);
+  const pane = el("section", { className: "reader" }, head, tabs, scroll);
 
   let ai: AiView | null = null;
   let loadedLocal = false;
@@ -448,7 +690,10 @@ export function diagramPane(
     draw();
   };
 
-  const triggerGenerate = () => {
+  const triggerGenerate = (
+    strategy?: DiagramStrategyId,
+    uncertaintyMode?: UncertaintyDisplayMode,
+  ) => {
     if (!hasTranscriptText) return;
     const picked = activeAi();
     if (!picked) {
@@ -458,7 +703,130 @@ export function diagramPane(
       draw();
       return;
     }
-    void runGeneration(id, picked.name, picked.model);
+    void runGeneration(id, picked.name, picked.model, strategy, uncertaintyMode);
+  };
+
+  const applyUncertaintyMode = async (mode: UncertaintyDisplayMode) => {
+    const st = getState(id);
+    st.uncertaintyMode = mode;
+    if (!st.diagram) {
+      draw();
+      return;
+    }
+    // Modes "off" and "footer" re-render immediately in Rust with zero AI calls.
+    if (mode === "off" || mode === "footer") {
+      const updated: ProcessDiagram = { ...st.diagram, uncertaintyMode: mode };
+      try {
+        const nextRendered = await invoke<RenderedDiagram>("render_diagram", { diagram: updated });
+        st.savedPath = await invoke<string>("save_diagram", { id, diagram: updated });
+        st.diagram = updated;
+        st.rendered = nextRendered;
+        st.exportNotice =
+          mode === "footer"
+            ? "Đã ghép khung Cần xác nhận vào chân sơ đồ."
+            : "Đã ẩn khung Cần xác nhận khỏi sơ đồ.";
+      } catch (e) {
+        st.error = `Không cập nhật được hiển thị Cần xác nhận: ${e}`;
+      }
+      draw();
+      return;
+    }
+    // Modes "inline" and "badges-footer" ask AI to draw inline dashed branches or ?1/?2 badges on the flow.
+    triggerGenerate(st.selectedStrategy, mode);
+  };
+
+  const renderUncertaintyDropdown = (st: JobDiagramState): HTMLElement => {
+    ensureMenuDismissListeners();
+    const current = findUncertaintyModeOption(st.uncertaintyMode);
+    const details = el("details", { className: "diagram-type-menu" }) as HTMLDetailsElement;
+    const summary = el(
+      "summary",
+      {
+        className: `btn-ghost diagram-type-trigger${st.running ? " disabled" : ""}`,
+        title: "Chọn cách hiển thị các mục Cần xác nhận trên sơ đồ",
+      },
+      parsePreviewSvg(current.previewSvg, "diagram-type-thumb-sm"),
+      el("span", { className: "diagram-type-trigger-label", textContent: `Cần xác nhận: ${current.label}` }),
+      el("span", { className: "diagram-type-caret", textContent: "▾" }),
+    );
+    summary.setAttribute("aria-label", `Hiển thị Cần xác nhận (${current.label})`);
+
+    const panel = el(
+      "div",
+      { className: "diagram-type-panel", role: "menu", ariaLabel: "Cách hiển thị Cần xác nhận" },
+      ...UNCERTAINTY_MODES.map((opt) =>
+        el(
+          "button",
+          {
+            className: `diagram-type-item${opt.id === current.id ? " active" : ""}`,
+            role: "menuitemradio",
+            disabled: st.running,
+            onclick: () => {
+              details.open = false;
+              void applyUncertaintyMode(opt.id);
+            },
+          },
+          el("span", { className: "diagram-type-thumb" }, parsePreviewSvg(opt.previewSvg, "diagram-type-svg")),
+          el(
+            "span",
+            { className: "diagram-type-meta" },
+            el("span", { className: "diagram-type-name", textContent: opt.label }),
+            el("span", { className: "diagram-type-desc", textContent: opt.desc }),
+          ),
+        ),
+      ),
+    );
+    details.append(summary, panel);
+    return details;
+  };
+
+  const renderStrategyDropdown = (st: JobDiagramState): HTMLElement => {
+    ensureMenuDismissListeners();
+    const current = findStrategyOption(st.selectedStrategy);
+    const details = el("details", { className: "diagram-type-menu" }) as HTMLDetailsElement;
+    const summary = el(
+      "summary",
+      {
+        className: `btn-ghost diagram-type-trigger${st.running ? " disabled" : ""}`,
+        title: "Đổi kiểu sơ đồ và tạo lại bằng AI",
+      },
+      parsePreviewSvg(current.previewSvg, "diagram-type-thumb-sm"),
+      el("span", { className: "diagram-type-trigger-label", textContent: `Kiểu: ${current.label}` }),
+      el("span", { className: "diagram-type-caret", textContent: "▾" }),
+    );
+    summary.setAttribute("aria-label", `Đổi kiểu sơ đồ (hiện tại: ${current.label})`);
+
+    const panel = el(
+      "div",
+      { className: "diagram-type-panel", role: "menu", ariaLabel: "Chọn kiểu sơ đồ" },
+      ...STRATEGY_GROUPS.flatMap((group) => [
+        el("div", { className: "diagram-type-group", textContent: group }),
+        ...DIAGRAM_STRATEGIES.filter((opt) => opt.group === group).map((opt) =>
+          el(
+            "button",
+            {
+              className: `diagram-type-item${opt.id === current.id ? " active" : ""}`,
+              role: "menuitemradio",
+              disabled: st.running || !hasTranscriptText,
+              onclick: () => {
+                details.open = false;
+                st.selectedStrategy = opt.id;
+                triggerGenerate(opt.id);
+              },
+            },
+            el("span", { className: "diagram-type-thumb" }, parsePreviewSvg(opt.previewSvg, "diagram-type-svg")),
+            el(
+              "span",
+              { className: "diagram-type-meta" },
+              el("span", { className: "diagram-type-name", textContent: opt.label }),
+              el("span", { className: "diagram-type-desc", textContent: opt.desc }),
+            ),
+          ),
+        ),
+      ]),
+    );
+    details.append(summary, panel);
+    return details;
   };
 
   const renderNoticeBanner = (st: JobDiagramState): HTMLElement | null => {
@@ -488,7 +856,7 @@ export function diagramPane(
             ? el("button", {
                 className: "link",
                 textContent: "Thử lại",
-                onclick: triggerGenerate,
+                onclick: () => triggerGenerate(),
               })
             : null,
         ),
@@ -527,12 +895,7 @@ export function diagramPane(
 
     if (!loadedLocal) {
       head.replaceChildren(
-        el("h2", { textContent: `Sơ đồ quy trình — ${name}` }),
-        el(
-          "div",
-          { className: "reader-actions" },
-          el("button", { className: "link", textContent: "Về bản chép lời", onclick: links.back }),
-        ),
+        el("div", { className: "reader-head-top" }, el("h2", { textContent: name })),
       );
       scroll.replaceChildren(
         el("p", { className: "hint", textContent: "Đang mở dữ liệu sơ đồ trên máy…" }),
@@ -552,7 +915,7 @@ export function diagramPane(
             ? `Gửi bản chép lời đến ${picked.name}${picked.model ? ` (${picked.model})` : ""} để tạo lại`
             : "Tạo lại sơ đồ bằng AI đã cấu hình",
           disabled: st.running || !hasTranscriptText,
-          onClick: triggerGenerate,
+          onClick: () => triggerGenerate(),
         },
         ...(st.savedPath
           ? [
@@ -562,14 +925,10 @@ export function diagramPane(
               },
             ]
           : []),
-        {
-          label: "Về bản chép lời",
-          onClick: links.back,
-        },
       ];
 
       head.replaceChildren(
-        el("h2", { textContent: diagram.title || name }),
+        el("div", { className: "reader-head-top" }, el("h2", { textContent: diagram.title || name })),
         el(
           "div",
           { className: "reader-actions" },
@@ -591,16 +950,8 @@ export function diagramPane(
             },
             el("span", { textContent: "Xuất .excalidraw" }),
           ),
-          el(
-            "button",
-            {
-              className: "btn-ghost",
-              title: "Mở bảng tóm tắt biên bản",
-              onclick: links.openSummary,
-            },
-            icon("summary", 15),
-            el("span", { textContent: "Tóm tắt" }),
-          ),
+          renderStrategyDropdown(st),
+          renderUncertaintyDropdown(st),
           overflowMenu("Thao tác khác cho sơ đồ", overflowItems),
         ),
       );
@@ -645,34 +996,17 @@ export function diagramPane(
             draw();
           },
         }),
-        el("button", {
-          className: "link",
-          textContent: "Vừa khung",
-          title: "Thu phóng để xem trọn sơ đồ trong khung",
-          onclick: () => {
-            const stage = scroll.querySelector<HTMLElement>(".diagram-stage");
-            const availW = Math.max(300, (stage?.clientWidth ?? 720) - 36);
-            const availH = Math.max(220, (stage?.clientHeight ?? 360) - 66);
-            const fit = Math.min(1, availW / rendered.width, availH / rendered.height);
-            zoom = Math.max(0.35, Math.round(fit * 100) / 100);
-            draw();
-          },
-        }),
-        el("button", {
-          className: "link",
-          textContent: "100%",
-          onclick: () => {
-            zoom = 1;
-            draw();
-          },
-        }),
         el("span", { className: "diagram-stage-sep" }),
-        el("button", {
-          className: "btn-ghost diagram-zoom-btn",
-          textContent: "Xem to",
-          title: "Mở cửa sổ xem sơ đồ phóng to",
-          onclick: () => openModal(diagram, rendered),
-        }),
+        el(
+          "button",
+          {
+            className: "btn-ghost diagram-zoom-btn",
+            title: "Xem toàn màn hình",
+            ariaLabel: "Xem sơ đồ toàn màn hình",
+            onclick: () => openModal(diagram, rendered),
+          },
+          icon("expand", 14),
+        ),
       );
 
       const stageWrap = el(
@@ -716,21 +1050,21 @@ export function diagramPane(
 
     // No diagram yet: show progress, missing-key prompt, or error directly without an extra confirmation step.
     head.replaceChildren(
-      el("h2", { textContent: `Sơ đồ quy trình — ${name}` }),
+      el("div", { className: "reader-head-top" }, el("h2", { textContent: `Sơ đồ — ${name}` })),
       el(
         "div",
         { className: "reader-actions" },
+        renderStrategyDropdown(st),
         el(
           "button",
           {
             className: "btn-primary",
-            title: "Mở bảng tóm tắt biên bản",
-            onclick: links.openSummary,
+            disabled: st.running || !hasTranscriptText,
+            onclick: () => triggerGenerate(),
           },
-          icon("summary", 15),
-          el("span", { textContent: "Tóm tắt" }),
+          icon("diagram", 15),
+          el("span", { textContent: st.running ? "Đang tạo sơ đồ…" : "Tạo sơ đồ" }),
         ),
-        el("button", { className: "link", textContent: "Về bản chép lời", onclick: links.back }),
       ),
     );
 
@@ -791,6 +1125,12 @@ export function diagramPane(
         try {
           st.rendered = await invoke<RenderedDiagram>("render_diagram", { diagram: saved });
           st.diagram = saved;
+          if (saved.strategy) {
+            st.selectedStrategy = findStrategyOption(saved.strategy).id;
+          }
+          if (saved.uncertaintyMode) {
+            st.uncertaintyMode = findUncertaintyModeOption(saved.uncertaintyMode).id;
+          }
         } catch (e) {
           loadError = `Sơ đồ đã lưu không hợp lệ: ${e instanceof Error ? e.message : String(e)}`;
         }

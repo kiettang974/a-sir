@@ -226,6 +226,21 @@ fn read_transcript(app: State<App>, id: u64) -> Result<TranscriptView, String> {
     Ok(TranscriptView { text, lines })
 }
 
+#[tauri::command]
+fn update_transcript_line(
+    app: State<App>,
+    id: u64,
+    index: usize,
+    text: String,
+) -> Result<TranscriptView, String> {
+    let updated = app.runner.transcript(id)?.update_line(index, &text)?;
+    let lines = asr_core::transcript::lines(&updated);
+    Ok(TranscriptView {
+        text: updated,
+        lines,
+    })
+}
+
 /// Writes the cleaned copy (with user glossary applied) beside the transcript and returns its path.
 #[tauri::command]
 fn clean_transcript(app: State<App>, id: u64) -> Result<PathBuf, String> {
@@ -611,14 +626,23 @@ fn load_note(app: State<App>, id: u64) -> Result<Option<serde_json::Value>, Stri
     app.runner.transcript(id)?.note()
 }
 
-/// Sends the cleaned transcript (falling back to raw) to the configured Gemini model to extract a process diagram.
+/// Sends the cleaned transcript (falling back to raw) to the configured AI model to extract a diagram.
 #[tauri::command]
-async fn generate_diagram(app: State<'_, App>, id: u64) -> Result<ProcessDiagram, String> {
+async fn generate_diagram(
+    app: State<'_, App>,
+    id: u64,
+    strategy: Option<String>,
+    uncertainty_mode: Option<String>,
+) -> Result<ProcessDiagram, String> {
     let transcript = app.runner.transcript(id)?.text_for_summary()?;
     let workspace = app.workspace.clone();
     off_thread(move || {
         workspace
-            .generate_diagram(&transcript)
+            .generate_diagram_with_options(
+                &transcript,
+                strategy.as_deref(),
+                uncertainty_mode.as_deref(),
+            )
             .map_err(|e| e.to_string())
     })
     .await
@@ -1086,6 +1110,7 @@ fn main() {
             clear_queue,
             set_paused,
             read_transcript,
+            update_transcript_line,
             clean_transcript,
             local_models,
             discover_hf_models,

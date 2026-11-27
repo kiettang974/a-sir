@@ -587,9 +587,28 @@ impl Workspace {
         )
     }
 
-    /// Generates a process flowchart from the transcript using the default configured AI
+    /// Generates a process diagram from the transcript using the default configured AI
     /// provider (falling back to any provider with an API key saved).
     pub fn generate_diagram(&self, transcript: &str) -> Result<ProcessDiagram, DiagramError> {
+        self.generate_diagram_with_strategy(transcript, None)
+    }
+
+    /// Generates a diagram with an optional user-selected diagram strategy/type.
+    pub fn generate_diagram_with_strategy(
+        &self,
+        transcript: &str,
+        strategy: Option<&str>,
+    ) -> Result<ProcessDiagram, DiagramError> {
+        self.generate_diagram_with_options(transcript, strategy, None)
+    }
+
+    /// Generates a diagram with optional strategy and uncertainty display mode.
+    pub fn generate_diagram_with_options(
+        &self,
+        transcript: &str,
+        strategy: Option<&str>,
+        uncertainty_mode: Option<&str>,
+    ) -> Result<ProcessDiagram, DiagramError> {
         if transcript.trim().is_empty() {
             return Err(DiagramError::EmptyTranscript);
         }
@@ -607,7 +626,13 @@ impl Workspace {
             .ok_or(AiError::MissingKey)?;
         let model = settings.model(provider).to_owned();
         let client = self.client(provider, Some(&model))?;
-        let mut out = diagram::generate(&client, &model, transcript)?;
+        let mut out = diagram::generate_with_options(
+            &client,
+            &model,
+            transcript,
+            strategy,
+            uncertainty_mode,
+        )?;
         out.provider = match provider {
             Provider::Claude => "Claude",
             Provider::ChatGpt => "ChatGPT",

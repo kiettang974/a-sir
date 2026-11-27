@@ -10,15 +10,15 @@ import "@fontsource/patrick-hand/vietnamese-400.css";
 import "@fontsource/patrick-hand/latin-400.css";
 import "./style.css";
 
-import { aiCleanPane, contextTabBody, getAiCleanButtonState, openOrStartAiClean } from "./context";
-import { diagramPane, getDiagramButtonState, openOrGenerateDiagram } from "./diagram";
+import { aiCleanPane, contextTabBody, getAiCleanButtonState } from "./context";
+import { diagramPane, getDiagramButtonState } from "./diagram";
 import { el } from "./dom";
 import { icon } from "./icons";
-import { type LocalModelProgress, overflowMenu, progressBar } from "./ipc";
+import { type LocalModelProgress, overflowMenu, progressBar, type RecordFlowNav, recordFlowTabs } from "./ipc";
 import { notePane } from "./note";
 import { settingsPane } from "./settings";
 
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
@@ -281,6 +281,7 @@ function forget(id: number) {
 }
 
 async function select(id: number) {
+  resetReaderAudioIfChanged(id);
   view = "reader";
   readerTab = "transcript";
   selected = id;
@@ -977,15 +978,171 @@ function memosPane(): HTMLElement {
   return pane;
 }
 
-function transcriptLines(lines: Line[]): HTMLElement[] {
-  return lines.map(({ start, text }) =>
-    el(
-      "div",
-      { className: "line" },
-      el("time", { textContent: start.replace(/^00:/, "") }),
-      el("p", { textContent: text }),
-    ),
-  );
+function parseTimestampSeconds(raw: string): number {
+  const parts = raw
+    .trim()
+    .split(":")
+    .map((p) => Number.parseFloat(p));
+  if (parts.some((n) => !Number.isFinite(n))) return 0;
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  return parts[0] ?? 0;
+}
+
+const readerPlayerDock = el("div", { className: "player" });
+readerPlayerDock.hidden = true;
+const readerAudio = el("audio", { controls: true, preload: "metadata" });
+const readerAudioProblem = el("span", { className: "problem" });
+readerPlayerDock.append(readerAudio, readerAudioProblem);
+let readerAudioJobId: number | null = null;
+let readerAudioPendingSeek: number | null = null;
+
+function resetReaderAudioIfChanged(jobId: number | null) {
+  if (readerAudioJobId === jobId) return;
+  readerAudioJobId = jobId;
+  readerAudioPendingSeek = null;
+  readerAudio.pause();
+  readerAudio.removeAttribute("src");
+  readerAudio.load();
+  readerAudioProblem.textContent = "";
+  readerPlayerDock.hidden = true;
+}
+
+function seekReaderAudio(seconds: number) {
+  const target = Math.max(0, Number.isFinite(seconds) ? seconds : 0);
+  if (readerAudio.readyState >= 1) {
+    const clamped = Number.isFinite(readerAudio.duration)
+      ? Math.min(target, readerAudio.duration)
+      : target;
+    readerAudio.currentTime = clamped;
+    readerAudio.play().catch(() => {});
+  } else {
+    readerAudioPendingSeek = target;
+    readerAudio.load();
+  }
+}
+
+readerAudio.onloadedmetadata = () => {
+  readerAudio.hidden = false;
+  readerAudioProblem.textContent = "";
+  if (readerAudioPendingSeek !== null) {
+    const target = readerAudioPendingSeek;
+    readerAudioPendingSeek = null;
+    const clamped = Number.isFinite(readerAudio.duration)
+      ? Math.min(target, readerAudio.duration)
+      : target;
+    readerAudio.currentTime = clamped;
+    readerAudio.play().catch(() => {});
+  }
+};
+
+readerAudio.onerror = () => {
+  readerAudioPendingSeek = null;
+  readerAudio.hidden = true;
+  const code = readerAudio.error?.code;
+  readerAudioProblem.textContent =
+    code === 2
+      ? "Lỗi kết nối nội bộ khi đọc file ghi âm."
+      : code === 3
+        ? "Không giải mã được file ghi âm này."
+        : "Không phát được file ghi âm này.";
+};
+
+async function playReaderAt(jobId: number, seconds: number) {
+  if (readerAudioJobId !== jobId) {
+    resetReaderAudioIfChanged(jobId);
+  }
+  readerPlayerDock.hidden = false;
+  readerAudioProblem.textContent = "";
+  readerAudio.hidden = false;
+  if (!readerAudio.getAttribute("src")) {
+    try {
+      const src = await invoke<string>("allow_job_audio", { id: jobId });
+      readerAudioPendingSeek = Math.max(0, Number.isFinite(seconds) ? seconds : 0);
+      readerAudio.src =
+        src.startsWith("http://") || src.startsWith("https://") ? src : convertFileSrc(src);
+      return;
+    } catch (e) {
+      readerAudio.hidden = true;
+      readerAudioProblem.textContent = String(e);
+      return;
+    }
+  }
+  seekReaderAudio(seconds);
+}
+
+const lineSaveTimers = new Map<number, number>();
+
+function transcriptLines(jobId: number, lines: Line[]): HTMLElement[] {
+  return lines.map(({ start, text }, index) => {
+    const displayTime = start.replace(/^00:/, "");
+    const timeEl = start
+      ? el("button", {
+          type: "button",
+          className: "line-time",
+          textContent: displayTime,
+          title: `Nghe lại từ ${displayTime}`,
+          ariaLabel: `Nghe lại từ ${displayTime}`,
+          onclick: () => void playReaderAt(jobId, parseTimestampSeconds(start)),
+        })
+      : el("span", { className: "line-time-empty" });
+
+    let lastSaved = text;
+    const saveLine = async (nextText: string) => {
+      const normalized = nextText.replace(/\r?\n/g, " ").replace(/\s+/g, " ").trim();
+      if (normalized === lastSaved) return;
+      try {
+        const updated = await invoke<{ text: string; lines: Line[] }>("update_transcript_line", {
+          id: jobId,
+          index,
+          text: normalized,
+        });
+        lastSaved = normalized;
+        if (transcript?.id === jobId) {
+          transcript = { id: jobId, ...updated };
+        }
+      } catch (e) {
+        readerNote = `Chưa lưu được chỉnh sửa: ${e}`;
+        render();
+      }
+    };
+
+    const textEl = el("p", {
+      className: "line-text",
+      textContent: text,
+      contentEditable: "true",
+      spellcheck: false,
+      ariaLabel: displayTime ? `Nội dung tại ${displayTime}` : `Dòng ${index + 1}`,
+      oninput: () => {
+        const prev = lineSaveTimers.get(index);
+        if (prev !== undefined) window.clearTimeout(prev);
+        const handle = window.setTimeout(() => {
+          lineSaveTimers.delete(index);
+          void saveLine(textEl.textContent ?? "");
+        }, 700);
+        lineSaveTimers.set(index, handle);
+      },
+      onblur: () => {
+        const prev = lineSaveTimers.get(index);
+        if (prev !== undefined) {
+          window.clearTimeout(prev);
+          lineSaveTimers.delete(index);
+        }
+        void saveLine(textEl.textContent ?? "");
+      },
+      onkeydown: (ev: KeyboardEvent) => {
+        if (ev.key === "Enter" && !ev.shiftKey) {
+          ev.preventDefault();
+          textEl.blur();
+        } else if (ev.key === "Escape") {
+          textEl.textContent = lastSaved;
+          textEl.blur();
+        }
+      },
+    });
+
+    return el("div", { className: "line" }, timeEl, textEl);
+  });
 }
 
 function readerPane(): HTMLElement {
@@ -1012,33 +1169,13 @@ function readerPane(): HTMLElement {
   }
   const shown = transcript?.id === job.id ? transcript : null;
   const text = shown?.text ?? null;
-  const diagramState = getDiagramButtonState(job.id);
-  const diagramBusy = diagramState === "running";
-  const diagramLabel =
-    diagramState === "running"
-      ? "Đang phân tích tạo sơ đồ…"
-      : diagramState === "ready"
-        ? "Xem sơ đồ"
-        : diagramState === "error"
-          ? "Sơ đồ (lỗi)"
-          : "Tạo sơ đồ";
-  const cleanState = getAiCleanButtonState(job.id);
-  const cleanBusy = cleanState === "running";
-  const cleanLabel =
-    cleanState === "running"
-      ? "Đang làm sạch…"
-      : cleanState === "ready"
-        ? "Xem bản làm sạch"
-        : cleanState === "error"
-          ? "Làm sạch (lỗi)"
-          : "Làm sạch";
   return el(
     "section",
     { className: "reader" },
     el(
       "header",
       { className: "reader-head" },
-      el("h2", { textContent: jobName(job) }),
+      el("div", { className: "reader-head-top" }, el("h2", { textContent: jobName(job) })),
       el(
         "div",
         { className: "reader-actions" },
@@ -1046,87 +1183,6 @@ function readerPane(): HTMLElement {
           "button",
           {
             className: "btn-primary",
-            title: "Mở bảng tóm tắt biên bản",
-            onclick: () => {
-              view = "note";
-              render();
-            },
-          },
-          icon("summary", 15),
-          el("span", { textContent: "Tóm tắt" }),
-        ),
-        el(
-          "button",
-          {
-            className: "btn-ghost",
-            title: diagramBusy
-              ? "Đang phân tích bản chép lời và tạo sơ đồ bằng AI…"
-              : text !== null && text.trim().length === 0
-                ? "Bản chép lời đang trống nên chưa thể tạo sơ đồ"
-                : "Tạo hoặc mở sơ đồ quy trình từ bản chép lời",
-            disabled: diagramBusy || text === null || text.trim().length === 0,
-            onclick: () => {
-              void openOrGenerateDiagram(job.id, {
-                onStateChange: () => {
-                  if (selected === job.id && view === "reader") render();
-                },
-                onOpenDiagram: (doneId) => {
-                  if (selected === doneId) {
-                    view = "diagram";
-                    render();
-                  }
-                },
-                onFinished: (doneId, err) => {
-                  if (selected === doneId && view === "reader") {
-                    readerNote = err
-                      ? `Chưa tạo được sơ đồ: ${err}`
-                      : "Đã tạo xong sơ đồ quy trình. Bấm \"Xem sơ đồ\" để mở.";
-                    render();
-                  }
-                },
-              });
-            },
-          },
-          icon("diagram", 15),
-          el("span", { textContent: diagramLabel }),
-        ),
-        el(
-          "button",
-          {
-            className: "btn-ghost",
-            title: cleanBusy
-              ? "Đang làm sạch bản chép lời…"
-              : "Lọc câu rác, từ lặp và sửa tên riêng/thuật ngữ (tại máy → AI theo ngữ cảnh)",
-            disabled: cleanBusy || text === null,
-            onclick: () => {
-              void openOrStartAiClean(job.id, {
-                onStateChange: () => {
-                  if (selected === job.id && view === "reader") render();
-                },
-                onOpenClean: (doneId) => {
-                  if (selected === doneId) {
-                    view = "aiClean";
-                    render();
-                  }
-                },
-                onFinished: (doneId, err) => {
-                  if (selected === doneId && view === "reader") {
-                    readerNote = err
-                      ? `Chưa làm sạch được: ${err}`
-                      : "Đã làm sạch xong bản chép lời. Bấm \"Xem bản làm sạch\" để xem chi tiết.";
-                    render();
-                  }
-                },
-              });
-            },
-          },
-          icon("fileText", 15),
-          el("span", { textContent: cleanLabel }),
-        ),
-        el(
-          "button",
-          {
-            className: "btn-ghost",
             title: "Chép toàn bộ bản chép lời",
             disabled: text === null,
             onclick: async () => {
@@ -1135,7 +1191,7 @@ function readerPane(): HTMLElement {
             },
           },
           icon("copy", 15),
-          el("span", { textContent: "Chép" }),
+          el("span", { textContent: "Chép bản chép" }),
         ),
         overflowMenu("Thao tác khác cho bản chép lời", [
           {
@@ -1150,39 +1206,54 @@ function readerPane(): HTMLElement {
         ]),
       ),
     ),
-    el(
-      "div",
-      { className: "settings-tabs", role: "tablist", ariaLabel: "Chế độ xem bản ghi" },
-      el("button", {
-        className: `settings-tab${readerTab === "transcript" ? " active" : ""}`,
-        role: "tab",
-        textContent: "Bản chép lời",
-        onclick: () => {
-          if (readerTab === "transcript") return;
-          readerTab = "transcript";
-          render();
-        },
-      }),
-      el("button", {
-        className: `settings-tab${readerTab === "context" ? " active" : ""}`,
-        role: "tab",
-        textContent: "Ngữ cảnh",
-        onclick: () => {
-          if (readerTab === "context") return;
-          readerTab = "context";
-          render();
-        },
-      }),
-    ),
+    recordFlowTabs(readerTab === "context" ? "context" : "transcript", flowNavFor(job)),
     readerTab === "context"
       ? contextTabBody(job.id)
       : el(
           "div",
           { className: "reader-body" },
           readerNote ? el("p", { className: "note", textContent: readerNote }) : null,
-          el("article", { className: "transcript" }, ...(shown === null ? [] : transcriptLines(shown.lines))),
+          el(
+            "article",
+            { className: "transcript" },
+            ...(shown === null ? [] : transcriptLines(job.id, shown.lines)),
+          ),
+          readerPlayerDock,
         ),
   );
+}
+
+function flowNavFor(job: Job): RecordFlowNav {
+  const cleanState = getAiCleanButtonState(job.id);
+  const diagramState = getDiagramButtonState(job.id);
+  return {
+    openTranscript: () => {
+      if (view === "reader" && readerTab === "transcript") return;
+      view = "reader";
+      readerTab = "transcript";
+      render();
+    },
+    openContext: () => {
+      if (view === "reader" && readerTab === "context") return;
+      view = "reader";
+      readerTab = "context";
+      render();
+    },
+    openClean: () => {
+      view = "aiClean";
+      render();
+    },
+    openSummary: () => {
+      view = "note";
+      render();
+    },
+    openDiagram: () => {
+      view = "diagram";
+      render();
+    },
+    cleanLabel: cleanState === "running" ? "Đang làm sạch…" : "Bản làm sạch",
+    diagramLabel: diagramState === "running" ? "Đang tạo sơ đồ…" : "Sơ đồ",
+  };
 }
 
 function note(message: string) {
@@ -1273,6 +1344,7 @@ function rightPane(): HTMLElement {
         render();
       },
       back: () => select(job.id),
+      flow: flowNavFor(job),
     });
   }
   if (view === "diagram" && job) {
@@ -1290,6 +1362,7 @@ function rightPane(): HTMLElement {
         render();
       },
       back: () => select(job.id),
+      flow: flowNavFor(job),
     });
   }
   if (view === "aiClean" && job) {
@@ -1320,6 +1393,7 @@ function rightPane(): HTMLElement {
         readerNote = `Đã lưu bản làm sạch: ${baseName(path)} (cùng thư mục với bản gốc).`;
         render();
       },
+      flow: flowNavFor(job),
     });
   }
   return readerPane();

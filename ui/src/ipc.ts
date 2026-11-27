@@ -68,22 +68,66 @@ export type MenuAction = {
 };
 
 let menuDismissBound = false;
-function ensureMenuDismissListeners() {
+export function ensureMenuDismissListeners() {
   if (menuDismissBound) return;
   menuDismissBound = true;
   document.addEventListener("click", (e) => {
     const target = e.target as Node | null;
-    for (const openDetails of document.querySelectorAll<HTMLDetailsElement>("details.more-menu[open]")) {
+    for (const openDetails of document.querySelectorAll<HTMLDetailsElement>(
+      "details.more-menu[open], details.diagram-type-menu[open]",
+    )) {
       if (!target || !openDetails.contains(target)) openDetails.open = false;
     }
   });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
-      for (const openDetails of document.querySelectorAll<HTMLDetailsElement>("details.more-menu[open]")) {
+      for (const openDetails of document.querySelectorAll<HTMLDetailsElement>(
+        "details.more-menu[open], details.diagram-type-menu[open]",
+      )) {
         openDetails.open = false;
       }
     }
   });
+}
+
+export type RecordFlowTab = "transcript" | "context" | "aiClean" | "note" | "diagram";
+
+export type RecordFlowNav = {
+  openTranscript: () => void;
+  openContext: () => void;
+  openClean: () => void;
+  openSummary: () => void;
+  openDiagram: () => void;
+  cleanLabel?: string;
+  diagramLabel?: string;
+};
+
+/** Unified workflow tab bar shared across Transcript, Context, Clean, Summary, and Diagram screens. */
+export function recordFlowTabs(active: RecordFlowTab, nav: RecordFlowNav): HTMLElement {
+  const items: { id: RecordFlowTab; label: string; run: () => void }[] = [
+    { id: "transcript", label: "Bản chép lời", run: nav.openTranscript },
+    { id: "context", label: "Ngữ cảnh", run: nav.openContext },
+    { id: "aiClean", label: nav.cleanLabel ?? "Bản làm sạch", run: nav.openClean },
+    { id: "note", label: "Tóm tắt", run: nav.openSummary },
+    { id: "diagram", label: nav.diagramLabel ?? "Sơ đồ", run: nav.openDiagram },
+  ];
+  return el(
+    "nav",
+    { className: "settings-tabs record-flow-tabs", role: "tablist", ariaLabel: "Luồng xử lý bản ghi" },
+    ...items.map((item) => {
+      const btn = el("button", {
+        className: `settings-tab${active === item.id ? " active" : ""}`,
+        role: "tab",
+        textContent: item.label,
+        onclick: () => {
+          if (active === item.id) return;
+          item.run();
+        },
+      });
+      btn.setAttribute("aria-selected", String(active === item.id));
+      return btn;
+    }),
+  );
 }
 
 /** Compact overflow menu (`⋯`) for secondary toolbar actions; owns its outside-click & Escape dismissal. */

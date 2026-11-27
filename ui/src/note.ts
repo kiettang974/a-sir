@@ -14,6 +14,8 @@ import {
   PROVIDER_NAME,
   PROVIDERS,
   type Provider,
+  type RecordFlowNav,
+  recordFlowTabs,
   resetTemplate,
 } from "./ipc";
 
@@ -179,18 +181,30 @@ function editable(
   return node;
 }
 
-type Links = { openSettings: () => void; openContext: () => void; back: () => void };
+type SummaryProfile = {
+  id: string;
+  name: string;
+  description: string;
+};
+type ProfilesConfig = {
+  enabled: boolean;
+  activeId: string;
+  custom: SummaryProfile[];
+};
+
+type Links = { openSettings: () => void; openContext: () => void; back: () => void; flow: RecordFlowNav };
 
 /** Fills itself in and keeps its own state, so queue updates can't disturb typing here. */
 export function notePane(id: number, name: string, links: Links): HTMLElement {
   const head = el("header", { className: "reader-head" });
+  const tabs = recordFlowTabs("note", links.flow);
   const scroll = el("div", { className: "note-scroll" });
   const player = el("div", { className: "player" });
   player.hidden = true;
   const audio = el("audio", { controls: true, preload: "metadata" });
   const problem = el("span", { className: "problem" });
   player.append(audio, problem);
-  const pane = el("section", { className: "reader" }, head, scroll, player);
+  const pane = el("section", { className: "reader" }, head, tabs, scroll, player);
 
   let pendingSeek: number | null = null;
 
@@ -249,19 +263,6 @@ export function notePane(id: number, name: string, links: Links): HTMLElement {
     seekAndPlay(seconds);
   };
 
-  const back = el("button", { className: "link", textContent: "Về bản chép lời", onclick: links.back });
-
-type SummaryProfile = {
-  id: string;
-  name: string;
-  description: string;
-};
-type ProfilesConfig = {
-  enabled: boolean;
-  activeId: string;
-  custom: SummaryProfile[];
-};
-
   function showForm(
     failure = "",
     previousNote?: Note,
@@ -269,7 +270,7 @@ type ProfilesConfig = {
     selectedUseContext?: boolean,
     suggestedModel?: { provider: Provider; model: string },
   ) {
-    head.replaceChildren(el("h2", { textContent: name }), back);
+    head.replaceChildren(el("div", { className: "reader-head-top" }, el("h2", { textContent: name })));
     const body = el("div", { className: "note-form" });
     scroll.replaceChildren(body);
     Promise.all([
@@ -490,6 +491,9 @@ type ProfilesConfig = {
   }
 
   function showNote(note: Note) {
+    let showEmailIntro =
+      htmlToText(note.greeting, false).trim().length > 0 ||
+      htmlToText(note.intro, false).trim().length > 0;
     const saveSoon = () => {
       setStatus("");
       clearTimeout(timer);
@@ -515,8 +519,7 @@ type ProfilesConfig = {
       }));
 
     head.replaceChildren(
-      el("h2", { textContent: name }),
-      status,
+      el("div", { className: "reader-head-top" }, el("h2", { textContent: name }), status),
       el(
         "div",
         { className: "reader-actions" },
@@ -626,10 +629,6 @@ type ProfilesConfig = {
               await save(note);
               if (savedPage) revealItemInDir(savedPage);
             },
-          },
-          {
-            label: "Về bản chép lời",
-            onClick: links.back,
           },
         ]),
       ),
@@ -856,8 +855,12 @@ type ProfilesConfig = {
         ...[
           fallbackBanner,
           discussionBlock,
-          editable(note.greeting, "note-text", "Lời chào", (h) => { note.greeting = h; saveSoon(); }),
-          editable(note.intro, "note-text", "Câu mở đầu", (h) => { note.intro = h; saveSoon(); }),
+          showEmailIntro
+            ? editable(note.greeting, "note-text", "Lời chào", (h) => { note.greeting = h; saveSoon(); })
+            : null,
+          showEmailIntro
+            ? editable(note.intro, "note-text", "Câu mở đầu", (h) => { note.intro = h; saveSoon(); })
+            : null,
           el(
             "table",
             { className: "note-table" },
@@ -886,6 +889,16 @@ type ProfilesConfig = {
                 changed();
               },
             }),
+            !showEmailIntro
+              ? el("button", {
+                  className: "link",
+                  textContent: "Thêm lời chào email",
+                  onclick: () => {
+                    showEmailIntro = true;
+                    draw();
+                  },
+                })
+              : null,
           ),
           templateBar,
           actionsBlock,
@@ -894,10 +907,6 @@ type ProfilesConfig = {
                 "section",
                 { className: "pending" },
                 el("h3", { textContent: `Cần xác nhận (${note.pending.length})` }),
-                el("p", {
-                  className: "hint",
-                  textContent: "Các mục này chưa đủ căn cứ để ghi là đã thống nhất và không có trong bản gửi đi. Hãy nghe lại rồi quyết định.",
-                }),
                 ...pending,
               )
             : null,

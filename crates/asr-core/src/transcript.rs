@@ -88,6 +88,48 @@ impl Transcript {
         Ok(lines(&self.text()?))
     }
 
+    /// Replaces the text of the `index`-th non-blank line while preserving its original
+    /// `[HH:MM:SS --> HH:MM:SS] ` timestamp prefix, saves atomically, and returns the updated text.
+    pub fn update_line(&self, index: usize, new_text: &str) -> Result<String, String> {
+        let raw = self.text()?;
+        let cleaned = new_text
+            .replace(['\r', '\n'], " ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut non_blank_idx = 0usize;
+        let mut found = false;
+        let mut out_lines = Vec::new();
+        for line in raw.lines() {
+            if line.trim().is_empty() {
+                out_lines.push(line.to_owned());
+                continue;
+            }
+            if non_blank_idx == index {
+                found = true;
+                let (times, _) = split_line(line);
+                if let Some((start, end)) = times {
+                    out_lines.push(format!("[{start} --> {end}] {cleaned}"));
+                } else {
+                    out_lines.push(cleaned.clone());
+                }
+            } else {
+                out_lines.push(line.to_owned());
+            }
+            non_blank_idx += 1;
+        }
+        if !found {
+            return Err(format!("không tìm thấy dòng bản chép thứ {}", index + 1));
+        }
+        let mut updated = out_lines.join("\n");
+        if raw.ends_with('\n') {
+            updated.push('\n');
+        }
+        save_atomic(&self.txt, updated.as_bytes())
+            .map_err(|e| format!("không lưu được {}: {e}", self.txt.display()))?;
+        Ok(updated)
+    }
+
     fn sidecar(&self, suffix: &str, extension: &str) -> PathBuf {
         let stem = self.txt.file_stem().unwrap_or_default().to_string_lossy();
         self.txt
@@ -298,5 +340,23 @@ mod tests {
         assert_ne!(p1, p2);
         assert_eq!(t1.diagram().unwrap(), Some(d1));
         assert_eq!(t2.diagram().unwrap(), Some(d2));
+    }
+
+    #[test]
+    fn update_line_preserves_timestamps_and_persists_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        let t = transcript(
+            dir.path(),
+            "[00:00:54 --> 00:01:14] Thuốc Paracetamol.\n[00:01:14 --> 00:01:30] Đặt hàng Long Châu.\n",
+        );
+        let updated = t
+            .update_line(1, "Đặt hàng qua Long Châu Online.")
+            .unwrap();
+        assert_eq!(
+            updated,
+            "[00:00:54 --> 00:01:14] Thuốc Paracetamol.\n[00:01:14 --> 00:01:30] Đặt hàng qua Long Châu Online.\n"
+        );
+        assert_eq!(t.text().unwrap(), updated);
+        assert_eq!(t.lines().unwrap()[1].start, "00:01:14");
     }
 }

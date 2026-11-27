@@ -1750,14 +1750,84 @@ pub fn build_excalidraw_json(layout: &LayoutDiagram) -> String {
     .unwrap_or_else(|_| "{}".into())
 }
 
+fn wrap_uncertainty_line(prefix: &str, text: &str, max_chars: usize) -> Vec<String> {
+    let full = format!("{prefix}{text}");
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for word in full.split_whitespace() {
+        let cur_len = current.chars().count();
+        let word_len = word.chars().count();
+        if current.is_empty() {
+            current.push_str(word);
+        } else if cur_len + 1 + word_len <= max_chars {
+            current.push(' ');
+            current.push_str(word);
+        } else {
+            lines.push(current);
+            current = format!("   {word}");
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
+}
+
+fn append_uncertainty_footer_card(
+    diagram: &ProcessDiagram,
+    icons: &std::collections::HashMap<String, serde_json::Value>,
+) -> Option<Vec<serde_json::Value>> {
+    let mode = diagram.uncertainty_mode.as_deref()?;
+    if !matches!(mode, "footer" | "badges-footer") || diagram.uncertainties.is_empty() {
+        return None;
+    }
+    let (min_x, _min_y, max_x, max_y) = crate::ve_engine::spec_bounds(&diagram.ve_elements, icons).ok()?;
+    let card_w = (max_x - min_x).clamp(520.0, 920.0);
+    let max_chars = ((card_w - 36.0) / 8.6).floor().max(48.0) as usize;
+    let numbered = mode == "badges-footer";
+    let mut body_lines = Vec::new();
+    for (idx, u) in diagram.uncertainties.iter().enumerate() {
+        let prefix = if numbered {
+            format!("?{}. ", idx + 1)
+        } else {
+            "• ".to_owned()
+        };
+        let content = if u.reason.is_empty() {
+            u.item.clone()
+        } else if u.item.is_empty() {
+            u.reason.clone()
+        } else {
+            format!("{} — {}", u.item, u.reason)
+        };
+        body_lines.extend(wrap_uncertainty_line(&prefix, &content, max_chars));
+    }
+    let body = body_lines.join("\n");
+    let mut els = diagram.ve_elements.clone();
+    els.push(json!({
+        "t": "card",
+        "id": "uncertainties_footer",
+        "x": min_x,
+        "y": max_y + 28.0,
+        "w": card_w,
+        "title": format!("Cần xác nhận ({})", diagram.uncertainties.len()),
+        "text": body,
+        "size": 15.0,
+        "color": "warn",
+        "fill": "warn",
+        "dashed": true,
+        "textColor": "ink"
+    }));
+    Some(els)
+}
+
 /// One-shot entry point for the UI: dispatches rich `ve_elements` to `ve_engine` or falls back to
 /// the layered flowchart layout + hand-drawn SVG + Excalidraw v2 JSON renderer.
 pub fn render_diagram(diagram: &ProcessDiagram) -> Result<RenderedDiagram, String> {
     if !diagram.ve_elements.is_empty() {
-        let out = crate::ve_engine::render_spec_elements(
-            &diagram.ve_elements,
-            crate::ve_engine::builtin_icons(),
-        )?;
+        let icons = crate::ve_engine::builtin_icons();
+        let augmented = append_uncertainty_footer_card(diagram, icons);
+        let spec_els = augmented.as_deref().unwrap_or(&diagram.ve_elements);
+        let out = crate::ve_engine::render_spec_elements(spec_els, icons)?;
         return Ok(RenderedDiagram {
             width: out.width,
             height: out.height,
@@ -1887,6 +1957,8 @@ mod tests {
             ve_elements: vec![],
             provider: "Rust".into(),
             model: "local".into(),
+            strategy: None,
+            uncertainty_mode: None,
         }
     }
 
@@ -1934,6 +2006,8 @@ mod tests {
             ve_elements: vec![],
             provider: String::new(),
             model: String::new(),
+            strategy: None,
+            uncertainty_mode: None,
         };
         let layout = layout_diagram(&diagram).unwrap();
         assert_zero_overlaps(&layout);
@@ -1963,6 +2037,8 @@ mod tests {
             ve_elements: vec![],
             provider: String::new(),
             model: String::new(),
+            strategy: None,
+            uncertainty_mode: None,
         };
         let layout = layout_diagram(&diagram).unwrap();
         assert_zero_overlaps(&layout);

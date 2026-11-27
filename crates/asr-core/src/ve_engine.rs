@@ -2262,6 +2262,10 @@ fn m_badge(e: &Value) -> Result<Vec<Value>, String> {
 }
 
 fn m_note(e: &Value) -> Result<Vec<Value>, String> {
+    // Allow deferred node-attached notes without explicit x/y; resolved in compile_scene once target shapes are laid out.
+    if e.get("x").is_none() && e.get("y").is_none() && str_at(e, "to").is_some() {
+        return Ok(vec![e.clone()]);
+    }
     let x = req_f64(e, "x", "note")?;
     let y = req_f64(e, "y", "note")?;
     let txt = str_at(e, "text").ok_or("note: missing 'text'")?;
@@ -3042,7 +3046,7 @@ fn compile_scene(
     spec_els: &[Value],
     icons: &HashMap<String, Value>,
 ) -> Result<CompiledScene, String> {
-    let els = expand_all(spec_els, icons)?;
+    let mut els = expand_all(spec_els, icons)?;
     let mut hinh: HashMap<String, AnchorInfo> = HashMap::new();
     for e in &els {
         let t = str_at(e, "t").unwrap_or("");
@@ -3064,6 +3068,70 @@ fn compile_scene(
             });
         }
     }
+
+    // Resolve deferred node-attached notes (t="note" with to="<nodeId>" and no explicit x/y).
+    let mut resolved_els: Vec<Value> = Vec::with_capacity(els.len());
+    for e in els.drain(..) {
+        if str_at(&e, "t") == Some("note")
+            && e.get("x").is_none()
+            && e.get("y").is_none()
+            && let Some(to_id) = str_at(&e, "to")
+            && let Some(target) = hinh.get(to_id).cloned()
+        {
+            let raw_txt = str_at(&e, "text").unwrap_or("").trim();
+            if raw_txt.is_empty() {
+                continue;
+            }
+            let sz = f64_at(&e, "size", 14.0);
+            let c = str_at(&e, "color").unwrap_or("muted");
+            let wrapped = wrap_swimlane_text(raw_txt, sz, 185.0);
+            let tw = rong_chu(&wrapped, sz);
+            let th = cao_chu(&wrapped, sz);
+            let nx = target.x + target.w + 22.0;
+            let ny = target.y + (target.h - th) / 2.0;
+            let nid = str_at(&e, "id")
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("user_note_{to_id}"));
+            hinh.insert(
+                nid.clone(),
+                AnchorInfo {
+                    id: nid.clone(),
+                    t: "anchor".into(),
+                    shape: "box".into(),
+                    x: nx - 4.0,
+                    y: ny - 2.0,
+                    w: tw + 8.0,
+                    h: th + 4.0,
+                    ghost: true,
+                    under: false,
+                },
+            );
+            resolved_els.push(json!({
+                "t": "text",
+                "id": nid,
+                "x": nx,
+                "y": ny,
+                "text": wrapped,
+                "size": sz,
+                "color": c,
+                "align": "left"
+            }));
+            resolved_els.push(json!({
+                "t": "arrow",
+                "from": nid,
+                "to": to_id,
+                "fromSide": "left",
+                "toSide": "right",
+                "color": c,
+                "dashed": true,
+                "weight": 1.0,
+                "head": "none"
+            }));
+            continue;
+        }
+        resolved_els.push(e);
+    }
+    els = resolved_els;
 
     let mut ordered: Vec<&Value> = Vec::with_capacity(els.len());
     for e in &els {

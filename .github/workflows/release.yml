@@ -48,9 +48,23 @@ jobs:
 
       - name: Setup Vulkan SDK (Windows GPU acceleration)
         if: matrix.platform == 'windows-latest'
-        uses: humbletim/install-vulkan-sdk@v1.2
-        with:
-          cache: true
+        shell: pwsh
+        run: |
+          $sdkRoot = "C:\VulkanSDK"
+          $installer = "$env:TEMP\vulkan_sdk.exe"
+          Invoke-WebRequest -Uri "https://sdk.lunarg.com/sdk/download/latest/windows/vulkan_sdk.exe" -OutFile $installer
+          Start-Process -FilePath $installer -ArgumentList "--root", $sdkRoot, "--accept-licenses", "--default-answer", "--confirm-command", "install" -Wait -NoNewWindow
+          $sdkDir = if (Test-Path "$sdkRoot\Include\vulkan\vulkan.h") {
+            $sdkRoot
+          } else {
+            (Get-ChildItem -Directory $sdkRoot | Select-Object -First 1).FullName
+          }
+          if (-not $sdkDir -or -not (Test-Path "$sdkDir\Lib\vulkan-1.lib")) {
+            throw "Vulkan SDK installation incomplete at $sdkDir"
+          }
+          Write-Host "Using VULKAN_SDK=$sdkDir"
+          echo "VULKAN_SDK=$sdkDir" >> $env:GITHUB_ENV
+          echo "$sdkDir\Bin" >> $env:GITHUB_PATH
 
       - name: Configure Windows build tools (LLVM / CMake)
         if: matrix.platform == 'windows-latest'

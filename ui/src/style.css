@@ -1824,6 +1824,10 @@ select.field { appearance: auto; }
 }
 .diagram-node-editable {
   cursor: pointer;
+  pointer-events: bounding-box;
+}
+.diagram-node-editable > * {
+  pointer-events: all;
 }
 .diagram-node-editable:hover {
   opacity: 0.86;
@@ -1913,6 +1917,21 @@ select.field { appearance: auto; }
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.diagram-source-select {
+  width: auto;
+  min-width: 156px;
+  padding: 5px 10px;
+  font-size: 13px;
+  height: 32px;
+}
+
+.diagram-modal-stage-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 .diagram-modal-stage {
   flex: 1 1 auto;

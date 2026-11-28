@@ -514,6 +514,7 @@ impl HttpClient {
                     "messages": [{ "role": "user", "content": content }],
                 });
                 if let Some(schema) = schema {
+                    body["temperature"] = json!(0.2);
                     body["output_config"] = json!({
                         "effort": "high",
                         "format": { "type": "json_schema", "schema": schema },
@@ -555,6 +556,14 @@ impl HttpClient {
                     ],
                 });
                 if let Some(schema) = schema {
+                    let lower = self.model.trim().to_ascii_lowercase();
+                    let is_reasoning = lower.starts_with("o1")
+                        || lower.starts_with("o3")
+                        || lower.starts_with("o4")
+                        || lower.starts_with("gpt-5");
+                    if !is_reasoning {
+                        body["temperature"] = json!(0.2);
+                    }
                     body["response_format"] = json!({
                         "type": "json_schema",
                         "json_schema": { "name": "meeting_note", "strict": true, "schema": schema },
@@ -566,6 +575,7 @@ impl HttpClient {
             Provider::Gemini => {
                 let mut config = json!({ "maxOutputTokens": max_tokens });
                 if let Some(schema) = schema {
+                    config["temperature"] = json!(0.2);
                     config["responseMimeType"] = json!("application/json");
                     config["responseJsonSchema"] = schema.clone();
                 }

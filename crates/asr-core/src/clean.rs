@@ -293,6 +293,38 @@ fn glossary_block(terms: &[Term]) -> String {
     }
 }
 
+fn content_words(text: &str) -> Vec<String> {
+    const FILLERS: &[&str] = &["à", "ừm", "ờ", "ơ", "ừ", "uh", "um", "kiểu"];
+    text.split_whitespace()
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase()
+        })
+        .filter(|w| !w.is_empty() && !FILLERS.contains(&w.as_str()))
+        .collect()
+}
+
+/// Guards against over-aggressive AI Clean edits that paraphrase, truncate, or drop negation.
+/// Allows typo/spelling/glossary/punctuation fixes while rejecting destructive rewrites.
+fn is_safe_clean_edit(before: &str, after: &str) -> bool {
+    let before_words = content_words(before);
+    let after_words = content_words(after);
+    if after_words.is_empty() {
+        return false;
+    }
+    if before_words.len() >= 6 {
+        let min_allowed = (before_words.len() * 60) / 100; // cannot drop > 40% of words
+        let max_allowed = (before_words.len() * 165).div_ceil(100); // cannot inflate > 1.65x
+        if after_words.len() < min_allowed || after_words.len() > max_allowed {
+            return false;
+        }
+    }
+    const NEGATIONS: &[&str] = &["không", "chưa", "đừng", "tránh", "chẳng"];
+    let had_negation = before_words.iter().any(|w| NEGATIONS.contains(&w.as_str()));
+    let has_negation = after_words.iter().any(|w| NEGATIONS.contains(&w.as_str()));
+    !had_negation || has_negation
+}
+
 fn preclean_line_text(text: &str, rules: &[(String, String)]) -> String {
     let fixed = SPELLING
         .iter()
@@ -341,7 +373,7 @@ pub fn propose_ai_clean(
          Quy tắc làm sạch:\n\
          1. Dựa vào toàn bộ ngữ cảnh cuộc họp, danh sách thuật ngữ (glossary) và ghi chú/tài liệu đính kèm (nếu có) để sửa đúng tên riêng, tên hệ thống, chữ viết tắt, thuật ngữ chuyên môn và các từ tiếng Việt bị máy nghe nhầm.\n\
          2. Dùng nhất quán thuật ngữ trong glossary trên mọi dòng có liên quan.\n\
-         3. Làm gọn từ đệm vô nghĩa lặp lại (à, ừm, ờ...), sửa lỗi ngắt/dính từ và bổ sung dấu câu, viết hoa tự nhiên để đọc mượt mà.\n\
+         3. Chỉ làm gọn từ đệm vô nghĩa lặp lại (à, ừm, ờ...), sửa lỗi ngắt/dính từ và bổ sung dấu câu, viết hoa tự nhiên. TUYỆT ĐỐI KHÔNG viết lại câu, KHÔNG rút gọn ý, KHÔNG làm mất từ phủ định (không, chưa, đừng, tránh) hay điều kiện rẽ nhánh (nếu, trừ khi, trường hợp, chuyển sang).\n\
          4. Giữ nguyên cấu trúc từng dòng theo đúng `<số dòng>`: không gộp dòng, không thêm/bớt dòng, không tự ghi mốc thời gian vào `corrected`.\n\
          5. Không thêm thông tin không có trong lời nói. Từ không chắc chắn máy nghe đúng và không có căn cứ rõ thì giữ nguyên.\n\
          6. Chỉ trả về những dòng có thay đổi trong mảng `edits` (ghi `reason` ngắn gọn bằng tiếng Việt nêu rõ đã sửa gì; nếu không có dòng nào cần sửa thì trả mảng rỗng).\n\n\
@@ -421,7 +453,7 @@ pub fn propose_ai_clean(
                             }
                             let corrected = apply_glossary(corrected_raw, rules_ref);
                             let precleaned = &parsed_ref[item.line - 1].3;
-                            if corrected == precleaned.trim() {
+                            if corrected == precleaned.trim() || !is_safe_clean_edit(precleaned, &corrected) {
                                 continue;
                             }
                             chunk_edits.push((item.line, corrected, item.reason.trim().to_owned()));
@@ -625,5 +657,27 @@ mod tests {
         assert!(proposal
             .cleaned_text
             .contains("[00:00:05 --> 00:00:10] Mình chốt dùng Bravo và gửi báo cáo thứ Sáu."));
+    }
+
+    #[test]
+    fn clean_guard_keeps_typo_fixes_and_rejects_truncation_or_dropped_negation() {
+        assert!(is_safe_clean_edit(
+            "à ừm nếu không đủ hoá đơn thì trả lại hồ sơ cho nhân viên",
+            "Nếu không đủ hoá đơn thì trả lại hồ sơ cho nhân viên."
+        ));
+        assert!(
+            !is_safe_clean_edit(
+                "nếu không đủ hoá đơn thì trả lại hồ sơ cho nhân viên ngay trong ngày",
+                "Đủ hoá đơn thì duyệt hồ sơ."
+            ),
+            "must reject edits that drop negation or truncate >40% of content"
+        );
+        assert!(
+            !is_safe_clean_edit(
+                "chưa chốt ngày triển khai ERP cho chi nhánh miền Bắc",
+                "Chốt ngày triển khai ERP cho chi nhánh miền Bắc."
+            ),
+            "must reject edits that drop 'chưa'"
+        );
     }
 }

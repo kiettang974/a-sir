@@ -670,15 +670,21 @@ fn sync_note_glossary(
     asr_core::summary::sync_note_value_glossary(draft, &terms)
 }
 
-/// Sends the cleaned transcript (falling back to raw) to the configured AI model to extract a diagram.
+/// Sends the chosen transcript source (`"raw"` or default `"cleaned"` falling back to raw)
+/// to the configured AI model to extract a diagram.
 #[tauri::command]
 async fn generate_diagram(
     app: State<'_, App>,
     id: u64,
     strategy: Option<String>,
     uncertainty_mode: Option<String>,
+    source: Option<String>,
 ) -> Result<ProcessDiagram, String> {
-    let transcript = app.runner.transcript(id)?.text_for_summary()?;
+    let t = app.runner.transcript(id)?;
+    let transcript = match source.as_deref() {
+        Some("raw") => t.text()?,
+        _ => t.text_for_summary()?,
+    };
     let workspace = app.workspace.clone();
     off_thread(move || {
         workspace

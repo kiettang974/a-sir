@@ -399,6 +399,8 @@ type SavedDiagramPayload = ProcessDiagram & {
   activeKey?: string;
 };
 
+type DiagramSource = "raw" | "cleaned";
+
 type JobDiagramState = {
   running: boolean;
   startedAt: number | null;
@@ -410,6 +412,7 @@ type JobDiagramState = {
   rendered: RenderedDiagram | null;
   selectedStrategy: DiagramStrategyId;
   uncertaintyMode: UncertaintyDisplayMode;
+  source: DiagramSource;
   cache: Map<string, CachedDiagramEntry>;
   exportError: { format: "png" | "drawio"; message: string } | null;
   exportNotice: string | null;
@@ -424,7 +427,7 @@ function cacheKey(strategy: DiagramStrategyId, mode: UncertaintyDisplayMode): st
   return `${strategy}::${mode}`;
 }
 
-function findVeNodeText(val: unknown, targetId: string): string | null {
+function findVeNodeText(val: unknown, targetId: string): { kind: "node"; text: string } | { kind: "skip" } | null {
   if (!val || typeof val !== "object") return null;
   if (Array.isArray(val)) {
     for (const item of val) {
@@ -434,19 +437,20 @@ function findVeNodeText(val: unknown, targetId: string): string | null {
     return null;
   }
   const obj = val as Record<string, unknown>;
-  if (obj.id === targetId && obj.t !== "arrow" && obj.t !== "line" && obj.t !== "legend") {
-    if (typeof obj.text === "string") return obj.text;
-    if (typeof obj.label === "string") return obj.label;
-    return "";
+  if (obj.id === targetId) {
+    if (obj.t === "arrow" || obj.t === "line" || obj.t === "legend") {
+      return { kind: "skip" };
+    }
+    for (const key of ["text", "label", "title", "name"] as const) {
+      if (typeof obj[key] === "string") return { kind: "node", text: obj[key] as string };
+    }
+    return { kind: "node", text: "" };
   }
-  if (obj.t === "swimlane" && Array.isArray(obj.nodes)) {
-    return findVeNodeText(obj.nodes, targetId);
-  }
-  if (obj.t === "tree" && obj.root) {
-    return findVeNodeText(obj.root, targetId);
-  }
-  if (Array.isArray(obj.children)) {
-    return findVeNodeText(obj.children, targetId);
+  for (const child of Object.values(obj)) {
+    if (child && typeof child === "object") {
+      const found = findVeNodeText(child, targetId);
+      if (found !== null) return found;
+    }
   }
   return null;
 }
@@ -487,15 +491,45 @@ function upsertAttachedNodeNote(diagram: ProcessDiagram, nodeId: string, noteTex
   diagram.veElements = filtered;
 }
 
-function findEditableNodeText(diagram: ProcessDiagram, rawId: string): { id: string; text: string } | null {
+function findEditableNodeText(
+  diagram: ProcessDiagram,
+  rawId: string,
+  svgEl?: SVGSVGElement,
+): { id: string; text: string } | null {
   let baseId = rawId.endsWith("~txt") ? rawId.slice(0, -4) : rawId;
   if (baseId.startsWith(USER_NOTE_PREFIX)) {
     baseId = baseId.slice(USER_NOTE_PREFIX.length);
   }
-  if (!baseId || baseId.startsWith("_") || baseId === "uncertainties_footer") return null;
+  if (
+    !baseId ||
+    baseId.startsWith("_") ||
+    baseId === "uncertainties_footer" ||
+    baseId.startsWith("legend") ||
+    baseId.includes("->")
+  ) {
+    return null;
+  }
   if (diagram.veElements && diagram.veElements.length > 0) {
     const found = findVeNodeText(diagram.veElements, baseId);
-    if (found !== null) return { id: baseId, text: found };
+    if (found?.kind === "skip") return null;
+    if (found?.kind === "node") return { id: baseId, text: found.text };
+  }
+  const legacyNode = diagram.nodes.find((n) => n.id === baseId);
+  if (legacyNode) return { id: baseId, text: legacyNode.label };
+
+  // Macro-expanded nodes (e.g. flow steps, cards, timeline stages) carry a real data-el-id in SVG.
+  if (svgEl) {
+    const targetG =
+      svgEl.querySelector<SVGGElement>(`g[data-el-id="${CSS.escape(baseId)}"]`) ??
+      svgEl.querySelector<SVGGElement>(`g[data-el-id="${CSS.escape(rawId)}"]`);
+    if (targetG) {
+      const hasShapeOrText = targetG.querySelector("rect, polygon, ellipse, circle, text") !== null;
+      const txtG = svgEl.querySelector<SVGGElement>(`g[data-el-id="${CSS.escape(`${baseId}~txt`)}"]`);
+      if (hasShapeOrText || txtG) {
+        const label = (txtG?.textContent ?? targetG.textContent ?? "").replace(/\s+/g, " ").trim();
+        return { id: baseId, text: label || baseId };
+      }
+    }
   }
   return null;
 }
@@ -571,6 +605,7 @@ function getState(id: number): JobDiagramState {
       rendered: null,
       selectedStrategy: "auto",
       uncertaintyMode: "off",
+      source: "raw",
       cache: new Map(),
       exportError: null,
       exportNotice: null,
@@ -734,6 +769,7 @@ async function runGeneration(
       id,
       strategy: chosen === "auto" ? null : chosen,
       uncertaintyMode: chosenUncertainty,
+      source: st.source,
     });
     let nextRendered: RenderedDiagram;
     try {
@@ -858,21 +894,49 @@ export function diagramPane(
 
   const openModal = (diagram: ProcessDiagram, rendered: RenderedDiagram) => {
     let modalZoom = 1;
+    let currentDiagram = diagram;
+    let currentRendered = rendered;
+    let cleanupNodeEditing: (() => void) | null = null;
     const stage = el("div", { className: "diagram-modal-stage" });
+    const modalStageWrap = el("div", { className: "diagram-modal-stage-wrap" }, stage);
     const zoomLabel = el("span", { className: "diagram-zoom-val" });
 
     const renderModalSvg = () => {
+      cleanupNodeEditing?.();
+      cleanupNodeEditing = null;
       zoomLabel.textContent = `${Math.round(modalZoom * 100)}%`;
       stage.className = `diagram-modal-stage${darkTheme ? " dark" : ""}`;
-      stage.replaceChildren(parseRustSvg(activeSvgMarkup(rendered), modalZoom, rendered.width, rendered.height));
+      const modalSvg = parseRustSvg(
+        activeSvgMarkup(currentRendered),
+        modalZoom,
+        currentRendered.width,
+        currentRendered.height,
+      );
+      stage.replaceChildren(modalSvg);
+      cleanupNodeEditing = attachNodeEditing(
+        modalStageWrap,
+        stage,
+        modalSvg,
+        currentDiagram,
+        (nextDiagram, nextRendered) => {
+          currentDiagram = nextDiagram;
+          currentRendered = nextRendered;
+          renderModalSvg();
+        },
+      );
     };
 
     const close = () => {
+      cleanupNodeEditing?.();
+      cleanupNodeEditing = null;
       document.removeEventListener("keydown", onKey);
       backdrop.remove();
     };
     const onKey = (ev: KeyboardEvent) => {
-      if (ev.key === "Escape") close();
+      if (ev.key === "Escape") {
+        if (modalStageWrap.querySelector(".diagram-inline-note")) return;
+        close();
+      }
     };
     document.addEventListener("keydown", onKey);
 
@@ -978,7 +1042,7 @@ export function diagramPane(
         onclick: (ev: MouseEvent) => ev.stopPropagation(),
       },
       modalHead,
-      stage,
+      modalStageWrap,
       modalUncertainties,
     );
     const backdrop = el(
@@ -1597,7 +1661,8 @@ export function diagramPane(
     stageEl: HTMLElement,
     svgEl: SVGSVGElement,
     diagram: ProcessDiagram,
-  ) => {
+    onSaved?: (nextDiagram: ProcessDiagram, nextRendered: RenderedDiagram) => void,
+  ): (() => void) => {
     let activeInline: HTMLElement | null = null;
     const closeInline = () => {
       activeInline?.remove();
@@ -1607,19 +1672,19 @@ export function diagramPane(
     const groups = svgEl.querySelectorAll<SVGGElement>("g[data-el-id]");
     for (const g of groups) {
       const rawId = g.getAttribute("data-el-id") ?? "";
-      if (findEditableNodeText(diagram, rawId)) {
+      if (findEditableNodeText(diagram, rawId, svgEl)) {
         g.classList.add("diagram-node-editable");
       }
     }
 
-    stageEl.addEventListener("click", (ev) => {
+    const onStageClick = (ev: MouseEvent) => {
       const clickedGroup = (ev.target as Element | null)?.closest<SVGGElement>("g[data-el-id]");
       if (!clickedGroup) {
         closeInline();
         return;
       }
       const rawId = clickedGroup.getAttribute("data-el-id") ?? "";
-      const found = findEditableNodeText(diagram, rawId);
+      const found = findEditableNodeText(diagram, rawId, svgEl);
       if (!found) {
         closeInline();
         return;
@@ -1660,6 +1725,7 @@ export function diagramPane(
           });
           const payload = buildPersistPayload(st, cloned, st.selectedStrategy, st.uncertaintyMode);
           st.savedPath = await invoke<string>("save_diagram", { id, diagram: payload });
+          onSaved?.(cloned, nextRendered);
           draw();
         } catch (e) {
           st.error = `Không lưu được ghi chú nút: ${e}`;
@@ -1670,6 +1736,7 @@ export function diagramPane(
       editor.addEventListener("keydown", (kev) => {
         if (kev.key === "Escape") {
           kev.preventDefault();
+          kev.stopPropagation();
           finished = true;
           closeInline();
         } else if (kev.key === "Enter" && !kev.shiftKey) {
@@ -1704,7 +1771,40 @@ export function diagramPane(
         sel.removeAllRanges();
         sel.addRange(range);
       }
-    });
+    };
+
+    stageEl.addEventListener("click", onStageClick);
+    return () => {
+      closeInline();
+      stageEl.removeEventListener("click", onStageClick);
+    };
+  };
+
+  const renderSourceSelect = (st: JobDiagramState): HTMLElement => {
+    const sel = el(
+      "select",
+      {
+        className: "field diagram-source-select",
+        ariaLabel: "Chọn nguồn văn bản để tạo sơ đồ",
+        title: "Chọn tạo sơ đồ từ Văn bản gốc hay Bản làm sạch",
+        disabled: st.running,
+        onchange: () => {
+          st.source = (sel.value === "cleaned" ? "cleaned" : "raw") as DiagramSource;
+          draw();
+        },
+      },
+      el("option", {
+        value: "raw",
+        selected: st.source === "raw",
+        textContent: "Nguồn: Văn bản gốc",
+      }),
+      el("option", {
+        value: "cleaned",
+        selected: st.source === "cleaned",
+        textContent: "Nguồn: Bản làm sạch",
+      }),
+    ) as HTMLSelectElement;
+    return sel;
   };
 
   const renderNoticeBanner = (st: JobDiagramState): HTMLElement | null => {
@@ -1808,6 +1908,7 @@ export function diagramPane(
           ),
           renderStrategyDropdown(st),
           renderUncertaintyDropdown(st),
+          renderSourceSelect(st),
           el(
             "button",
             {
@@ -1937,6 +2038,7 @@ export function diagramPane(
         "div",
         { className: "reader-actions" },
         renderStrategyDropdown(st),
+        renderSourceSelect(st),
         el(
           "button",
           {

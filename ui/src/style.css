@@ -30,6 +30,8 @@
   --shadow-sm: 0 1px 2px rgb(15 23 42 / 0.05);
   --shadow-menu: 0 12px 30px -6px rgb(15 23 42 / 0.14), 0 2px 6px rgb(15 23 42 / 0.06);
   --backdrop: rgb(15 23 42 / 0.52);
+  --diagram-paper-light: #fdfbf7;
+  --diagram-paper-dark: #12151e;
   --tag-blue: #3b82f6;
   --tag-gray: #94a3b8;
   --tag-green: #22c55e;
@@ -1567,10 +1569,12 @@ select.field { appearance: auto; }
 }
 .diagram-gallery-grid {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 18px;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  grid-auto-rows: max-content;
   gap: 14px;
   align-content: start;
   background: var(--paper);
@@ -1578,6 +1582,10 @@ select.field { appearance: auto; }
 .diagram-gallery-card {
   display: flex;
   flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  height: auto;
+  min-height: 204px;
   text-align: left;
   padding: 0;
   border: 1px solid var(--rule);
@@ -1598,6 +1606,7 @@ select.field { appearance: auto; }
 }
 .diagram-gallery-preview {
   height: 112px;
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1616,6 +1625,7 @@ select.field { appearance: auto; }
   display: block;
 }
 .diagram-gallery-body {
+  flex-shrink: 0;
   padding: 10px 12px 12px;
   display: flex;
   flex-direction: column;
@@ -1679,10 +1689,14 @@ select.field { appearance: auto; }
 }
 .diagram-stage {
   overflow: auto;
-  background: var(--card);
+  background: var(--diagram-paper-light);
   padding: 48px 18px 18px;
   height: 70vh;
   min-height: 520px;
+}
+.diagram-stage.dark,
+.diagram-modal-stage.dark {
+  background: var(--diagram-paper-dark);
 }
 .diagram-stage-loading {
   display: flex;
@@ -1758,34 +1772,38 @@ select.field { appearance: auto; }
 .diagram-node-editable:hover {
   opacity: 0.86;
 }
-.diagram-node-editor {
-  position: absolute;
-  z-index: 20;
-  width: 280px;
-  padding: 12px;
-  border-radius: var(--radius-md);
-  background: var(--card);
-  border: 1px solid var(--accent-ring);
-  box-shadow: var(--shadow-menu);
+.ai-loading-stage {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 320px;
+  padding: 40px 24px;
+  text-align: center;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  background: var(--card);
 }
-.diagram-node-editor-title {
-  font-size: 12px;
-  font-weight: 600;
+.diagram-inline-note {
+  position: absolute;
+  z-index: 20;
+  min-width: 150px;
+  max-width: 210px;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--card);
+  border: 1.5px dashed var(--accent);
+  box-shadow: var(--shadow-sm);
+  font: 400 14px/1.35 var(--hand);
   color: var(--ink-soft);
+  white-space: pre-wrap;
+  outline: none;
+  cursor: text;
 }
-.diagram-node-editor textarea {
-  width: 100%;
-  min-height: 76px;
-  resize: vertical;
-  font: 400 13px/1.45 var(--ui);
-}
-.diagram-node-editor-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
+.diagram-inline-note:empty::before {
+  content: attr(data-placeholder);
+  color: var(--ink-faint);
 }
 @keyframes diagram-node-wiggle {
   0%, 100% { transform: translate(0, 0) rotate(0deg); }

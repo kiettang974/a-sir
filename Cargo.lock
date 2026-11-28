@@ -108,7 +108,7 @@ dependencies = [
 
 [[package]]
 name = "asr-studio"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "asr-core",
  "serde",

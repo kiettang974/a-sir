@@ -339,6 +339,7 @@ type RenderedDiagram = {
   width: number;
   height: number;
   svg: string;
+  darkSvg?: string;
   excalidrawJson: string;
   drawioXml: string;
 };
@@ -795,7 +796,11 @@ export function diagramPane(
   let loadedLocal = false;
   let loadError: string | null = null;
   let zoom = 0.75;
+  let darkTheme = false;
   let loadingTimer: number | null = null;
+
+  const activeSvgMarkup = (rendered: RenderedDiagram): string =>
+    darkTheme && rendered.darkSvg ? rendered.darkSvg : rendered.svg;
 
   const stopLoadingTimer = () => {
     if (loadingTimer !== null) {
@@ -859,7 +864,8 @@ export function diagramPane(
 
     const renderModalSvg = () => {
       zoomLabel.textContent = `${Math.round(modalZoom * 100)}%`;
-      stage.replaceChildren(parseRustSvg(rendered.svg, modalZoom, rendered.width, rendered.height));
+      stage.className = `diagram-modal-stage${darkTheme ? " dark" : ""}`;
+      stage.replaceChildren(parseRustSvg(activeSvgMarkup(rendered), modalZoom, rendered.width, rendered.height));
     };
 
     const close = () => {
@@ -916,6 +922,19 @@ export function diagramPane(
           onclick: () => {
             modalZoom = 1;
             renderModalSvg();
+          },
+        }),
+        el("span", { className: "diagram-stage-sep" }),
+        el("button", {
+          className: "btn-ghost diagram-zoom-btn",
+          title: darkTheme ? "Chuyển sang nền sáng" : "Chuyển sang nền tối (Excalidraw Dark)",
+          textContent: darkTheme ? "Nền sáng" : "Nền tối",
+          onclick: (ev: MouseEvent) => {
+            darkTheme = !darkTheme;
+            const btn = ev.currentTarget as HTMLButtonElement | null;
+            if (btn) btn.textContent = darkTheme ? "Nền sáng" : "Nền tối";
+            renderModalSvg();
+            draw();
           },
         }),
         el("span", { className: "diagram-stage-sep" }),
@@ -995,7 +1014,7 @@ export function diagramPane(
     try {
       let bytes: Uint8Array;
       if (format === "png") {
-        bytes = await rasterizeSvgToPng(st.rendered.svg, st.rendered.width, st.rendered.height);
+        bytes = await rasterizeSvgToPng(activeSvgMarkup(st.rendered), st.rendered.width, st.rendered.height);
       } else {
         bytes = new TextEncoder().encode(st.rendered.drawioXml);
       }
@@ -1580,10 +1599,10 @@ export function diagramPane(
     svgEl: SVGSVGElement,
     diagram: ProcessDiagram,
   ) => {
-    let activePopover: HTMLElement | null = null;
-    const closePopover = () => {
-      activePopover?.remove();
-      activePopover = null;
+    let activeInline: HTMLElement | null = null;
+    const closeInline = () => {
+      activeInline?.remove();
+      activeInline = null;
     };
 
     const groups = svgEl.querySelectorAll<SVGGElement>("g[data-el-id]");
@@ -1597,32 +1616,37 @@ export function diagramPane(
     stageEl.addEventListener("click", (ev) => {
       const clickedGroup = (ev.target as Element | null)?.closest<SVGGElement>("g[data-el-id]");
       if (!clickedGroup) {
-        closePopover();
+        closeInline();
         return;
       }
       const rawId = clickedGroup.getAttribute("data-el-id") ?? "";
       const found = findEditableNodeText(diagram, rawId);
       if (!found) {
-        closePopover();
+        closeInline();
         return;
       }
       ev.stopPropagation();
-      closePopover();
+      closeInline();
 
       const existingNote = findAttachedNodeNote(diagram, found.id);
-      const input = el("textarea", {
-        className: "field",
-        value: existingNote,
-        placeholder: "Thêm ghi chú bên ngoài nút này (chữ bên trong nút vẫn giữ nguyên)…",
-        ariaLabel: "Ghi chú bên ngoài nút sơ đồ",
-      }) as HTMLTextAreaElement;
+      const isClickingExistingNote = rawId.startsWith(USER_NOTE_PREFIX);
+      const editor = el("div", {
+        className: "diagram-inline-note",
+        contentEditable: "true",
+        spellcheck: false,
+        ariaLabel: `Ghi chú cho ${found.text}`,
+        onclick: (pev: MouseEvent) => pev.stopPropagation(),
+      });
+      editor.dataset.placeholder = "Ghi chú… (Enter để lưu)";
+      editor.innerText = existingNote;
 
-      const saveNote = async (nextText: string) => {
-        const trimmed = nextText.trim();
-        if (trimmed === existingNote.trim()) {
-          closePopover();
-          return;
-        }
+      let finished = false;
+      const commit = async () => {
+        if (finished) return;
+        finished = true;
+        const trimmed = (editor.innerText ?? "").replace(/\r\n/g, "\n").trim();
+        closeInline();
+        if (trimmed === existingNote.trim()) return;
         const st = getState(id);
         if (!st.diagram) return;
         const cloned: ProcessDiagram = JSON.parse(JSON.stringify(st.diagram));
@@ -1637,63 +1661,50 @@ export function diagramPane(
           });
           const payload = buildPersistPayload(st, cloned, st.selectedStrategy, st.uncertaintyMode);
           st.savedPath = await invoke<string>("save_diagram", { id, diagram: payload });
-          st.exportNotice = trimmed ? "Đã lưu ghi chú bên ngoài nút." : "Đã xoá ghi chú nút.";
-          closePopover();
           draw();
         } catch (e) {
           st.error = `Không lưu được ghi chú nút: ${e}`;
-          closePopover();
           draw();
         }
       };
 
-      input.addEventListener("keydown", (kev) => {
+      editor.addEventListener("keydown", (kev) => {
         if (kev.key === "Escape") {
           kev.preventDefault();
-          closePopover();
-        } else if (kev.key === "Enter" && (kev.metaKey || kev.ctrlKey)) {
+          finished = true;
+          closeInline();
+        } else if (kev.key === "Enter" && !kev.shiftKey) {
           kev.preventDefault();
-          void saveNote(input.value);
+          void commit();
         }
       });
-
-      const shortLabel = found.text.replace(/\s+/g, " ").trim();
-      const pop = el(
-        "div",
-        {
-          className: "diagram-node-editor",
-          onclick: (pev: MouseEvent) => pev.stopPropagation(),
-        },
-        el("span", {
-          className: "diagram-node-editor-title",
-          textContent: shortLabel ? `Ghi chú cho: ${shortLabel}` : "Ghi chú bên ngoài nút",
-        }),
-        input,
-        el(
-          "div",
-          { className: "diagram-node-editor-actions" },
-          existingNote
-            ? el("button", {
-                className: "link danger-link",
-                textContent: "Xoá ghi chú",
-                onclick: () => void saveNote(""),
-              })
-            : null,
-          el("button", { className: "btn-ghost", textContent: "Huỷ", onclick: closePopover }),
-          el("button", { className: "btn-primary", textContent: "Lưu", onclick: () => void saveNote(input.value) }),
-        ),
-      );
+      editor.addEventListener("blur", () => {
+        void commit();
+      });
 
       const wrapRect = stageWrap.getBoundingClientRect();
       const targetRect = clickedGroup.getBoundingClientRect();
-      const left = Math.max(12, Math.min(wrapRect.width - 296, targetRect.left - wrapRect.left));
-      const top = Math.max(12, Math.min(wrapRect.height - 170, targetRect.bottom - wrapRect.top + 8));
-      pop.style.left = `${Math.round(left)}px`;
-      pop.style.top = `${Math.round(top)}px`;
-      stageWrap.append(pop);
-      activePopover = pop;
-      input.focus();
-      input.setSelectionRange(input.value.length, input.value.length);
+      const rawLeft = isClickingExistingNote
+        ? targetRect.left - wrapRect.left - 4
+        : targetRect.right - wrapRect.left + 16;
+      const rawTop = isClickingExistingNote
+        ? targetRect.top - wrapRect.top - 4
+        : targetRect.top - wrapRect.top + Math.max(0, (targetRect.height - 32) / 2);
+      const left = Math.max(12, Math.min(wrapRect.width - 216, rawLeft));
+      const top = Math.max(48, Math.min(wrapRect.height - 64, rawTop));
+      editor.style.left = `${Math.round(left)}px`;
+      editor.style.top = `${Math.round(top)}px`;
+      stageWrap.append(editor);
+      activeInline = editor;
+      editor.focus();
+      const sel = window.getSelection();
+      if (sel) {
+        const range = document.createRange();
+        range.selectNodeContents(editor);
+        range.collapse(false);
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
     });
   };
 
@@ -1821,7 +1832,7 @@ export function diagramPane(
         ),
       );
 
-      const svg = parseRustSvg(rendered.svg, zoom, rendered.width, rendered.height);
+      const svg = parseRustSvg(activeSvgMarkup(rendered), zoom, rendered.width, rendered.height);
 
       const badgeParts = [
         diagram.provider || picked?.name || "AI",
@@ -1862,6 +1873,17 @@ export function diagramPane(
           },
         }),
         el("span", { className: "diagram-stage-sep" }),
+        el("button", {
+          className: "btn-ghost diagram-zoom-btn",
+          title: darkTheme ? "Chuyển sang nền sáng" : "Chuyển sang nền tối (Excalidraw Dark)",
+          ariaLabel: darkTheme ? "Chuyển sang nền sáng" : "Chuyển sang nền tối",
+          textContent: darkTheme ? "Sáng" : "Tối",
+          onclick: () => {
+            darkTheme = !darkTheme;
+            draw();
+          },
+        }),
+        el("span", { className: "diagram-stage-sep" }),
         el(
           "button",
           {
@@ -1874,7 +1896,7 @@ export function diagramPane(
         ),
       );
 
-      const stageEl = st.running ? null : el("div", { className: "diagram-stage" }, svg);
+      const stageEl = st.running ? null : el("div", { className: `diagram-stage${darkTheme ? " dark" : ""}` }, svg);
       const stageWrap = st.running
         ? renderLoadingStage(st)
         : el(

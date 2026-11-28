@@ -413,25 +413,26 @@ export function notePane(id: number, name: string, links: Links): HTMLElement {
 
     const body = el(
       "div",
-      { className: "note-form", role: "status", ariaLive: "polite" },
-      el("h3", { textContent: "Đang tạo biên bản cuộc họp…" }),
-      el("p", {
-        className: "sending",
-        textContent: `Đang chờ ${PROVIDER_NAME[run.provider]}. Bạn có thể chuyển sang tab khác trong lúc chờ — biên bản sẽ tự lưu khi xong.`,
-      }),
-      el("div", { className: "clean-progress-wrap" }, bar),
-      meta,
-      run.previousNote
-        ? el(
-            "div",
-            { className: "actions wrap" },
-            el("button", {
+      { className: "note-form" },
+      el(
+        "div",
+        { className: "ai-loading-stage", role: "status", ariaLive: "polite" },
+        el("div", { className: "diagram-spinner", ariaHidden: "true" }),
+        el("p", { className: "diagram-loading-title", textContent: "Đang tạo biên bản cuộc họp…" }),
+        el("p", {
+          className: "diagram-loading-sub",
+          textContent: `Đang chờ ${PROVIDER_NAME[run.provider]}. Bạn có thể chuyển sang tab khác trong lúc chờ — biên bản sẽ tự lưu khi xong.`,
+        }),
+        el("div", { className: "diagram-loading-bar" }, bar),
+        meta,
+        run.previousNote
+          ? el("button", {
               className: "link",
               textContent: "Xem lại bản nháp cũ trong lúc chờ",
               onclick: () => showNote(run.previousNote!),
-            }),
-          )
-        : null,
+            })
+          : null,
+      ),
     );
     scroll.replaceChildren(body);
   }

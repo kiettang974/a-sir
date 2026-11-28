@@ -151,6 +151,8 @@ pub struct RenderedDiagram {
     pub width: f64,
     pub height: f64,
     pub svg: String,
+    #[serde(default)]
+    pub dark_svg: String,
     pub excalidraw_json: String,
     pub drawio_xml: String,
 }
@@ -1774,15 +1776,92 @@ fn wrap_uncertainty_line(prefix: &str, text: &str, max_chars: usize) -> Vec<Stri
     lines
 }
 
+fn strip_warn_from_value(val: &mut serde_json::Value) -> bool {
+    match val {
+        serde_json::Value::Object(map) => {
+            let t = map.get("t").and_then(serde_json::Value::as_str).unwrap_or("");
+            // Remove uncertainty legends and ?1/?2 warn badges when rendering clean ("off" / "footer") modes.
+            if t == "legend" {
+                let has_warn_item = map
+                    .get("items")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|items| {
+                        items.iter().any(|it| {
+                            it.get("color").and_then(serde_json::Value::as_str) == Some("warn")
+                                || it
+                                    .get("label")
+                                    .or_else(|| it.get("text"))
+                                    .and_then(serde_json::Value::as_str)
+                                    .is_some_and(|s| s.to_lowercase().contains("cần xác nhận"))
+                        })
+                    });
+                if has_warn_item {
+                    return false;
+                }
+            }
+            if t == "badge" {
+                let is_warn_badge = map.get("color").and_then(serde_json::Value::as_str) == Some("warn")
+                    || map
+                        .get("n")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|s| s.trim().starts_with('?'));
+                if is_warn_badge {
+                    return false;
+                }
+            }
+
+            let is_shape_like = matches!(t, "box" | "diamond" | "ellipse" | "tree")
+                || map.contains_key("lane")
+                || map.contains_key("shape");
+            let was_warn = map.get("color").and_then(serde_json::Value::as_str) == Some("warn")
+                || map.get("fill").and_then(serde_json::Value::as_str) == Some("warn");
+            if map.get("color").and_then(serde_json::Value::as_str) == Some("warn") {
+                map.insert("color".into(), json!("ink"));
+            }
+            if map.get("fill").and_then(serde_json::Value::as_str) == Some("warn") {
+                map.remove("fill");
+            }
+            if was_warn && map.get("dashed").and_then(serde_json::Value::as_bool) == Some(true) {
+                map.remove("dashed");
+            }
+            if is_shape_like {
+                map.insert("noAutoWarn".into(), json!(true));
+            }
+
+            for key in ["nodes", "edges", "children", "messages", "elements"] {
+                if let Some(serde_json::Value::Array(arr)) = map.get_mut(key) {
+                    arr.retain_mut(strip_warn_from_value);
+                }
+            }
+            if let Some(root) = map.get_mut("root") {
+                strip_warn_from_value(root);
+            }
+            true
+        }
+        serde_json::Value::Array(arr) => {
+            arr.retain_mut(strip_warn_from_value);
+            true
+        }
+        _ => true,
+    }
+}
+
+fn strip_inline_uncertainty_highlights(els: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    let mut cleaned = els.to_vec();
+    cleaned.retain_mut(strip_warn_from_value);
+    cleaned
+}
+
 fn append_uncertainty_footer_card(
     diagram: &ProcessDiagram,
+    base_els: &[serde_json::Value],
     icons: &std::collections::HashMap<String, serde_json::Value>,
 ) -> Option<Vec<serde_json::Value>> {
     let mode = diagram.uncertainty_mode.as_deref()?;
     if !matches!(mode, "footer" | "badges-footer") || diagram.uncertainties.is_empty() {
         return None;
     }
-    let (min_x, _min_y, max_x, max_y) = crate::ve_engine::spec_bounds(&diagram.ve_elements, icons).ok()?;
+    let (min_x, _min_y, max_x, max_y) = crate::ve_engine::spec_bounds(base_els, icons).ok()?;
     let card_w = (max_x - min_x).clamp(520.0, 920.0);
     let max_chars = ((card_w - 36.0) / 8.6).floor().max(48.0) as usize;
     let numbered = mode == "badges-footer";
@@ -1803,7 +1882,7 @@ fn append_uncertainty_footer_card(
         body_lines.extend(wrap_uncertainty_line(&prefix, &content, max_chars));
     }
     let body = body_lines.join("\n");
-    let mut els = diagram.ve_elements.clone();
+    let mut els = base_els.to_vec();
     els.push(json!({
         "t": "card",
         "id": "uncertainties_footer",
@@ -1826,13 +1905,28 @@ fn append_uncertainty_footer_card(
 pub fn render_diagram(diagram: &ProcessDiagram) -> Result<RenderedDiagram, String> {
     if !diagram.ve_elements.is_empty() {
         let icons = crate::ve_engine::builtin_icons();
-        let augmented = append_uncertainty_footer_card(diagram, icons);
-        let spec_els = augmented.as_deref().unwrap_or(&diagram.ve_elements);
+        let mode = diagram.uncertainty_mode.as_deref().unwrap_or("off");
+        let cleaned_base = if matches!(mode, "off" | "footer") {
+            Some(strip_inline_uncertainty_highlights(&diagram.ve_elements))
+        } else {
+            None
+        };
+        let base_els = cleaned_base.as_deref().unwrap_or(&diagram.ve_elements);
+        let augmented = append_uncertainty_footer_card(diagram, base_els, icons);
+        let spec_els = augmented.as_deref().unwrap_or(base_els);
         let out = crate::ve_engine::render_spec_elements(spec_els, icons)?;
+        let dark_svg = crate::ve_engine::render_spec_elements_with_theme(
+            spec_els,
+            icons,
+            crate::ve_engine::ThemeMode::Dark,
+        )
+        .map(|d| d.svg)
+        .unwrap_or_else(|_| out.svg.clone());
         return Ok(RenderedDiagram {
             width: out.width,
             height: out.height,
             svg: out.svg,
+            dark_svg,
             excalidraw_json: out.excalidraw_json,
             drawio_xml: out.drawio_xml,
         });
@@ -1844,6 +1938,7 @@ pub fn render_diagram(diagram: &ProcessDiagram) -> Result<RenderedDiagram, Strin
     Ok(RenderedDiagram {
         width: layout.width,
         height: layout.height,
+        dark_svg: svg.clone(),
         svg,
         excalidraw_json,
         drawio_xml,
@@ -2005,6 +2100,64 @@ mod tests {
             strategy: None,
             uncertainty_mode: None,
         }
+    }
+
+    #[test]
+    fn off_and_footer_modes_strip_all_inline_amber_highlights() {
+        let base = ProcessDiagram {
+            title: "Quy trình mẫu".into(),
+            summary: String::new(),
+            nodes: vec![],
+            edges: vec![],
+            ve_elements: vec![
+                json!({
+                    "t": "swimlane",
+                    "x": 0,
+                    "y": 0,
+                    "lanes": [{ "id": "u", "label": "Sale" }],
+                    "nodes": [
+                        { "id": "b1", "lane": "u", "row": 0, "kind": "step", "text": "Chọn dịch vụ?", "dashed": true, "color": "warn", "fill": "warn" },
+                        { "id": "d1", "lane": "u", "row": 1, "kind": "decision", "text": "Hình thức?" }
+                    ],
+                    "edges": [
+                        { "from": "b1", "to": "d1", "text": "Gửi?", "dashed": true, "color": "warn" }
+                    ]
+                }),
+                json!({
+                    "t": "legend",
+                    "x": 0,
+                    "y": 320,
+                    "items": [
+                        { "label": "Đã chốt", "color": "ink" },
+                        { "label": "Cần xác nhận", "color": "warn", "dashed": true }
+                    ]
+                }),
+            ],
+            uncertainties: vec![crate::diagram::DiagramUncertainty {
+                item: "Giá dịch vụ B2C".into(),
+                reason: "Chưa rõ khi nào sửa xong".into(),
+                node_id: Some("b1".into()),
+            }],
+            provider: "Claude".into(),
+            model: "test".into(),
+            strategy: Some("process-flow".into()),
+            uncertainty_mode: Some("inline".into()),
+        };
+
+        let inline_out = render_diagram(&base).unwrap();
+        assert!(inline_out.svg.contains("#E8930C"), "inline mode should keep amber highlights");
+
+        let mut off_diag = base.clone();
+        off_diag.uncertainty_mode = Some("off".into());
+        let off_out = render_diagram(&off_diag).unwrap();
+        assert!(!off_out.svg.contains("#E8930C"), "off mode must strip all amber stroke highlights");
+        assert!(!off_out.svg.contains("#F9E1BB"), "off mode must strip all amber fill highlights");
+        assert!(!off_out.svg.contains("Cần xác nhận"), "off mode must strip uncertainty legend");
+
+        let mut footer_diag = base;
+        footer_diag.uncertainty_mode = Some("footer".into());
+        let footer_out = render_diagram(&footer_diag).unwrap();
+        assert!(footer_out.svg.contains("uncertainties_footer"), "footer mode must include footer card");
     }
 
     #[test]

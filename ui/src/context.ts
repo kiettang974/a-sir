@@ -489,9 +489,8 @@ export function aiCleanPane(jobId: number, title: string, cb: AiCleanCallbacks):
     if (!cleanStartedAt.has(jobId)) cleanStartedAt.set(jobId, startedAt);
     const estS = cleanEstimatedSecs.get(jobId) ?? 20;
 
-    const statusHeading = el("h3", { textContent: "Đang làm sạch bản chép lời…" });
-    const barHost = el("div", { className: "clean-progress-wrap" });
-    const elapsedLine = el("p", { className: "hint" });
+    const barHost = el("div", { className: "diagram-loading-bar" });
+    const elapsedLine = el("p", { className: "diagram-loading-meta" });
 
     const updateProgress = () => {
       const elapsedS = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
@@ -501,7 +500,20 @@ export function aiCleanPane(jobId: number, title: string, cb: AiCleanCallbacks):
     };
 
     updateProgress();
-    body.replaceChildren(statusHeading, barHost, elapsedLine);
+    body.replaceChildren(
+      el(
+        "div",
+        { className: "ai-loading-stage", role: "status", ariaLive: "polite" },
+        el("div", { className: "diagram-spinner", ariaHidden: "true" }),
+        el("p", { className: "diagram-loading-title", textContent: "Đang làm sạch bản chép lời…" }),
+        el("p", {
+          className: "diagram-loading-sub",
+          textContent: "AI đang soát lỗi chính tả và thuật ngữ. Bạn có thể chuyển sang tab khác trong lúc chờ.",
+        }),
+        barHost,
+        elapsedLine,
+      ),
+    );
     elapsedTimer = window.setInterval(() => {
       if (!runningCleanJobs.has(jobId) || !body.isConnected) {
         stopTimer();

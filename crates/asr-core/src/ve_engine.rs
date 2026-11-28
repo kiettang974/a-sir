@@ -428,7 +428,8 @@ fn expand_all(els: &[Value], icons: &HashMap<String, Value>) -> Result<Vec<Value
     for (i, e) in els.iter().enumerate() {
         let t = str_at(e, "t").unwrap_or("");
         match t {
-            "box" | "ellipse" | "diamond" | "arrow" | "line" | "text" | "anchor" | "raw" => {
+            "box" | "ellipse" | "diamond" | "arrow" | "line" | "text" | "anchor" | "raw"
+            | "attached_note" => {
                 out.push(e.clone());
             }
             "frame" => out.extend(expand_all(&m_frame(e)?, icons)?),
@@ -445,6 +446,7 @@ fn expand_all(els: &[Value], icons: &HashMap<String, Value>) -> Result<Vec<Value
             "ring" => out.extend(expand_all(&m_ring(e)?, icons)?),
             "lanes" => out.extend(expand_all(&m_lanes(e)?, icons)?),
             "swimlane" => out.extend(expand_all(&m_swimlane(e)?, icons)?),
+            "flow" => out.extend(expand_all(&m_flow(e)?, icons)?),
             "start" => out.extend(expand_all(&m_start(e)?, icons)?),
             "end" => out.extend(expand_all(&m_end(e)?, icons)?),
             "stack" => out.extend(expand_all(&m_stack(e)?, icons)?),
@@ -1495,7 +1497,7 @@ fn m_tree(e: &Value) -> Result<Vec<Value>, String> {
             "text": wrapped_txt,
             "size": sz
         });
-        for k in ["color", "fill", "fillStyle", "dashed", "sharp", "weight"] {
+        for k in ["color", "fill", "fillStyle", "dashed", "sharp", "weight", "noAutoWarn"] {
             if let Some(v) = n.get(k).or_else(|| e.get(k))
                 && !v.is_null() {
                     b.as_object_mut().unwrap().insert(k.into(), v.clone());
@@ -1953,7 +1955,7 @@ fn m_swimlane(e: &Value) -> Result<Vec<Value>, String> {
                 .unwrap()
                 .insert("text".into(), json!(wrapped_texts[idx]));
         }
-        for k in ["fill", "fillStyle", "dashed", "weight"] {
+        for k in ["fill", "fillStyle", "dashed", "weight", "noAutoWarn"] {
             if let Some(v) = n.get(k) {
                 b.as_object_mut().unwrap().insert(k.into(), v.clone());
             }
@@ -2243,6 +2245,167 @@ fn m_check(e: &Value) -> Result<Vec<Value>, String> {
     })])
 }
 
+fn m_flow(e: &Value) -> Result<Vec<Value>, String> {
+    let steps = e
+        .get("steps")
+        .and_then(Value::as_array)
+        .ok_or("flow: missing 'steps'")?;
+    let fid = str_at(e, "id").unwrap_or("flow");
+    let ts = f64_at(e, "size", 17.0);
+    let ds = f64_at(e, "textSize", 15.0);
+    let x = req_f64(e, "x", "flow")?;
+    let mut y = req_f64(e, "y", "flow")?;
+    let gap = f64_at(e, "gap", 44.0);
+    let start_n = f64_at(e, "start", 1.0) as i64;
+    let example_mono = bool_at(e, "exampleMono", true);
+    let mut out = Vec::new();
+
+    if let Some(title) = str_at(e, "title").filter(|s| !s.is_empty()) {
+        out.push(json!({
+            "t": "text", "x": x, "y": y, "text": title, "size": 17.0, "color": "muted"
+        }));
+        y += 36.0;
+    }
+
+    let bw = e.get("w").and_then(Value::as_f64).unwrap_or_else(|| {
+        steps
+            .iter()
+            .map(|st| rong_chu(str_at(st, "title").unwrap_or(""), ts) + 36.0)
+            .fold(150.0_f64, f64::max)
+            .min(300.0)
+    });
+    let dw = steps
+        .iter()
+        .map(|st| rong_chu(str_at(st, "text").unwrap_or(""), ds))
+        .fold(0.0_f64, f64::max)
+        .min(280.0);
+
+    let xb = x + 44.0;
+    let xd = xb + bw + 18.0;
+    let xe = e
+        .get("exampleX")
+        .and_then(Value::as_f64)
+        .unwrap_or(xd + dw + if dw > 0.0 { 26.0 } else { 0.0 });
+
+    for (i, st) in steps.iter().enumerate() {
+        let c = str_at(st, "color")
+            .or_else(|| str_at(e, "color"))
+            .unwrap_or("ink");
+        let raw_title = str_at(st, "title").unwrap_or("");
+        let wrapped_title = wrap_swimlane_text(raw_title, ts, (bw - 24.0).max(80.0));
+        let bh = (cao_chu(&wrapped_title, ts) + 24.0).max(52.0);
+        let desc = str_at(st, "text").unwrap_or("");
+        let wrapped_desc = if desc.is_empty() {
+            String::new()
+        } else {
+            wrap_swimlane_text(desc, ds, 260.0)
+        };
+        let dh = if wrapped_desc.is_empty() {
+            0.0
+        } else {
+            cao_chu(&wrapped_desc, ds)
+        };
+
+        let ex_card = st.get("example").and_then(|v| {
+            if v.is_null() {
+                return None;
+            }
+            let mut obj = if let Some(s) = v.as_str() {
+                let mut m = Map::new();
+                m.insert("text".into(), json!(s));
+                m
+            } else {
+                v.as_object()?.clone()
+            };
+            obj.entry("mono").or_insert_with(|| json!(example_mono));
+            obj.entry("color").or_insert_with(|| json!("l2"));
+            obj.entry("dashed").or_insert_with(|| json!(true));
+            Some(obj)
+        });
+
+        let eh = ex_card
+            .as_ref()
+            .map(|ex| {
+                let has_t = ex.get("title").and_then(Value::as_str).is_some_and(|s| !s.is_empty());
+                let esz = ex.get("size").and_then(Value::as_f64).unwrap_or(15.0);
+                let etxt = ex.get("text").and_then(Value::as_str).unwrap_or("");
+                (if has_t { 34.0 } else { 10.0 }) + cao_chu(etxt, esz) + 14.0
+            })
+            .unwrap_or(0.0);
+
+        let rh = bh.max(dh).max(eh);
+        let by = y + (rh - bh) / 2.0;
+
+        if i > 0 {
+            let mut a = json!({
+                "t": "arrow",
+                "from": format!("{fid}.{}", i - 1),
+                "to": format!("{fid}.{i}"),
+                "fromSide": "bottom",
+                "toSide": "top",
+                "color": str_at(st, "edgeColor").unwrap_or("ink"),
+                "dashed": bool_at(st, "edgeDashed", false)
+            });
+            if let Some(edge_txt) = str_at(st, "edge").filter(|s| !s.is_empty()) {
+                let ao = a.as_object_mut().unwrap();
+                ao.insert("text".into(), json!(edge_txt));
+                ao.insert("labelAt".into(), json!(0.5));
+                ao.insert("size".into(), json!(15.0));
+            }
+            out.push(a);
+        }
+
+        let badge_c = str_at(st, "badgeColor").unwrap_or(if is_accent(c) { c } else { "l2" });
+        out.push(json!({
+            "t": "badge",
+            "x": x,
+            "y": by + bh / 2.0 - 15.0,
+            "n": start_n + i as i64,
+            "color": badge_c
+        }));
+
+        let fill_c = str_at(st, "fill").unwrap_or(if is_accent(c) { c } else { "soft" });
+        let mut bx = json!({
+            "t": "box",
+            "id": format!("{fid}.{i}"),
+            "x": xb,
+            "y": by,
+            "w": bw,
+            "h": bh,
+            "text": wrapped_title,
+            "size": ts,
+            "color": c,
+            "fill": fill_c
+        });
+        if bool_at(st, "dashed", false) {
+            bx.as_object_mut().unwrap().insert("dashed".into(), json!(true));
+        }
+        out.push(bx);
+
+        if !wrapped_desc.is_empty() {
+            out.push(json!({
+                "t": "text",
+                "x": xd,
+                "y": y + (rh - dh) / 2.0,
+                "text": wrapped_desc,
+                "size": ds,
+                "color": str_at(st, "textColor").unwrap_or("ink")
+            }));
+        }
+
+        if let Some(mut ex) = ex_card {
+            ex.insert("t".into(), json!("card"));
+            ex.insert("x".into(), json!(xe));
+            ex.insert("y".into(), json!(y + (rh - eh) / 2.0));
+            out.push(Value::Object(ex));
+        }
+
+        y += rh + gap;
+    }
+
+    Ok(out)
+}
+
 fn m_badge(e: &Value) -> Result<Vec<Value>, String> {
     let x = req_f64(e, "x", "badge")?;
     let y = req_f64(e, "y", "badge")?;
@@ -2264,7 +2427,11 @@ fn m_badge(e: &Value) -> Result<Vec<Value>, String> {
 fn m_note(e: &Value) -> Result<Vec<Value>, String> {
     // Allow deferred node-attached notes without explicit x/y; resolved in compile_scene once target shapes are laid out.
     if e.get("x").is_none() && e.get("y").is_none() && str_at(e, "to").is_some() {
-        return Ok(vec![e.clone()]);
+        let mut deferred = e.clone();
+        if let Some(obj) = deferred.as_object_mut() {
+            obj.insert("t".into(), json!("attached_note"));
+        }
+        return Ok(vec![deferred]);
     }
     let x = req_f64(e, "x", "note")?;
     let y = req_f64(e, "y", "note")?;
@@ -3069,12 +3236,10 @@ fn compile_scene(
         }
     }
 
-    // Resolve deferred node-attached notes (t="note" with to="<nodeId>" and no explicit x/y).
+    // Resolve deferred node-attached notes (t="attached_note" with to="<nodeId>").
     let mut resolved_els: Vec<Value> = Vec::with_capacity(els.len());
     for e in els.drain(..) {
-        if str_at(&e, "t") == Some("note")
-            && e.get("x").is_none()
-            && e.get("y").is_none()
+        if str_at(&e, "t") == Some("attached_note")
             && let Some(to_id) = str_at(&e, "to")
             && let Some(target) = hinh.get(to_id).cloned()
         {
@@ -3254,8 +3419,10 @@ fn compile_scene(
             };
             let label_txt = str_at(e, "text").filter(|s| !s.is_empty());
 
-            // Auto-highlight `?` (decision / uncertainty) shapes in warm amber when no explicit color/fill was set.
+            // Auto-highlight `?` (decision / uncertainty) shapes in warm amber when no explicit color/fill was set,
+            // unless `noAutoWarn` is enabled (e.g. "off" / "footer" clean diagram modes).
             let is_question_shape = !ghost
+                && !bool_at(e, "noAutoWarn", false)
                 && color_tok == "ink"
                 && fill_tok.is_none()
                 && label_txt.is_some_and(|txt| {
@@ -4370,13 +4537,19 @@ fn push_rough_line(out: &mut String, x1: f64, y1: f64, x2: f64, y2: f64, roughne
         let _ = write!(out, "M {} {} L {} {} ", fmt_n(x1), fmt_n(y1), fmt_n(x2), fmt_n(y2));
         return;
     }
-    let max_off = (roughness * if len < 200.0 { 0.85 } else if len > 500.0 { 0.35 } else { 0.6 })
-        .min(len / 14.0);
-    let div = 0.2 + rng.next_f64() * 0.2;
+    let max_off = (roughness * if len < 200.0 { 1.35 } else if len > 500.0 { 0.65 } else { 1.0 })
+        .min(len / 11.0);
+    let div = 0.22 + rng.next_f64() * 0.22;
+    let ux = (x2 - x1) / len;
+    let uy = (y2 - y1) / len;
+    let px = -uy;
+    let py = ux;
+    let bow = ((len * 0.0065).min(2.6)) * roughness;
     for pass in 0..2 {
-        let mo = max_off * if pass == 0 { 1.0 } else { 0.6 };
-        let dx_b = rng.offset((mo * 0.55).max(0.3));
-        let dy_b = rng.offset((mo * 0.55).max(0.3));
+        let mo = max_off * if pass == 0 { 1.0 } else { 0.65 };
+        let bow_dir = if pass == 0 { 1.0 } else { -0.6 } * bow * (0.4 + rng.next_f64() * 0.6);
+        let dx_b = px * bow_dir + rng.offset((mo * 0.6).max(0.35));
+        let dy_b = py * bow_dir + rng.offset((mo * 0.6).max(0.35));
         let _ = write!(
             out,
             "M {} {} C {} {}, {} {}, {} {} ",
@@ -5067,9 +5240,162 @@ fn render_scene_svg(scene: &[SceneEl], theme: ThemeMode) -> (f64, f64, String) {
     if !defs.is_empty() {
         let _ = write!(svg, "<defs>{defs}</defs>");
     }
+    let _ = write!(
+        svg,
+        "<rect x=\"0\" y=\"0\" width=\"{}\" height=\"{}\" fill=\"{paper_rendered}\"/>",
+        fmt_n(width),
+        fmt_n(height),
+    );
     svg.push_str(&body);
     svg.push_str("</svg>");
     (width, height, svg)
+}
+
+fn extract_canonical_numbers(text: &str) -> HashSet<String> {
+    let mut out = HashSet::new();
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i].is_ascii_digit() {
+            let start = i;
+            let mut raw = String::new();
+            while i < chars.len()
+                && (chars[i].is_ascii_digit()
+                    || ((chars[i] == '.' || chars[i] == ',' || chars[i] == '_')
+                        && i + 1 < chars.len()
+                        && chars[i + 1].is_ascii_digit()))
+            {
+                raw.push(chars[i]);
+                i += 1;
+            }
+            let digits: String = raw.chars().filter(char::is_ascii_digit).collect();
+            if !digits.is_empty() {
+                out.insert(digits.clone());
+                // Also record individual numeric parts separated by punctuation (e.g. dates 17/11 or 11.30).
+                for part in raw.split(['.', ',', '_']) {
+                    if !part.is_empty() {
+                        out.insert(part.to_owned());
+                    }
+                }
+                // Check Vietnamese scale words right after the number (nghìn / ngàn / k / triệu / tỷ).
+                let rest: String = chars[i..].iter().take(12).collect();
+                let trimmed = rest.trim_start().to_lowercase();
+                let mult: Option<u64> = if trimmed.starts_with("nghìn")
+                    || trimmed.starts_with("ngàn")
+                    || trimmed.starts_with("k ")
+                    || trimmed == "k"
+                {
+                    Some(1_000)
+                } else if trimmed.starts_with("triệu") || trimmed.starts_with("tr ") {
+                    Some(1_000_000)
+                } else if trimmed.starts_with("tỷ") || trimmed.starts_with("tỉ") {
+                    Some(1_000_000_000)
+                } else {
+                    None
+                };
+                if let Some(m) = mult
+                    && let Ok(val) = raw.replace(',', ".").parse::<f64>()
+                {
+                    out.insert((val * m as f64).round().to_string());
+                }
+            }
+            if i == start {
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Strategy-aware reading-path checks (`duong_doc`) + source-number verification (`so_voi_nguon`),
+/// ported from `nv-minh/drawing-excalidraw-figures/scripts/ve.py`.
+pub fn audit_strategy_and_source(
+    spec_els: &[Value],
+    icons: &HashMap<String, Value>,
+    strategy: Option<&str>,
+    source_text: &str,
+) -> Vec<String> {
+    let Ok(compiled) = compile_scene(spec_els, icons) else {
+        return Vec::new();
+    };
+    let mut issues = Vec::new();
+    let strat = strategy.map(str::trim).unwrap_or("");
+
+    // 1. Relation labels required for concept-map / causal-loop / knowledge-summary / life-problem
+    if matches!(
+        strat,
+        "concept-map" | "causal-loop" | "knowledge-summary" | "life-problem"
+    ) {
+        let mut total_rel = 0usize;
+        let mut unlabeled = 0usize;
+        for e in &compiled.goc {
+            if str_at(e, "t") != Some("arrow") {
+                continue;
+            }
+            let is_pointer = bool_at(e, "dashed", false)
+                && (f64_at(e, "weight", 2.0) <= 1.0 || str_at(e, "color") == Some("muted"));
+            if is_pointer || bool_at(e, "axis", false) {
+                continue;
+            }
+            total_rel += 1;
+            if str_at(e, "text").map(str::trim).unwrap_or("").is_empty() {
+                unlabeled += 1;
+            }
+        }
+        if total_rel > 0 && unlabeled > 0 {
+            issues.push(format!(
+                "Chiến lược '{strat}' yêu cầu MỌI mũi tên quan hệ phải có nhãn (động từ nối hoặc `+`/`-`), nhưng hiện có {unlabeled}/{total_rel} mũi tên đang trống nhãn."
+            ));
+        }
+    }
+
+    // 2. Main shape budget for architecture / knowledge-summary
+    if matches!(strat, "architecture" | "knowledge-summary") {
+        let main_shapes = compiled
+            .goc
+            .iter()
+            .filter(|e| {
+                matches!(str_at(e, "t").unwrap_or(""), "box" | "diamond" | "ellipse")
+                    && !bool_at(e, "ghost", false)
+                    && !bool_at(e, "under", false)
+            })
+            .count();
+        if main_shapes > 12 {
+            issues.push(format!(
+                "Sơ đồ '{strat}' đang có {main_shapes} khối chính (quá dày, tối ưu 4–9 khối). Hãy gom bớt thành các cụm chính."
+            ));
+        }
+    }
+
+    // 3. Source-number verification (flag multi-digit numbers >= 2 digits that do not appear in transcript)
+    if !source_text.trim().is_empty() {
+        let src_nums = extract_canonical_numbers(source_text);
+        let mut fig_nums = HashSet::new();
+        for el in &compiled.scene {
+            if el.el_type == "text"
+                && let Some(txt) = el.text.as_deref()
+            {
+                for n in extract_canonical_numbers(txt) {
+                    if n.trim_start_matches('0').len() >= 2 {
+                        fig_nums.insert(n);
+                    }
+                }
+            }
+        }
+        let mut invented: Vec<String> = fig_nums.difference(&src_nums).cloned().collect();
+        invented.sort();
+        if invented.len() >= 3 {
+            issues.push(format!(
+                "Sơ đồ chứa {} con số không xuất hiện trong bản chép lời gốc ({}). Chỉ giữ số thật từ bản chép lời, không tự bịa số liệu.",
+                invented.len(),
+                invented.into_iter().take(6).collect::<Vec<_>>().join(", ")
+            ));
+        }
+    }
+
+    issues
 }
 
 // ---------------------------------------------------------------------------
@@ -5539,6 +5865,32 @@ mod tests {
         let out = render_spec_elements(spec["elements"].as_array().unwrap(), icons).unwrap();
         assert!(out.svg.contains("WAF"));
         assert!(out.svg.contains("DB"));
+    }
+
+    #[test]
+    fn deferred_attached_note_renders_without_recursion_or_crash() {
+        let spec = vec![
+            json!({
+                "t": "swimlane",
+                "x": 0,
+                "y": 0,
+                "lanes": [{ "id": "u", "label": "Sale" }],
+                "nodes": [{ "id": "b1", "lane": "u", "row": 0, "kind": "step", "text": "Chọn dịch vụ" }],
+                "edges": []
+            }),
+            json!({
+                "t": "note",
+                "id": "user_note_b1",
+                "to": "b1",
+                "text": "web server: 4 máy giống hệt, lấy nội dung bài",
+                "size": 14,
+                "color": "muted"
+            }),
+        ];
+        let rendered = render_spec_elements(&spec, builtin_icons()).expect("should render cleanly");
+        assert!(rendered.svg.contains("user_note_b1"));
+        assert!(rendered.svg.contains("web server:"));
+        assert!(rendered.drawio_xml.contains("web server:"));
     }
 
     #[test]

@@ -6,9 +6,12 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use unicode_normalization::UnicodeNormalization;
 
 use crate::ai::{AiAttachment, AiError, LlmClient, SummaryStyle};
+use crate::clean;
 use crate::glossary::Term;
+use crate::transcript;
 
 /// A timestamped quote backing a row; `seconds` is where playback starts.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -176,9 +179,64 @@ fn glossary_lines(terms: &[Term]) -> String {
     }
 }
 
+/// For meetings longer than ~15 minutes, strip the redundant `--> HH:MM:SS` end timestamp
+/// (evidence quotes only use the start timestamp) to save ~15–20% input tokens with zero data loss.
+const COMPACT_TS_THRESHOLD_CHARS: usize = 12_000;
+/// Ultra-long meetings (> ~2 hours) switch to 2-stage Map-Reduce summarization so context limits
+/// and lost-in-the-middle degradation never drop decisions or truncate output.
+const SUMMARY_MAP_REDUCE_CHARS: usize = 80_000;
+const SUMMARY_MAP_CHUNK_CHARS: usize = 50_000;
+const SUMMARY_MAP_OVERLAP_LINES: usize = 10;
+const SUMMARY_MAP_MAX_CONCURRENT: usize = 3;
+
+fn compact_transcript_for_summary(raw: &str) -> String {
+    if raw.len() < COMPACT_TS_THRESHOLD_CHARS {
+        return raw.to_owned();
+    }
+    raw.lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|line| {
+            let (times, text) = transcript::split_line(line);
+            match times {
+                Some((start, _)) => format!("[{start}] {text}"),
+                None => text.to_owned(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn split_long_transcript(text: &str, max_chars: usize, overlap_lines: usize) -> Vec<String> {
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    if lines.is_empty() {
+        return Vec::new();
+    }
+    let mut chunks = Vec::new();
+    let mut start = 0usize;
+    while start < lines.len() {
+        let mut end = start;
+        let mut chars = 0usize;
+        while end < lines.len() {
+            let line_len = lines[end].len() + 1;
+            if end > start && chars + line_len > max_chars {
+                break;
+            }
+            chars += line_len;
+            end += 1;
+        }
+        chunks.push(lines[start..end].join("\n"));
+        if end >= lines.len() {
+            break;
+        }
+        start = end.saturating_sub(overlap_lines).max(start + 1);
+    }
+    chunks
+}
+
 fn prompt(transcript: &str, terms: &[Term]) -> String {
+    let compact = compact_transcript_for_summary(transcript);
     format!(
-        "Danh sách thuật ngữ của dự án:\n{}\n\n<transcript>\n{transcript}\n</transcript>",
+        "Danh sách thuật ngữ của dự án:\n{}\n\n<transcript>\n{compact}\n</transcript>",
         glossary_lines(terms)
     )
 }
@@ -497,12 +555,267 @@ pub fn summarize_with_context(
             ));
         }
     }
+    let schema_val = schema();
+    let compact_full = compact_transcript_for_summary(transcript);
+
+    // Map-Reduce path for ultra-long recordings (> ~2 hours) to prevent context overflow & truncation.
+    if compact_full.len() > SUMMARY_MAP_REDUCE_CHARS {
+        let chunks = split_long_transcript(
+            &compact_full,
+            SUMMARY_MAP_CHUNK_CHARS,
+            SUMMARY_MAP_OVERLAP_LINES,
+        );
+        if chunks.len() > 1 {
+            let total_chunks = chunks.len();
+            let mut partials: Vec<Draft> = Vec::with_capacity(total_chunks);
+            for wave_start in (0..total_chunks).step_by(SUMMARY_MAP_MAX_CONCURRENT) {
+                let wave_end = (wave_start + SUMMARY_MAP_MAX_CONCURRENT).min(total_chunks);
+                let wave_results: Vec<Result<Draft, AiError>> = std::thread::scope(|scope| {
+                    let mut handles = Vec::with_capacity(wave_end - wave_start);
+                    for (offset, chunk_txt) in chunks[wave_start..wave_end].iter().enumerate() {
+                        let part_no = wave_start + offset + 1;
+                        let mut part_prompt = format!(
+                            "Đây là phần {part_no}/{total_chunks} của một cuộc họp dài. Hãy tóm tắt đầy đủ quyết định, việc cần làm, điểm cần xác nhận và trích dẫn mốc giờ của phần này.\n\nDanh sách thuật ngữ của dự án:\n{}\n\n<transcript>\n{chunk_txt}\n</transcript>",
+                            glossary_lines(terms)
+                        );
+                        if has_notes {
+                            part_prompt.push_str(&format!(
+                                "\n\nGhi chú ngữ cảnh cuộc họp do người dùng cung cấp:\n{}",
+                                context_notes.trim()
+                            ));
+                        }
+                        let sys_ref = sys.as_str();
+                        let schema_ref = &schema_val;
+                        handles.push(scope.spawn(move || {
+                            let reply = if has_attachments {
+                                client.complete_with_attachments(
+                                    sys_ref,
+                                    &part_prompt,
+                                    schema_ref,
+                                    attachments,
+                                )?
+                            } else {
+                                client.complete(sys_ref, &part_prompt, schema_ref)?
+                            };
+                            parse(&reply)
+                        }));
+                    }
+                    handles
+                        .into_iter()
+                        .map(|h| {
+                            h.join().unwrap_or_else(|_| {
+                                Err(AiError::Malformed("luồng tóm tắt bị dừng bất ngờ".into()))
+                            })
+                        })
+                        .collect()
+                });
+                for res in wave_results {
+                    partials.push(res?);
+                }
+            }
+
+            let partials_json = serde_json::to_string(&partials).unwrap_or_default();
+            let reduce_prompt = format!(
+                "Dưới đây là {total_chunks} bản tóm tắt từng phần theo trình tự thời gian của cùng một cuộc họp dài.\n\
+                 Hãy hợp nhất thành MỘT biên bản duy nhất theo đúng schema: gộp các ý trùng nhau, giữ nguyên mọi quyết định đã chốt, việc cần làm (owner/deadline), mục cần xác nhận, và giữ nguyên mốc giờ + nguyên văn trích dẫn (`evidence`) từ các phần.\n\n\
+                 Danh sách thuật ngữ của dự án:\n{}\n\n<partial_summaries>\n{partials_json}\n</partial_summaries>",
+                glossary_lines(terms)
+            );
+            let merged_reply = client.complete(&sys, &reduce_prompt, &schema_val)?;
+            let mut draft = parse(&merged_reply)?;
+            apply_glossary_to_draft(&mut draft, terms);
+            return Ok(draft);
+        }
+    }
+
     let reply = if has_attachments {
-        client.complete_with_attachments(&sys, &user_prompt, &schema(), attachments)?
+        client.complete_with_attachments(&sys, &user_prompt, &schema_val, attachments)?
     } else {
-        client.complete(&sys, &user_prompt, &schema())?
+        client.complete(&sys, &user_prompt, &schema_val)?
     };
-    parse(&reply)
+    let mut draft = parse(&reply)?;
+    apply_glossary_to_draft(&mut draft, terms);
+    Ok(draft)
+}
+
+/// Result of syncing a saved meeting-note JSON draft with the user's glossary.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GlossarySyncResult {
+    pub draft: Value,
+    pub replacements: usize,
+    pub discussion_replacements: usize,
+}
+
+fn is_resolved_uncertain(word: &str, rules: &[(String, String)]) -> bool {
+    let norm = word.trim().nfc().collect::<String>().to_lowercase();
+    !norm.is_empty() && rules.iter().any(|(needle, _)| needle == &norm)
+}
+
+fn apply_glossary_to_row(row: &mut Row, rules: &[(String, String)]) -> usize {
+    let mut count = 0usize;
+    let (title, n) = clean::apply_glossary_rules(&row.title, rules);
+    row.title = title;
+    count += n;
+    let (agreed, n) = clean::apply_glossary_rules(&row.agreed, rules);
+    row.agreed = agreed;
+    count += n;
+    let (note, n) = clean::apply_glossary_rules(&row.note, rules);
+    row.note = note;
+    count += n;
+    for value in row.fields.values_mut() {
+        let (updated, n) = clean::apply_glossary_rules(value, rules);
+        *value = updated;
+        count += n;
+    }
+    row.uncertain.retain(|w| !is_resolved_uncertain(w, rules));
+    count
+}
+
+/// Applies glossary `heard_as` -> `correct` substitutions across a parsed [`Draft`]
+/// (`discussion`, `rows`, `actions`, `pending`) while keeping verbatim `evidence` quotes intact.
+/// Returns `(total_replacements, discussion_replacements)`.
+pub fn apply_glossary_to_draft(draft: &mut Draft, terms: &[Term]) -> (usize, usize) {
+    let rules = clean::glossary_rules(terms);
+    if rules.is_empty() {
+        return (0, 0);
+    }
+    let mut total = 0usize;
+    let mut discussion_replacements = 0usize;
+    for item in &mut draft.discussion {
+        let (updated, n) = clean::apply_glossary_rules(item, &rules);
+        *item = updated;
+        discussion_replacements += n;
+        total += n;
+    }
+    for row in &mut draft.rows {
+        total += apply_glossary_to_row(row, &rules);
+    }
+    for action in &mut draft.actions {
+        let (task, n) = clean::apply_glossary_rules(&action.task, &rules);
+        action.task = task;
+        total += n;
+        if let Some(owner) = &mut action.owner {
+            let (updated, n) = clean::apply_glossary_rules(owner, &rules);
+            *owner = updated;
+            total += n;
+        }
+        if let Some(deadline) = &mut action.deadline {
+            let (updated, n) = clean::apply_glossary_rules(deadline, &rules);
+            *deadline = updated;
+            total += n;
+        }
+    }
+    for item in &mut draft.pending {
+        total += apply_glossary_to_row(&mut item.row, &rules);
+        let (reason, n) = clean::apply_glossary_rules(&item.reason, &rules);
+        item.reason = reason;
+        total += n;
+    }
+    (total, discussion_replacements)
+}
+
+fn sync_value_string_field(
+    obj: &mut serde_json::Map<String, Value>,
+    key: &str,
+    rules: &[(String, String)],
+    html: bool,
+) -> usize {
+    let Some(Value::String(s)) = obj.get_mut(key) else {
+        return 0;
+    };
+    let (updated, n) = if html {
+        clean::apply_glossary_html_rules(s, rules)
+    } else {
+        clean::apply_glossary_rules(s, rules)
+    };
+    *s = updated;
+    n
+}
+
+fn sync_value_row(row_val: &mut Value, rules: &[(String, String)]) -> usize {
+    let Some(obj) = row_val.as_object_mut() else {
+        return 0;
+    };
+    let mut count = 0usize;
+    count += sync_value_string_field(obj, "title", rules, true);
+    count += sync_value_string_field(obj, "agreed", rules, true);
+    count += sync_value_string_field(obj, "note", rules, true);
+    if let Some(Value::Object(fields)) = obj.get_mut("fields") {
+        for v in fields.values_mut() {
+            if let Value::String(s) = v {
+                let (updated, n) = clean::apply_glossary_rules(s, rules);
+                *s = updated;
+                count += n;
+            }
+        }
+    }
+    if let Some(Value::Array(uncertain)) = obj.get_mut("uncertain") {
+        uncertain.retain(|v| {
+            v.as_str()
+                .is_none_or(|w| !is_resolved_uncertain(w, rules))
+        });
+    }
+    count
+}
+
+/// Syncs a saved UI meeting-note JSON value (`greeting`, `intro`, `discussion`, `rows`,
+/// `actions`, `pending`) with the user's glossary while preserving HTML formatting and verbatim
+/// `evidence` quotes.
+pub fn sync_note_value_glossary(mut draft: Value, terms: &[Term]) -> GlossarySyncResult {
+    let rules = clean::glossary_rules(terms);
+    if rules.is_empty() {
+        return GlossarySyncResult {
+            draft,
+            replacements: 0,
+            discussion_replacements: 0,
+        };
+    }
+    let mut replacements = 0usize;
+    let mut discussion_replacements = 0usize;
+    if let Some(obj) = draft.as_object_mut() {
+        replacements += sync_value_string_field(obj, "greeting", &rules, true);
+        replacements += sync_value_string_field(obj, "intro", &rules, true);
+        if let Some(Value::Array(discussion)) = obj.get_mut("discussion") {
+            for item in discussion.iter_mut() {
+                if let Value::String(s) = item {
+                    let (updated, n) = clean::apply_glossary_rules(s, &rules);
+                    *s = updated;
+                    discussion_replacements += n;
+                    replacements += n;
+                }
+            }
+        }
+        if let Some(Value::Array(rows)) = obj.get_mut("rows") {
+            for row in rows.iter_mut() {
+                replacements += sync_value_row(row, &rules);
+            }
+        }
+        if let Some(Value::Array(actions)) = obj.get_mut("actions") {
+            for action in actions.iter_mut() {
+                if let Some(a_obj) = action.as_object_mut() {
+                    replacements += sync_value_string_field(a_obj, "task", &rules, false);
+                    replacements += sync_value_string_field(a_obj, "owner", &rules, false);
+                    replacements += sync_value_string_field(a_obj, "deadline", &rules, false);
+                }
+            }
+        }
+        if let Some(Value::Array(pending)) = obj.get_mut("pending") {
+            for item in pending.iter_mut() {
+                if let Some(p_obj) = item.as_object_mut() {
+                    replacements += sync_value_string_field(p_obj, "reason", &rules, false);
+                    if let Some(row) = p_obj.get_mut("row") {
+                        replacements += sync_value_row(row, &rules);
+                    }
+                }
+            }
+        }
+    }
+    GlossarySyncResult {
+        draft,
+        replacements,
+        discussion_replacements,
+    }
 }
 
 #[cfg(test)]
@@ -681,5 +994,113 @@ mod tests {
         assert!(system.contains("động từ rõ nghĩa"));
         assert!(system.contains("Giữ nguyên cấu trúc BA-Open-Kit"));
         assert!(system.contains("pending"));
+    }
+
+    #[test]
+    fn summarize_and_sync_apply_glossary_to_discussion_and_keep_evidence_verbatim() {
+        let payload = json!({
+            "discussion": [
+                "Đồng bộ dữ liệu giữa ba vô và hệ thống el xi en",
+                "Rà soát tiến độ tuần sau"
+            ],
+            "rows": [{
+                "title": "Tích hợp ba vô",
+                "agreed": "**Chốt:** nối ba vô qua API",
+                "note": "Liên hệ team el xi en",
+                "evidence": [{"time": "00:01:00", "quote": "mình nối ba vô với el xi en"}],
+                "uncertain": ["ba vô", "KPI"],
+                "fields": [{"column": "Hệ thống", "value": "ba vô"}]
+            }],
+            "actions": [{
+                "task": "Kiểm tra API ba vô",
+                "owner": "Team el xi en",
+                "deadline": "Thứ Sáu",
+                "evidence": [{"time": "00:02:00", "quote": "team el xi en check ba vô"}]
+            }],
+            "pending": [{
+                "row": {
+                    "title": "Phân quyền ba vô",
+                    "agreed": "",
+                    "note": "",
+                    "evidence": [],
+                    "uncertain": ["el xi en"]
+                },
+                "reason": "Chờ xác nhận từ ba vô"
+            }]
+        })
+        .to_string();
+        let terms = [
+            Term {
+                correct: "Bravo".into(),
+                heard_as: "ba vô".into(),
+                note: String::new(),
+            },
+            Term {
+                correct: "LCN".into(),
+                heard_as: "el xi en".into(),
+                note: String::new(),
+            },
+        ];
+        let draft = summarize(&Fake::replying(Ok(payload)), "x", &terms).unwrap();
+        assert_eq!(
+            draft.discussion[0],
+            "Đồng bộ dữ liệu giữa Bravo và hệ thống LCN"
+        );
+        assert_eq!(draft.rows[0].title, "Tích hợp Bravo");
+        assert_eq!(draft.rows[0].agreed, "**Chốt:** nối Bravo qua API");
+        assert_eq!(draft.rows[0].note, "Liên hệ team LCN");
+        assert_eq!(draft.rows[0].fields.get("Hệ thống").map(String::as_str), Some("Bravo"));
+        assert_eq!(draft.rows[0].uncertain, vec!["KPI".to_owned()]);
+        assert_eq!(draft.rows[0].evidence[0].quote, "mình nối ba vô với el xi en");
+        assert_eq!(draft.actions[0].task, "Kiểm tra API Bravo");
+        assert_eq!(draft.actions[0].owner.as_deref(), Some("Team LCN"));
+        assert_eq!(draft.actions[0].evidence[0].quote, "team el xi en check ba vô");
+        assert_eq!(draft.pending[0].row.title, "Phân quyền Bravo");
+        assert!(draft.pending[0].row.uncertain.is_empty());
+        assert_eq!(draft.pending[0].reason, "Chờ xác nhận từ Bravo");
+    }
+
+    #[test]
+    fn sync_note_value_glossary_updates_saved_note_html_and_counts_discussion_hits() {
+        let saved = json!({
+            "greeting": "Dear team <b>ba vô</b>,",
+            "intro": "Gửi biên bản <a href=\"https://example.com/ba-vo\">ba vô</a>",
+            "discussion": ["Chốt tích hợp ba vô với el xi en"],
+            "rows": [{
+                "title": "<b>ba vô</b> sync",
+                "agreed": "Dùng ba vô<br>và el xi en",
+                "note": "",
+                "evidence": [{"time": "00:01:00", "quote": "giữ nguyên ba vô", "seconds": 60.0}],
+                "uncertain": ["ba vô", "khác"]
+            }],
+            "actions": [{"task": "Gửi spec ba vô", "owner": null, "deadline": null, "evidence": []}],
+            "pending": []
+        });
+        let terms = [
+            Term {
+                correct: "Bravo".into(),
+                heard_as: "ba vô".into(),
+                note: String::new(),
+            },
+            Term {
+                correct: "LCN".into(),
+                heard_as: "el xi en".into(),
+                note: String::new(),
+            },
+        ];
+        let res = sync_note_value_glossary(saved, &terms);
+        assert_eq!(res.discussion_replacements, 2);
+        assert_eq!(res.replacements, 8);
+        assert_eq!(res.draft["greeting"], "Dear team <b>Bravo</b>,");
+        assert_eq!(
+            res.draft["intro"],
+            "Gửi biên bản <a href=\"https://example.com/ba-vo\">Bravo</a>"
+        );
+        assert_eq!(res.draft["discussion"][0], "Chốt tích hợp Bravo với LCN");
+        assert_eq!(res.draft["rows"][0]["title"], "<b>Bravo</b> sync");
+        assert_eq!(res.draft["rows"][0]["agreed"], "Dùng Bravo<br>và LCN");
+        assert_eq!(res.draft["rows"][0]["evidence"][0]["quote"], "giữ nguyên ba vô");
+        assert_eq!(res.draft["rows"][0]["uncertain"], json!(["khác"]));
+        assert_eq!(res.draft["actions"][0]["task"], "Gửi spec Bravo");
     }
 }

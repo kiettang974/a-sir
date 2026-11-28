@@ -319,6 +319,11 @@ const commands: Record<string, (a: Args) => unknown | Promise<unknown>> = {
     const j = job(id);
     return `${OUTPUT_DIR}/${j.title ?? stem(j.source)} - meeting note.html`;
   },
+  sync_note_glossary: ({ draft }: Args) => ({
+    draft: structuredClone(draft),
+    replacements: 0,
+    discussionReplacements: 0,
+  }),
   generate_diagram: async ({ id }: Args) => {
     await sleep(900);
     if (job(id).state.kind !== "done") throw "File này chưa chép lời xong.";
@@ -374,6 +379,23 @@ const commands: Record<string, (a: Args) => unknown | Promise<unknown>> = {
   reset_excel_template: () => undefined,
   export_note_excel: ({ path }: Args) => String(path),
   export_note_docx: ({ path }: Args) => String(path),
+  storage_stats: () => ({
+    cache: { files: 3, bytes: 24_500_000 },
+    cleaned: { files: 2, bytes: 42_000 },
+    diagrams: { files: 1, bytes: 18_500 },
+    transcripts: { files: 6, bytes: 185_000 },
+  }),
+  clear_storage: () => ({
+    removedFiles: 2,
+    freedBytes: 12_400_000,
+    stats: {
+      cache: { files: 0, bytes: 0 },
+      cleaned: { files: 0, bytes: 0 },
+      diagrams: { files: 0, bytes: 0 },
+      transcripts: { files: 0, bytes: 0 },
+    },
+  }),
+  open_output_dir: () => undefined,
 };
 
 const openTarget = params.get("open");

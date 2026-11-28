@@ -14,6 +14,7 @@ export type IconName =
   | "fileText"
   | "table"
   | "summary"
+  | "sync"
   | "diagram"
   | "folder"
   | "folderPlus"
@@ -41,6 +42,7 @@ const PATHS: Record<IconName, string> = {
   fileText: '<path d="M4 2.2h5.2L12.5 5.5v8.3a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V3.2a1 1 0 0 1 1-1Z"/><path d="M9 2.4v3.3h3.3M5.5 8.4h5M5.5 11.2h3.4"/>',
   table: '<rect x="2.4" y="3" width="11.2" height="10" rx="1.4"/><path d="M2.4 6.5h11.2M6.4 6.5V13"/>',
   summary: '<path d="M3.2 4h9.6M3.2 8h9.6M3.2 12h6"/>',
+  sync: '<path d="M13.2 8a5.2 5.2 0 0 1-9.1 3.4M2.8 8a5.2 5.2 0 0 1 9.1-3.4"/><path d="M12.2 2.4v2.6H9.6M3.8 13.6V11h2.6"/>',
   diagram: '<rect x="5.5" y="1.8" width="5" height="3.2" rx="1"/><rect x="1.8" y="11" width="4.8" height="3.2" rx="1"/><rect x="9.4" y="11" width="4.8" height="3.2" rx="1"/><path d="M8 5v3M4.2 11V8h7.6v3"/>',
   folder: '<path d="M2.2 4.4a1.2 1.2 0 0 1 1.2-1.2h3l1.4 1.5h4.8a1.2 1.2 0 0 1 1.2 1.2v5.7a1.2 1.2 0 0 1-1.2 1.2H3.4a1.2 1.2 0 0 1-1.2-1.2Z"/>',
   folderPlus: '<path d="M2.2 4.4a1.2 1.2 0 0 1 1.2-1.2h3l1.4 1.5h4.8a1.2 1.2 0 0 1 1.2 1.2v5.7a1.2 1.2 0 0 1-1.2 1.2H3.4a1.2 1.2 0 0 1-1.2-1.2Z"/><path d="M8 7v3.6M6.2 8.8h3.6"/>',

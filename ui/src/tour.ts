@@ -13,28 +13,28 @@ type TourStep = {
 const STEPS: TourStep[] = [
   {
     target: '[data-tour="add-files"]',
-    title: "1. Thêm file ghi âm hoặc lấy từ Ghi âm",
-    body: "Kéo thả file âm thanh/video vào cửa sổ, bấm Thêm file, hoặc lấy trực tiếp các bản thu có sẵn từ app Ghi âm trên Mac.",
+    title: "1. Thêm file ghi âm",
+    body: "Thả file vào cửa sổ, bấm Thêm file hoặc lấy từ app Ghi âm.",
   },
   {
     target: '[data-tour="queue-list"]',
-    title: "2. Chép lời tiếng Việt ngay trên máy",
-    body: "File được xếp vào danh sách này và chép lời hoàn toàn tại máy. Bạn có thể gom theo nhóm thư mục hoặc tìm nhanh theo tên.",
+    title: "2. Danh sách bản ghi",
+    body: "Chuyển văn bản trực tiếp tại máy, hỗ trợ gom nhóm và tìm theo tên.",
   },
   {
     target: '[data-tour="settings-btn"]',
-    title: "3. Gắn tài khoản AI khi cần tóm tắt & vẽ sơ đồ",
-    body: "Mở Cấu hình để nhập API key (Claude, ChatGPT hoặc Gemini). Chép lời không cần mạng; AI chỉ chạy khi bạn chủ động bấm Tóm tắt, Làm sạch hoặc Vẽ sơ đồ.",
+    title: "3. Model & API key AI",
+    body: "Đổi model chuyển văn bản, nhập API key (Gemini/ChatGPT/Claude) và quản lý từ vựng riêng.",
   },
   {
     target: '[data-tour="workspace"]',
-    title: "4. Đọc bản chép, nghe lại theo giờ & sửa trực tiếp",
-    body: "Chọn một bản ghi đã xong để đọc: bấm vào mốc thời gian (00:54) để tua nghe lại đúng đoạn đó, hoặc bấm thẳng vào chữ để chỉnh sửa và tự lưu.",
+    title: "4. Nghe lại & sửa trực tiếp",
+    body: "Bấm mốc giờ để tua nghe đúng đoạn, bấm thẳng vào chữ để sửa và tự lưu.",
   },
   {
     target: '[data-tour="workspace"]',
-    title: "5. Ra Biên bản & Sơ đồ trên cùng 1 màn hình",
-    body: "Chuyển qua lại 1 click giữa 1. Bản chép → 2. Làm sạch → 3. Tóm tắt (xuất Word/Excel/Email) → 4. Sơ đồ (16 mẫu hình, xuất PNG & draw.io).",
+    title: "5. Làm sạch, Tóm tắt & Sơ đồ",
+    body: "Đi theo 4 tab: Văn bản → Làm sạch → Tóm tắt (Word/Excel/Email) → Sơ đồ.",
   },
 ];
 

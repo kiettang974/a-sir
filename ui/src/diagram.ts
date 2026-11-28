@@ -7,7 +7,6 @@ import { icon } from "./icons";
 import {
   type AiView,
   ensureMenuDismissListeners,
-  overflowMenu,
   PROVIDER_NAME,
   PROVIDERS,
   type Provider,
@@ -727,7 +726,7 @@ async function runGeneration(
   st.exportNotice = null;
   st.statusMessage = isRegenerate
     ? `Đang vẽ lại sơ đồ${styleHint} bằng ${tag}…`
-    : `Đang phân tích bản chép lời và vẽ sơ đồ${styleHint} bằng ${tag}…`;
+    : `Đang phân tích văn bản và vẽ sơ đồ${styleHint} bằng ${tag}…`;
   notify(id);
 
   try {
@@ -1782,25 +1781,6 @@ export function diagramPane(
       const diagram = st.diagram;
 
       const picked = activeAi();
-      const overflowItems = [
-        {
-          label: st.running ? "Đang tạo lại sơ đồ…" : "Tạo lại sơ đồ",
-          title: picked
-            ? `Gửi bản chép lời đến ${picked.name}${picked.model ? ` (${picked.model})` : ""} để tạo lại`
-            : "Tạo lại sơ đồ bằng AI đã cấu hình",
-          disabled: st.running || !hasTranscriptText,
-          onClick: () => triggerGenerate(),
-        },
-        ...(st.savedPath
-          ? [
-              {
-                label: "Mở tệp đã lưu trong Finder",
-                onClick: () => void revealItemInDir(st.savedPath!),
-              },
-            ]
-          : []),
-      ];
-
       head.replaceChildren(
         el("div", { className: "reader-head-top" }, el("h2", { textContent: diagram.title || name })),
         el(
@@ -1828,7 +1808,31 @@ export function diagramPane(
           ),
           renderStrategyDropdown(st),
           renderUncertaintyDropdown(st),
-          overflowMenu("Thao tác khác cho sơ đồ", overflowItems),
+          el(
+            "button",
+            {
+              className: "btn-ghost",
+              disabled: st.running || !hasTranscriptText,
+              title: picked
+                ? `Gửi văn bản đến ${picked.name}${picked.model ? ` (${picked.model})` : ""} để tạo lại`
+                : "Tạo lại sơ đồ bằng AI đã cấu hình",
+              onclick: () => triggerGenerate(),
+            },
+            icon("sync", 15),
+            el("span", { textContent: st.running ? "Đang tạo lại…" : "Tạo lại" }),
+          ),
+          st.savedPath
+            ? el(
+                "button",
+                {
+                  className: "btn-ghost",
+                  title: "Mở thư mục chứa file sơ đồ đã lưu",
+                  onclick: () => void revealItemInDir(st.savedPath!),
+                },
+                icon("folder", 15),
+                el("span", { textContent: "Mở thư mục" }),
+              )
+            : null,
         ),
       );
 
@@ -1968,7 +1972,7 @@ export function diagramPane(
       !hasTranscriptText
         ? el("p", {
             className: "status-inline bad",
-            textContent: "Bản chép lời đang trống nên chưa thể tạo sơ đồ.",
+            textContent: "Văn bản đang trống nên chưa thể tạo sơ đồ.",
           })
         : null,
     ].filter((node): node is HTMLElement => node !== null);
@@ -2017,11 +2021,6 @@ export function diagramPane(
       }
       loadedLocal = true;
       draw();
-      // Auto-start generation when opening Tạo sơ đồ on a recording with no saved diagram yet.
-      const picked = activeAi();
-      if (!st.diagram && !st.running && !st.error && hasTranscriptText && picked) {
-        void runGeneration(id, picked.name, picked.model);
-      }
     } catch (e) {
       loadError = String(e);
       loadedLocal = true;

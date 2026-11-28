@@ -10,7 +10,7 @@
   },
   "app": {
     "windows": [
-      { "label": "main", "title": "A-Sir", "width": 1120, "height": 760, "minWidth": 720, "minHeight": 480 }
+      { "label": "main", "title": "A-Sir", "width": 1120, "height": 760, "minWidth": 600, "minHeight": 460 }
     ],
     "security": {
       "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; media-src asset: http://asset.localhost http://127.0.0.1:*; connect-src ipc: http://ipc.localhost",

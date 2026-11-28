@@ -175,6 +175,11 @@ jobs:
           Write-Host "Using VULKAN_SDK=$sdkDir"
           echo "VULKAN_SDK=$sdkDir" >> $env:GITHUB_ENV
           echo "CMAKE_BUILD_PARALLEL_LEVEL=4" >> $env:GITHUB_ENV
+          echo "GGML_NATIVE=OFF" >> $env:GITHUB_ENV
+          echo "GGML_AVX512=OFF" >> $env:GITHUB_ENV
+          echo "GGML_AVX512_VBMI=OFF" >> $env:GITHUB_ENV
+          echo "GGML_AVX512_VNNI=OFF" >> $env:GITHUB_ENV
+          echo "GGML_AVX512_BF16=OFF" >> $env:GITHUB_ENV
           echo "$sdkDir\Bin" >> $env:GITHUB_PATH
 
       - name: Configure Windows build tools (LLVM / CMake)

@@ -48,6 +48,7 @@ Mọi màu, bo góc, bóng đổ và font phải đi qua token trong `:root` c�
 
 | Màn hình | Slot chính (1 nút `.btn-primary` / `.add`) | Slot phụ (`.btn-ghost` / `.link`) | Menu tràn (`⋯`) |
 | --- | --- | --- | --- |
+| `First-run` (mở lần đầu) | Bước 1: `Tải <Model>` / `Dùng model này` · Bước 2: `Lưu & kiểm tra` / `Vào ứng dụng` | Chọn model theo cấu hình máy (`Khuyên dùng`), chọn nhà cung cấp AI + `Lấy key ↗`, `Để sau` | — |
 | `Queue` (thanh bên) | `Thêm file` (chân thanh bên) | `Tạm dừng`/`Tiếp tục`, `Xoá hàng chờ`, `Từ app Ghi âm`, `Hướng dẫn nhanh` (`?`), `Cấu hình` | Menu `⋯` từng bản ghi (`Huỷ`, `Thử lại`, `Chép lời lại`, `Xoá`) |
 | `Reader` (tab `1. Bản chép` / `Tài liệu kèm`) | `Chép bản chép` | Thanh luồng `recordFlowTabs` (`1. Bản chép · 2. Làm sạch · 3. Tóm tắt · 4. Sơ đồ \| Tài liệu kèm`); click mốc giờ để nghe lại, click chữ để sửa trực tiếp | `Chép lời lại`, `Mở trong Finder` |
 | `Clean` (tab `2. Làm sạch`) | `Chạy lại làm sạch` | — | — |
@@ -71,3 +72,4 @@ Mọi màu, bo góc, bóng đổ và font phải đi qua token trong `:root` c�
 | `UI-09` | Mọi màn hình chi tiết bản ghi (`Bản chép lời`, `Ngữ cảnh`, `Bản làm sạch`, `Tóm tắt`, `Sơ đồ`) dùng chung thanh luồng `recordFlowTabs` ngay dưới `.reader-head` (tiêu đề dòng trên, thanh nút `.reader-actions` dòng dưới). | 2026-11-27 | kietta | `ui/src/ipc.ts`, `ui/src/main.ts`, `ui/src/note.ts`, `ui/src/diagram.ts`, `ui/src/context.ts` | Còn hiệu lực | Bậc 4 — `recordFlowTabs` trong `ui/src/ipc.ts` |
 | `UI-10` | Nút có chú thích hover dùng CSS tooltip tức thì (`data-tip` hiện sau `60ms`, không dùng `title` gốc bị trễ trên macOS) và luôn giữ `aria-label`. | 2026-11-27 | kietta | `ui/src/dom.ts`, `ui/src/style.css` | Còn hiệu lực | Bậc 4 — `el()` trong `ui/src/dom.ts` |
 | `UI-11` | Không hiển thị đoạn `.hint` giải thích dư thừa cho tính năng/nút đã tự rõ nghĩa và không render ô nhập rỗng không nhãn (chỉ hiện khi có dữ liệu hoặc người dùng chủ động bật). | 2026-11-27 | kietta | `ui/src/note.ts`, `ui/src/settings.ts`, `ui/src/context.ts` | Còn hiệu lực | Bậc 3 — Sổ luật & checklist review |
+| `UI-12` | Giao diện responsive theo 4 ngưỡng cửa sổ (`>= 1440px`, `1081–1439px`, `781–1080px` chia đôi màn hình, `<= 780px` xếp dọc danh sách trên/nội dung dưới); padding dùng `clamp()`, lưới thẻ dùng `auto-fit`, thanh tab cuộn ngang không gãy dòng, bảng cuộn ngang cục bộ. | 2026-11-28 | kietta | `ui/src/style.css`, `app/tauri.conf.json` | Còn hiệu lực | Bậc 4 — Media queries & fluid tokens trong `ui/src/style.css` |

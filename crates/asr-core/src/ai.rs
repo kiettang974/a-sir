@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 
 const MAX_OUTPUT_TOKENS: u32 = 16_000;
 const SUMMARY_TIMEOUT: Duration = Duration::from_secs(180);
-const PING_TIMEOUT: Duration = Duration::from_secs(12);
+const PING_TIMEOUT: Duration = Duration::from_secs(6);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(4);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -26,6 +26,14 @@ pub enum Provider {
 
 impl Provider {
     pub const ALL: [Provider; 3] = [Provider::Claude, Provider::ChatGpt, Provider::Gemini];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Provider::Claude => "Claude",
+            Provider::ChatGpt => "ChatGPT",
+            Provider::Gemini => "Gemini",
+        }
+    }
 
     pub fn default_model(self) -> &'static str {
         match self {
@@ -82,23 +90,23 @@ impl Provider {
 pub enum AiError {
     #[error("API key không đúng hoặc không có quyền dùng model này ({0})")]
     Unauthorized(String),
-    #[error("Nhà cung cấp đang giới hạn lượt gọi hoặc đã hết hạn mức / token ({0})")]
+    #[error("Hết hạn mức hoặc bị giới hạn tốc độ gọi API: {0}")]
     RateLimited(String),
     #[error("{message}")]
     Transient { status: u16, message: String },
-    #[error("Nhà cung cấp báo lỗi {status}: {message}")]
+    #[error("Nhà cung cấp từ chối yêu cầu (HTTP {status}): {message}")]
     Rejected { status: u16, message: String },
-    #[error("Câu trả lời bị cắt vì quá dài, nên không dùng được")]
+    #[error("Câu trả lời của AI bị cắt giữa chừng do đạt giới hạn độ dài đầu ra (max_tokens). Hãy đổi model có giới hạn đầu ra lớn hơn hoặc tách bản ghi ngắn hơn.")]
     Truncated,
     #[error("AI từ chối xử lý nội dung này: {0}")]
     Refused(String),
-    #[error("Không kết nối được: {0}")]
+    #[error("Lỗi kết nối mạng: {0}")]
     Network(String),
-    #[error("Câu trả lời không đúng định dạng: {0}")]
+    #[error("Phản hồi từ AI không đúng định dạng JSON mong đợi: {0}")]
     Malformed(String),
     #[error("Không đọc hoặc ghi được file API key: {0}")]
     KeyFile(String),
-    #[error("Chưa có API key cho nhà cung cấp này")]
+    #[error("Chưa có API key cho nhà cung cấp này. Vào Cấu hình → Tài khoản AI để thêm key.")]
     MissingKey,
 }
 
@@ -178,7 +186,7 @@ impl HttpClient {
         }
     }
 
-    /// Spends a few tokens to check the key and the model name. Uses 16 tokens for OpenAI reasoning models.
+    /// Spends a few tokens to check the key and the model name (fail-fast: single attempt, 6s timeout).
     pub fn ping(&self) -> Result<(), AiError> {
         let max_tokens = match self.provider {
             Provider::ChatGpt => 16,
@@ -186,7 +194,7 @@ impl HttpClient {
             Provider::Gemini => 8,
         };
         let (url, headers, body) = self.request("Reply OK", "ping", None, max_tokens);
-        self.send(&url, &headers, &body, PING_TIMEOUT).map(|_| ())
+        self.send_once(&url, &headers, &body, PING_TIMEOUT).map(|_| ())
     }
 
     /// Text models this key can use, as the provider lists them (Claude: newest first).
@@ -588,14 +596,23 @@ impl HttpClient {
         body: &Value,
         timeout: Duration,
     ) -> Result<Value, AiError> {
+        let provider_label = self.provider.label();
+        let model_name = self.model.as_str();
         let network = |e: reqwest::Error| {
             if e.is_timeout() {
-                AiError::Network(
-                    "quá thời gian chờ phản hồi từ máy chủ AI. Hãy thử lại hoặc đổi model khác."
-                        .into(),
-                )
+                AiError::Network(format!(
+                    "Quá thời gian chờ phản hồi từ {provider_label} ({model_name}). Kiểm tra mạng hoặc thử model nhanh hơn."
+                ))
+            } else if e.is_connect() {
+                AiError::Network(format!(
+                    "Không kết nối được tới máy chủ {provider_label}. Kiểm tra Internet, VPN, proxy hoặc tường lửa. (Chi tiết: {})",
+                    e.without_url()
+                ))
             } else {
-                AiError::Network(e.without_url().to_string())
+                AiError::Network(format!(
+                    "{provider_label} ({model_name}): {}",
+                    e.without_url()
+                ))
             }
         };
         let client = reqwest::blocking::Client::builder()
@@ -603,7 +620,41 @@ impl HttpClient {
             .timeout(timeout)
             .build()
             .map_err(network)?;
-        self.send_with(&client, url, headers, body)
+        self.send_with_retries(&client, url, headers, body, 3)
+    }
+
+    fn send_once(
+        &self,
+        url: &str,
+        headers: &[(&'static str, String)],
+        body: &Value,
+        timeout: Duration,
+    ) -> Result<Value, AiError> {
+        let provider_label = self.provider.label();
+        let model_name = self.model.as_str();
+        let network = |e: reqwest::Error| {
+            if e.is_timeout() {
+                AiError::Network(format!(
+                    "Quá thời gian chờ phản hồi từ {provider_label} ({model_name}). Kiểm tra mạng hoặc thử model nhanh hơn."
+                ))
+            } else if e.is_connect() {
+                AiError::Network(format!(
+                    "Không kết nối được tới máy chủ {provider_label}. Kiểm tra Internet, VPN, proxy hoặc tường lửa. (Chi tiết: {})",
+                    e.without_url()
+                ))
+            } else {
+                AiError::Network(format!(
+                    "{provider_label} ({model_name}): {}",
+                    e.without_url()
+                ))
+            }
+        };
+        let client = reqwest::blocking::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(timeout)
+            .build()
+            .map_err(network)?;
+        self.send_with_retries(&client, url, headers, body, 0)
     }
 
     fn send_with(
@@ -613,20 +664,39 @@ impl HttpClient {
         headers: &[(&'static str, String)],
         body: &Value,
     ) -> Result<Value, AiError> {
-        const MAX_RETRIES: u32 = 3;
+        self.send_with_retries(client, url, headers, body, 3)
+    }
+
+    fn send_with_retries(
+        &self,
+        client: &reqwest::blocking::Client,
+        url: &str,
+        headers: &[(&'static str, String)],
+        body: &Value,
+        max_retries: u32,
+    ) -> Result<Value, AiError> {
+        let provider_label = self.provider.label();
+        let model_name = self.model.as_str();
         let network = |e: reqwest::Error| {
             if e.is_timeout() {
-                AiError::Network(
-                    "quá thời gian chờ phản hồi từ máy chủ AI. Hãy thử lại hoặc đổi model khác."
-                        .into(),
-                )
+                AiError::Network(format!(
+                    "Quá thời gian chờ phản hồi từ {provider_label} ({model_name}). Kiểm tra mạng hoặc thử model nhanh hơn."
+                ))
+            } else if e.is_connect() {
+                AiError::Network(format!(
+                    "Không kết nối được tới máy chủ {provider_label}. Kiểm tra Internet, VPN, proxy hoặc tường lửa. (Chi tiết: {})",
+                    e.without_url()
+                ))
             } else {
-                AiError::Network(e.without_url().to_string())
+                AiError::Network(format!(
+                    "{provider_label} ({model_name}): {}",
+                    e.without_url()
+                ))
             }
         };
 
         let body_str = body.to_string();
-        for attempt in 0..=MAX_RETRIES {
+        for attempt in 0..=max_retries {
             let mut request = client
                 .post(url)
                 .header("content-type", "application/json")
@@ -652,7 +722,7 @@ impl HttpClient {
 
             match result {
                 (Ok(val), _) => return Ok(val),
-                (Err(err), retry_after) if err.is_transient() && attempt < MAX_RETRIES => {
+                (Err(err), retry_after) if err.is_transient() && attempt < max_retries => {
                     let delay = retry_delay(attempt, retry_after);
                     if !delay.is_zero() {
                         std::thread::sleep(delay);
@@ -705,13 +775,13 @@ impl HttpClient {
             }
             Provider::Gemini => {
                 if let Some(blocked) = reply["promptFeedback"]["blockReason"].as_str() {
-                    return Err(AiError::Refused(blocked.to_owned()));
+                    return Err(AiError::Refused(describe_refusal(blocked)));
                 }
                 let candidate = &reply["candidates"][0];
                 match candidate["finishReason"].as_str() {
                     Some("MAX_TOKENS") => return Err(AiError::Truncated),
                     Some("STOP") | None => {}
-                    Some(other) => return Err(AiError::Refused(other.to_owned())),
+                    Some(other) => return Err(AiError::Refused(describe_refusal(other))),
                 }
                 text_of(candidate["content"]["parts"].as_array(), false)
             }
@@ -787,14 +857,68 @@ fn retry_delay(attempt: u32, retry_after_secs: Option<u64>) -> Duration {
     Duration::from_millis(base_ms + jitter_ms)
 }
 
+fn describe_refusal(code: &str) -> String {
+    match code.trim().to_ascii_uppercase().as_str() {
+        "SAFETY" | "PROHIBITED_CONTENT" => {
+            "bộ lọc an toàn của nhà cung cấp AI đã chặn nội dung (SAFETY)".to_owned()
+        }
+        "RECITATION" => {
+            "bộ lọc bản quyền của nhà cung cấp AI đã chặn nội dung (RECITATION)".to_owned()
+        }
+        "BLOCKLIST" => "nội dung chứa cụm từ nằm trong danh sách chặn của nhà cung cấp".to_owned(),
+        _ => code.to_owned(),
+    }
+}
+
 fn check_status(status: u16, text: &str) -> Result<Value, AiError> {
     if (200..300).contains(&status) {
         return serde_json::from_str(text).map_err(|e| AiError::Malformed(e.to_string()));
     }
     let message = error_message(text);
+    let lower = message.to_ascii_lowercase();
+    let is_context_limit = lower.contains("context_length")
+        || lower.contains("maximum context")
+        || lower.contains("too many tokens")
+        || lower.contains("token count exceeds")
+        || lower.contains("exceeds the maximum number of tokens");
+    let is_quota_exhausted = lower.contains("insufficient_quota")
+        || lower.contains("credit balance")
+        || lower.contains("exceeded your current quota")
+        || lower.contains("billing");
+    let is_region_blocked = lower.contains("location is not supported")
+        || lower.contains("unsupported_country")
+        || lower.contains("region");
+
     Err(match status {
-        401 | 403 => AiError::Unauthorized(message),
-        402 => AiError::RateLimited(format!("tài khoản AI đã hết số dư / hết token: {message}")),
+        400 if is_context_limit => AiError::Rejected {
+            status,
+            message: format!(
+                "Bản chép lời hoặc tệp đính kèm quá dài, vượt giới hạn ngữ cảnh của model. Hãy đổi model có ngữ cảnh lớn hơn hoặc tắt tệp đính kèm. (Chi tiết: {message})"
+            ),
+        },
+        400 if lower.contains("api_key_invalid") || lower.contains("invalid_api_key") => {
+            AiError::Unauthorized(format!("API key không hợp lệ: {message}"))
+        }
+        400 if is_quota_exhausted => AiError::RateLimited(format!(
+            "Tài khoản AI hết số dư hoặc chưa bật thanh toán: {message}"
+        )),
+        400 if is_region_blocked => AiError::Rejected {
+            status,
+            message: format!(
+                "Khu vực mạng hiện tại chưa được nhà cung cấp AI hỗ trợ (thử đổi VPN hoặc nhà cung cấp khác). Chi tiết: {message}"
+            ),
+        },
+        401 => AiError::Unauthorized(message),
+        403 if is_region_blocked => AiError::Rejected {
+            status,
+            message: format!(
+                "Truy cập bị từ chối theo khu vực mạng (HTTP 403). Thử đổi VPN hoặc nhà cung cấp khác. Chi tiết: {message}"
+            ),
+        },
+        403 => AiError::Unauthorized(message),
+        402 => AiError::RateLimited(format!(
+            "Tài khoản AI đã hết số dư / hết token (HTTP 402): {message}"
+        )),
         404 => AiError::Rejected {
             status,
             message: format!(
@@ -804,18 +928,27 @@ fn check_status(status: u16, text: &str) -> Result<Value, AiError> {
         429 if message.contains("limit: 0") => AiError::RateLimited(
             "gói hiện tại không có hạn mức cho model này (limit: 0). Mở \"Chọn model\" để xem các model đã thử thành công.".into(),
         ),
+        429 if is_quota_exhausted => AiError::RateLimited(format!(
+            "Tài khoản AI đã hết hạn mức / số dư (HTTP 429). Kiểm tra gói cước, nạp thêm credit hoặc đổi nhà cung cấp khác. Chi tiết: {message}"
+        )),
         429 => AiError::RateLimited(message),
         500 => AiError::Transient {
             status,
-            message: "Nhà cung cấp gặp lỗi nội bộ, thử lại sau.".into(),
+            message: format!(
+                "Máy chủ AI gặp lỗi nội bộ (HTTP 500). Thử lại sau ít phút hoặc đổi model khác. Chi tiết: {message}"
+            ),
         },
         502..=504 => AiError::Transient {
             status,
-            message: "Model đang quá tải tạm thời. Thử lại sau ít phút hoặc chọn model khác.".into(),
+            message: format!(
+                "Máy chủ AI quá tải tạm thời (HTTP {status}). Thử lại sau ít phút hoặc đổi model khác. Chi tiết: {message}"
+            ),
         },
         529 => AiError::Transient {
             status,
-            message: "Nhà cung cấp đang quá tải, thử lại sau.".into(),
+            message: format!(
+                "Máy chủ AI đang quá tải (HTTP 529). Thử lại sau ít phút hoặc đổi model khác. Chi tiết: {message}"
+            ),
         },
         _ => AiError::Rejected { status, message },
     })
@@ -1742,12 +1875,31 @@ mod tests {
             (200, json!({ "candidates": [{ "content": { "parts": [{ "text": "OK" }] } }] })),
         ]);
         let client = HttpClient::with_base_url(Provider::Gemini, "gemini-3.8-flash", "k", &url);
-        client.ping().unwrap();
+        let text = client
+            .complete("sys", "user", &json!({ "type": "object" }))
+            .unwrap();
+        assert_eq!(text, "OK");
         let mut count = 0;
         while seen.try_recv().is_ok() {
             count += 1;
         }
         assert_eq!(count, 4, "1 initial + 3 retries");
+    }
+
+    #[test]
+    fn ping_fails_fast_without_retrying_503() {
+        let (url, seen) = serve_many(vec![
+            (503, json!({ "error": { "message": "high demand" } })),
+            (200, json!({ "candidates": [{ "content": { "parts": [{ "text": "OK" }] } }] })),
+        ]);
+        let client = HttpClient::with_base_url(Provider::Gemini, "gemini-3.8-flash", "k", &url);
+        let err = client.ping().unwrap_err();
+        assert!(err.is_transient());
+        let mut count = 0;
+        while seen.try_recv().is_ok() {
+            count += 1;
+        }
+        assert_eq!(count, 1, "ping must fail fast with 0 retries");
     }
 
     #[test]

@@ -385,7 +385,7 @@ export function aiCleanPane(jobId: number, title: string, cb: AiCleanCallbacks):
 
   const runLocalOnly = async () => {
     renderHead(true);
-    body.replaceChildren(el("h3", { textContent: "Đang làm sạch bản chép lời…" }));
+    body.replaceChildren(el("h3", { textContent: "Đang làm sạch văn bản…" }));
     try {
       const path = await invoke<string>("clean_transcript", { id: jobId });
       cb.onSaved(path);
@@ -505,7 +505,7 @@ export function aiCleanPane(jobId: number, title: string, cb: AiCleanCallbacks):
         "div",
         { className: "ai-loading-stage", role: "status", ariaLive: "polite" },
         el("div", { className: "diagram-spinner", ariaHidden: "true" }),
-        el("p", { className: "diagram-loading-title", textContent: "Đang làm sạch bản chép lời…" }),
+        el("p", { className: "diagram-loading-title", textContent: "Đang làm sạch văn bản…" }),
         el("p", {
           className: "diagram-loading-sub",
           textContent: "AI đang soát lỗi chính tả và thuật ngữ. Bạn có thể chuyển sang tab khác trong lúc chờ.",

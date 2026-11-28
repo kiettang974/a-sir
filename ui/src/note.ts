@@ -9,7 +9,6 @@ import { icon } from "./icons";
 import {
   type AiView,
   type MeetingTemplates,
-  overflowMenu,
   pickAndImportTemplate,
   PROVIDER_NAME,
   PROVIDERS,
@@ -181,6 +180,40 @@ function editable(
   return node;
 }
 
+function editablePlain(
+  text: string,
+  className: string,
+  label: string,
+  onChange: (text: string) => void,
+): HTMLElement {
+  const node = el("div", {
+    className,
+    contentEditable: "true",
+    ariaLabel: label,
+    spellcheck: false,
+    onpaste: (event: ClipboardEvent) => {
+      event.preventDefault();
+      const plain = (event.clipboardData?.getData("text/plain") ?? "").replace(/\r?\n+/g, " ");
+      document.execCommand("insertText", false, plain);
+    },
+    onkeydown: (event: KeyboardEvent) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        node.blur();
+      }
+    },
+    oninput: () => onChange((node.textContent ?? "").replace(/\r?\n+/g, " ")),
+  });
+  node.textContent = text;
+  return node;
+}
+
+type GlossarySyncResult = {
+  draft: Note;
+  replacements: number;
+  discussionReplacements: number;
+};
+
 type SummaryProfile = {
   id: string;
   name: string;
@@ -192,7 +225,13 @@ type ProfilesConfig = {
   custom: SummaryProfile[];
 };
 
-type Links = { openSettings: () => void; openContext: () => void; back: () => void; flow: RecordFlowNav };
+type Links = {
+  openSettings: () => void;
+  openGlossary: () => void;
+  openContext: () => void;
+  back: () => void;
+  flow: RecordFlowNav;
+};
 
 type NoteRunState = {
   running: boolean;
@@ -525,7 +564,7 @@ export function notePane(id: number, name: string, links: Links): HTMLElement {
     const label = () => `Tạo tóm tắt bằng ${PROVIDER_NAME[select.value as Provider]}`;
     const notice = () => {
       const pName = PROVIDER_NAME[select.value as Provider];
-      const parts = ["bản chép lời", "từ vựng riêng"];
+      const parts = ["văn bản", "từ vựng riêng"];
       if (useCtxBox.checked && ctxInfo.hasAny) {
         if (ctx.notes.trim()) parts.push("ghi chú tài liệu kèm");
         if (ctx.attachments.length > 0) parts.push(`${ctx.attachments.length} tệp đính kèm`);
@@ -566,29 +605,31 @@ export function notePane(id: number, name: string, links: Links): HTMLElement {
           })
         : null;
 
+    const hasCustomProfiles = profiles.custom.length > 0;
     const formChildren: (HTMLElement | null)[] = [
       el("h3", { textContent: "Tạo biên bản cuộc họp" }),
       failure ? el("p", { className: "problem problem-text", textContent: failure }) : null,
       switchBtn ? el("div", { className: "actions wrap" }, switchBtn) : null,
-      el("label", {}, "Soạn bằng", select),
-      el("label", {}, "Profile tóm tắt", profileSelect),
-      el(
-        "div",
-        { className: "context-summary-box" },
-        el(
-          "label",
-          { className: "hw-filter-toggle" },
-          useCtxBox,
-          el("span", { textContent: "Dùng tài liệu kèm" }),
-        ),
-        el("span", { className: "style-desc", textContent: ctxInfo.label }),
-        el("button", {
-          className: "link",
-          textContent: "Xem tab Tài liệu kèm",
-          onclick: links.openContext,
-        }),
-      ),
-      sending,
+      el("label", {}, "AI thực hiện", select),
+      hasCustomProfiles ? el("label", {}, "Mẫu bố cục", profileSelect) : null,
+      ctxInfo.hasAny
+        ? el(
+            "div",
+            { className: "context-summary-box" },
+            el(
+              "label",
+              { className: "hw-filter-toggle" },
+              useCtxBox,
+              el("span", { textContent: "Dùng tài liệu kèm" }),
+            ),
+            el("span", { className: "style-desc", textContent: ctxInfo.label }),
+            el("button", {
+              className: "link",
+              textContent: "Xem tài liệu kèm",
+              onclick: links.openContext,
+            }),
+          )
+        : null,
       el(
         "div",
         { className: "actions wrap" },
@@ -624,10 +665,11 @@ export function notePane(id: number, name: string, links: Links): HTMLElement {
     }
   }
 
-  function showNote(note: Note) {
+  function showNote(note: Note, autoSyncGlossary = false) {
     let showEmailIntro =
       htmlToText(note.greeting, false).trim().length > 0 ||
       htmlToText(note.intro, false).trim().length > 0;
+    let focusDiscussionIndex: number | null = null;
     const saveSoon = () => {
       setStatus("");
       clearTimeout(timer);
@@ -636,6 +678,31 @@ export function notePane(id: number, name: string, links: Links): HTMLElement {
     const changed = () => {
       save(note);
       draw();
+    };
+    const syncGlossary = async (announceWhenNone: boolean) => {
+      try {
+        const res = await invoke<GlossarySyncResult>("sync_note_glossary", { draft: note });
+        if (!pane.isConnected) return;
+        if (res.replacements > 0) {
+          note.greeting = res.draft.greeting ?? note.greeting;
+          note.intro = res.draft.intro ?? note.intro;
+          note.discussion = res.draft.discussion ?? note.discussion;
+          note.rows = res.draft.rows ?? note.rows;
+          note.actions = res.draft.actions ?? note.actions;
+          note.pending = res.draft.pending ?? note.pending;
+          await save(note);
+          draw();
+          const detail =
+            res.discussionReplacements > 0
+              ? `Đã đồng bộ ${res.replacements} từ vựng (${res.discussionReplacements} trong Nội dung trao đổi chính).`
+              : `Đã đồng bộ ${res.replacements} từ vựng trong biên bản.`;
+          setStatus(detail);
+        } else if (announceWhenNone) {
+          setStatus("Biên bản đã khớp với Từ vựng riêng.");
+        }
+      } catch (e) {
+        if (announceWhenNone) setStatus(`Chưa đồng bộ được từ vựng: ${e}`, true);
+      }
     };
     invoke<MeetingTemplates>("meeting_templates")
       .then((t) => {
@@ -666,6 +733,16 @@ export function notePane(id: number, name: string, links: Links): HTMLElement {
           },
           icon("summary", 15),
           el("span", { textContent: "Tạo lại tóm tắt" }),
+        ),
+        el(
+          "button",
+          {
+            className: "btn-ghost",
+            title: "Áp dụng Từ vựng riêng vào Nội dung trao đổi chính và toàn bộ biên bản",
+            onclick: () => void syncGlossary(true),
+          },
+          icon("sync", 15),
+          el("span", { textContent: "Đồng bộ từ vựng" }),
         ),
         el(
           "button",
@@ -754,15 +831,19 @@ export function notePane(id: number, name: string, links: Links): HTMLElement {
           icon("fileText", 15),
           el("span", { textContent: "Word" }),
         ),
-        overflowMenu("Thao tác khác cho biên bản", [
+        el(
+          "button",
           {
-            label: "Mở trong Finder",
-            onClick: async () => {
+            className: "btn-ghost",
+            title: "Mở thư mục chứa file biên bản đã lưu",
+            onclick: async () => {
               await save(note);
               if (savedPage) revealItemInDir(savedPage);
             },
           },
-        ]),
+          icon("folder", 15),
+          el("span", { textContent: "Mở thư mục" }),
+        ),
       ),
     );
 
@@ -858,15 +939,72 @@ export function notePane(id: number, name: string, links: Links): HTMLElement {
           ),
         ),
       );
-      const discussionBlock = note.discussion?.length
+      const discussionItems = note.discussion ?? [];
+      const discussionBlock = discussionItems.length
         ? el(
             "section",
             { className: "meeting-summary" },
-            el("h3", { textContent: "Nội dung trao đổi chính" }),
+            el(
+              "div",
+              { className: "meeting-summary-head" },
+              el("h3", { textContent: "Nội dung trao đổi chính" }),
+              el(
+                "div",
+                { className: "meeting-summary-actions" },
+                el("button", {
+                  className: "link",
+                  textContent: "Từ vựng riêng",
+                  title: "Mở Cấu hình → Từ vựng riêng để thêm hoặc điều chỉnh thuật ngữ",
+                  onclick: links.openGlossary,
+                }),
+                el("button", {
+                  className: "link",
+                  textContent: "Thêm ý",
+                  onclick: () => {
+                    note.discussion = [...(note.discussion ?? []), ""];
+                    focusDiscussionIndex = note.discussion.length - 1;
+                    changed();
+                  },
+                }),
+              ),
+            ),
             el(
               "ul",
-              {},
-              ...note.discussion.map((item) => el("li", { textContent: item })),
+              { className: "discussion-list" },
+              ...discussionItems.map((item, idx) => {
+                const field = editablePlain(
+                  item,
+                  "discussion-text",
+                  `Nội dung trao đổi chính ${idx + 1}`,
+                  (val) => {
+                    if (!note.discussion) note.discussion = [];
+                    note.discussion[idx] = val;
+                    saveSoon();
+                  },
+                );
+                if (focusDiscussionIndex === idx) {
+                  focusDiscussionIndex = null;
+                  queueMicrotask(() => field.focus());
+                }
+                return el(
+                  "li",
+                  { className: "discussion-item" },
+                  field,
+                  el(
+                    "button",
+                    {
+                      className: "icon-btn danger discussion-del",
+                      title: "Xoá ý này",
+                      ariaLabel: `Xoá ý trao đổi ${idx + 1}`,
+                      onclick: () => {
+                        note.discussion?.splice(idx, 1);
+                        changed();
+                      },
+                    },
+                    icon("trash", 13),
+                  ),
+                );
+              }),
             ),
           )
         : null;
@@ -1021,6 +1159,17 @@ export function notePane(id: number, name: string, links: Links): HTMLElement {
                 changed();
               },
             }),
+            !discussionItems.length
+              ? el("button", {
+                  className: "link",
+                  textContent: "Thêm nội dung trao đổi chính",
+                  onclick: () => {
+                    note.discussion = [""];
+                    focusDiscussionIndex = 0;
+                    changed();
+                  },
+                })
+              : null,
             !showEmailIntro
               ? el("button", {
                   className: "link",
@@ -1047,6 +1196,9 @@ export function notePane(id: number, name: string, links: Links): HTMLElement {
       scroll.scrollTop = top;
     }
     draw();
+    if (autoSyncGlossary) {
+      void syncGlossary(false);
+    }
   }
 
   const syncFromRun = () => {
@@ -1099,7 +1251,7 @@ export function notePane(id: number, name: string, links: Links): HTMLElement {
     invoke<Note | null>("load_note", { id })
       .then((saved) => {
         if (noteRuns.get(id)?.running) return;
-        if (saved) showNote(saved);
+        if (saved) showNote(saved, true);
         else showForm();
       })
       .catch(() => {

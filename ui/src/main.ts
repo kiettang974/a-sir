@@ -14,8 +14,17 @@ import { aiCleanPane, contextTabBody, getAiCleanButtonState } from "./context";
 import { diagramPane, getDiagramButtonState } from "./diagram";
 import { el } from "./dom";
 import { icon } from "./icons";
-import { type LocalModelProgress, overflowMenu, progressBar, type RecordFlowNav, recordFlowTabs } from "./ipc";
+import {
+  type AiView,
+  type LocalModelProgress,
+  progressBar,
+  PROVIDER_NAME,
+  PROVIDERS,
+  type RecordFlowNav,
+  recordFlowTabs,
+} from "./ipc";
 import { isNoteGenerating, notePane, subscribeNoteRuns } from "./note";
+import { onboardingPane } from "./onboarding";
 import { settingsPane } from "./settings";
 import { hasSeenTour, startOnboardingTour } from "./tour";
 
@@ -131,7 +140,7 @@ let transcript: { id: number; text: string; lines: Line[] } | null = null;
 let readerNote = "";
 let view: "reader" | "memos" | "settings" | "note" | "aiClean" | "diagram" = "reader";
 let readerTab: "transcript" | "context" = "transcript";
-let pendingSettingsTab: "speech" | "ai" | "minutes" | "glossary" | "update" | undefined;
+let pendingSettingsTab: "speech" | "ai" | "minutes" | "glossary" | "storage" | "update" | undefined;
 let memos: MemoList | null = null;
 let memoFilter = "";
 const memoChosen = new Set<string>();
@@ -207,7 +216,7 @@ function jobRow(job: Job): HTMLElement {
     menuItems.push({ label: "Thử lại", run: () => invoke("retry", { id: job.id }) });
     menuItems.push({ label: "Xoá", danger: true, run: () => forget(job.id) });
   } else {
-    menuItems.push({ label: "Chép lời lại", run: () => rerunJob(job.id) });
+    menuItems.push({ label: "Chuyển lại văn bản", run: () => rerunJob(job.id) });
     menuItems.push({ label: "Xoá", danger: true, run: () => forget(job.id) });
   }
 
@@ -376,7 +385,7 @@ async function clearQueue() {
   const removable = jobs.filter((j) => j.state.kind !== "running");
   if (removable.length === 0) return;
   const yes = await ask(
-    `Xoá ${removable.length} bản ghi khỏi danh sách? File bản chép lời đã lưu trên máy vẫn được giữ nguyên.`,
+    `Xoá ${removable.length} bản ghi khỏi danh sách? File văn bản đã lưu trên máy vẫn được giữ nguyên.`,
     { title: "Dọn danh sách bản ghi?", kind: "warning", okLabel: "Xoá", cancelLabel: "Giữ lại" },
   );
   if (!yes) return;
@@ -871,7 +880,7 @@ function refreshMemoControls() {
   list.replaceChildren(...visible.map(memoRow));
   list.scrollTop = top;
   const picked = memoPick(memos.recordings).length;
-  start.textContent = picked ? `Chép lời ${picked} bản ghi` : "Chọn bản ghi để chép lời";
+  start.textContent = picked ? `Chuyển văn bản ${picked} bản ghi` : "Chọn bản ghi để chuyển văn bản";
   start.disabled = picked === 0;
   const selectable = visible.filter((r) => r.onDisk && !inQueue(r.path));
   all.textContent =
@@ -1163,10 +1172,10 @@ function readerPane(): HTMLElement {
   if (state.kind !== "done") {
     const title =
       state.kind === "failed"
-        ? "Chưa chép lời được file này"
+        ? "Chưa chuyển văn bản được file này"
         : state.kind === "cancelled"
           ? "File này đã được huỷ"
-          : "Bản chép lời sẽ hiện ở đây khi xong";
+          : "Văn bản sẽ hiện ở đây khi xong";
     return el(
       "section",
       { className: "invite" },
@@ -1194,27 +1203,36 @@ function readerPane(): HTMLElement {
           "button",
           {
             className: "btn-primary",
-            title: "Chép toàn bộ bản chép lời",
+            title: "Chép toàn bộ văn bản",
             disabled: text === null,
             onclick: async () => {
               await writeText(text ?? "");
-              note("Đã chép toàn bộ bản chép lời.");
+              note("Đã chép toàn bộ văn bản.");
             },
           },
           icon("copy", 15),
-          el("span", { textContent: "Chép bản chép" }),
+          el("span", { textContent: "Chép văn bản" }),
         ),
-        overflowMenu("Thao tác khác cho bản chép lời", [
+        el(
+          "button",
           {
-            label: "Chép lời lại",
-            title: "Chép lời lại bằng model đang chọn, vẫn giữ bản cũ",
-            onClick: () => rerunJob(job.id),
+            className: "btn-ghost",
+            title: "Chuyển lại văn bản bằng model đang chọn, vẫn giữ bản cũ",
+            onclick: () => rerunJob(job.id),
           },
+          icon("sync", 15),
+          el("span", { textContent: "Chuyển lại" }),
+        ),
+        el(
+          "button",
           {
-            label: "Mở trong Finder",
-            onClick: () => revealItemInDir(state.txt),
+            className: "btn-ghost",
+            title: "Mở thư mục chứa file văn bản",
+            onclick: () => revealItemInDir(state.txt),
           },
-        ]),
+          icon("folder", 15),
+          el("span", { textContent: "Mở thư mục" }),
+        ),
       ),
     ),
     recordFlowTabs(readerTab === "context" ? "context" : "transcript", flowNavFor(job)),
@@ -1283,92 +1301,166 @@ function note(message: string) {
 }
 
 function invite(): HTMLElement {
+  const isMac = /Mac/i.test(navigator.platform || navigator.userAgent);
+
+  const openSettingsTab = (tab: "speech" | "ai") => {
+    view = "settings";
+    selected = null;
+    pendingSettingsTab = tab;
+    render();
+  };
+
+  const step1Badge = el("span", { className: "guide-step-badge", textContent: "Đang kiểm tra…" });
+  const step2Badge = el("span", { className: "guide-step-badge", textContent: "Đang kiểm tra…" });
+
+  const step1Card = el(
+    "div",
+    { className: "guide-step-card" },
+    el(
+      "div",
+      { className: "guide-step-top" },
+      el("span", { className: "guide-step-num", textContent: "1" }),
+      el("strong", { textContent: "Chuyển văn bản" }),
+      step1Badge,
+    ),
+    el("p", {
+      className: "guide-step-desc",
+      textContent: "Chuyển ghi âm thành văn bản.",
+    }),
+    el(
+      "div",
+      { className: "guide-step-foot" },
+      el("button", {
+        className: "link",
+        textContent: "Chọn model →",
+        onclick: () => openSettingsTab("speech"),
+      }),
+    ),
+  );
+
+  const step2Card = el(
+    "div",
+    { className: "guide-step-card" },
+    el(
+      "div",
+      { className: "guide-step-top" },
+      el("span", { className: "guide-step-num", textContent: "2" }),
+      el("strong", { textContent: "Tài khoản AI" }),
+      step2Badge,
+    ),
+    el("p", {
+      className: "guide-step-desc",
+      textContent: "Làm sạch, tóm tắt và vẽ sơ đồ.",
+    }),
+    el(
+      "div",
+      { className: "guide-step-foot" },
+      el("button", {
+        className: "link",
+        textContent: "Cài API key →",
+        onclick: () => openSettingsTab("ai"),
+      }),
+    ),
+  );
+
+  const step3Card = el(
+    "div",
+    { className: "guide-step-card" },
+    el(
+      "div",
+      { className: "guide-step-top" },
+      el("span", { className: "guide-step-num", textContent: "3" }),
+      el("strong", { textContent: "Thêm file ghi âm" }),
+      el("span", {
+        className: jobs.length ? "guide-step-badge done" : "guide-step-badge",
+        textContent: jobs.length ? `${jobs.length} bản ghi` : "Sẵn sàng",
+      }),
+    ),
+    el("p", {
+      className: "guide-step-desc",
+      textContent: "Kéo thả .mp3, .m4a, .wav hoặc chọn file.",
+    }),
+    el(
+      "div",
+      { className: "guide-step-foot" },
+      el("button", {
+        className: "btn-primary",
+        textContent: "Thêm file ghi âm",
+        onclick: () => addFiles(),
+      }),
+      isMac
+        ? el("button", {
+            className: "btn-ghost",
+            textContent: "Từ app Ghi âm",
+            onclick: openMemos,
+          })
+        : null,
+    ),
+  );
+
   const section = el(
     "section",
     { className: "invite" },
     el(
       "div",
-      { className: "invite-inner" },
-      el("h2", { textContent: jobs.length ? "Chọn một bản ghi để bắt đầu" : "Biến file ghi âm thành biên bản & sơ đồ" }),
-      el(
-        "div",
-        { className: "invite-steps" },
-        el(
-          "div",
-          { className: "invite-step" },
-          el("span", { className: "invite-step-num", textContent: "1" }),
-          el("strong", { textContent: "Nạp ghi âm" }),
-          el("span", { textContent: "Thả file vào cửa sổ hoặc lấy từ app Ghi âm" }),
-        ),
-        el(
-          "div",
-          { className: "invite-step" },
-          el("span", { className: "invite-step-num", textContent: "2" }),
-          el("strong", { textContent: "Chép lời & sửa trực tiếp" }),
-          el("span", { textContent: "Chép tại máy, bấm giờ để nghe lại và sửa chữ" }),
-        ),
-        el(
-          "div",
-          { className: "invite-step" },
-          el("span", { className: "invite-step-num", textContent: "3" }),
-          el("strong", { textContent: "Ra Biên bản & Sơ đồ" }),
-          el("span", { textContent: "Xuất Word, Excel, Email, ảnh PNG và draw.io" }),
-        ),
-      ),
-      el(
-        "div",
-        { className: "invite-actions" },
-        el("button", { className: "btn-primary", textContent: "Thêm file ghi âm", onclick: () => addFiles() }),
-        el("button", { className: "btn-ghost", textContent: "Từ app Ghi âm", onclick: openMemos }),
-      ),
+      { className: "invite-inner guide-inner" },
+      el("h2", {
+        textContent: jobs.length ? "Chọn bản ghi bên trái" : "Bắt đầu trong 3 bước",
+      }),
+      el("div", { className: "guide-steps" }, step1Card, step2Card, step3Card),
     ),
   );
+
+  void Promise.all([
+    invoke<{
+      selectedId: string;
+      models: Array<{ id: string; name: string; installed: boolean }>;
+    }>("local_models").catch(() => null),
+    invoke<AiView>("ai_settings").catch(() => null),
+  ]).then(([speech, ai]) => {
+    if (!section.isConnected) return;
+    if (speech) {
+      const sel = speech.models.find((m) => m.id === speech.selectedId && m.installed);
+      const active = sel ?? speech.models.find((m) => m.installed);
+      if (active) {
+        step1Badge.textContent = active.name;
+        step1Badge.classList.add("done");
+      } else {
+        step1Badge.textContent = "Chưa tải";
+      }
+    } else {
+      step1Badge.textContent = "Cài đặt";
+    }
+    if (ai) {
+      const preferred = ai.defaultProvider;
+      const activeProvider =
+        (ai.keys[preferred] ? preferred : PROVIDERS.find((p) => Boolean(ai.keys[p]))) ?? null;
+      if (activeProvider) {
+        step2Badge.textContent = PROVIDER_NAME[activeProvider];
+        step2Badge.classList.add("done");
+      } else {
+        step2Badge.textContent = "Chưa cài";
+      }
+    } else {
+      step2Badge.textContent = "Tuỳ chọn";
+    }
+  });
+
   section.dataset.tour = "workspace";
   return section;
 }
 
-function firstRun(): HTMLElement {
-  const failed = download && "error" in download ? download.error : null;
-  const running = download && "percent" in download ? download.percent : null;
-  return el(
-    "section",
-    { className: "invite" },
-    el(
-      "div",
-      {},
-      el("h2", { textContent: "Tải gói nhận dạng giọng nói" }),
-      el("p", {
-        textContent:
-          "Cần tải dữ liệu một lần đầu để máy tự chép lời. Nếu rớt mạng giữa chừng, lần sau sẽ tải tiếp.",
-      }),
-      failed ? el("p", { className: "problem problem-text", textContent: failed }) : null,
-      running === null
-        ? el("button", {
-            className: "add",
-            textContent: failed ? "Thử tải lại" : "Tải model",
-            onclick: startDownload,
-          })
-        : el(
-            "div",
-            {},
-            el("p", { textContent: `Đang tải: ${running}%` }),
-            progressBar(running),
-          ),
-    ),
-  );
-}
+let activeOnboarding: HTMLElement | null = null;
 
-async function startDownload() {
-  download = { percent: 0 };
-  render();
-  try {
-    await invoke("download_local_model", { modelId: null });
-    modelsReady = true;
-    download = null;
-  } catch (e) {
-    download = { error: String(e) };
+function firstRun(): HTMLElement {
+  if (!activeOnboarding) {
+    activeOnboarding = onboardingPane(() => {
+      activeOnboarding = null;
+      modelsReady = true;
+      render();
+    });
   }
-  render();
+  return activeOnboarding;
 }
 
 function rightPane(): HTMLElement {
@@ -1385,6 +1477,12 @@ function rightPane(): HTMLElement {
         view = "settings";
         selected = null;
         pendingSettingsTab = "ai";
+        render();
+      },
+      openGlossary: () => {
+        view = "settings";
+        selected = null;
+        pendingSettingsTab = "glossary";
         render();
       },
       openContext: () => {

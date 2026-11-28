@@ -106,7 +106,7 @@ export type RecordFlowNav = {
 /** Unified 4-step workflow tab bar + optional Attachments tab shared across all record screens. */
 export function recordFlowTabs(active: RecordFlowTab, nav: RecordFlowNav): HTMLElement {
   const mainSteps: { id: RecordFlowTab; label: string; run: () => void }[] = [
-    { id: "transcript", label: "1. Bản chép", run: nav.openTranscript },
+    { id: "transcript", label: "1. Văn bản", run: nav.openTranscript },
     { id: "aiClean", label: nav.cleanLabel ?? "2. Bản làm sạch", run: nav.openClean },
     { id: "note", label: nav.noteLabel ?? "3. Tóm tắt", run: nav.openSummary },
     { id: "diagram", label: nav.diagramLabel ?? "4. Sơ đồ", run: nav.openDiagram },

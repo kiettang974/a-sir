@@ -33,6 +33,9 @@ pub fn is_supported(path: &Path) -> bool {
 pub struct Pcm16File {
     path: PathBuf,
     len: usize,
+    /// Precomputed silence-end sample indices captured during single-pass decode so
+    /// `silence_ends()` avoids re-reading multi-hour PCM files from disk.
+    cached_silences: Option<Vec<usize>>,
 }
 
 impl Pcm16File {
@@ -43,6 +46,7 @@ impl Pcm16File {
             Some(Self {
                 path: path.to_owned(),
                 len: bytes / 2,
+                cached_silences: None,
             })
         } else {
             None
@@ -80,7 +84,11 @@ impl Pcm16File {
     }
 
     /// Sample indices where each silence of at least 0.5 s below −35 dB ends, computed in O(1) RAM.
+    /// Reuses indices captured during single-pass decode when available (zero extra disk I/O).
     pub fn silence_ends(&self) -> Result<Vec<usize>, String> {
+        if let Some(ref cached) = self.cached_silences {
+            return Ok(cached.clone());
+        }
         const FRAME: usize = SAMPLE_RATE / 50; // 320 samples (20 ms)
         const MIN_FRAMES: usize = 25;
         let threshold = 10f32.powf(-35.0 / 20.0);
@@ -161,12 +169,72 @@ fn decode_with_afconvert_to_pcm16(source: &Path, dest: &Path) -> Option<Pcm16Fil
     }
 }
 
+/// Online 1-pass tracker for silence-end positions (>= 0.5 s below -35 dB) during PCM16 write.
+struct SilenceTracker {
+    threshold: f32,
+    frame_sum_sq: f32,
+    frame_count: usize,
+    frame_idx: usize,
+    quiet: usize,
+    ends: Vec<usize>,
+}
+
+impl SilenceTracker {
+    const FRAME: usize = SAMPLE_RATE / 50; // 320 samples (20 ms)
+    const MIN_FRAMES: usize = 25;
+
+    fn new() -> Self {
+        Self {
+            threshold: 10f32.powf(-35.0 / 20.0),
+            frame_sum_sq: 0.0,
+            frame_count: 0,
+            frame_idx: 0,
+            quiet: 0,
+            ends: Vec::new(),
+        }
+    }
+
+    #[inline]
+    fn push_pcm16(&mut self, sample: i16) {
+        let s = f32::from(sample) / 32768.0;
+        self.frame_sum_sq += s * s;
+        self.frame_count += 1;
+        if self.frame_count == Self::FRAME {
+            self.finish_frame();
+        }
+    }
+
+    fn finish_frame(&mut self) {
+        if self.frame_count == 0 {
+            return;
+        }
+        let rms = (self.frame_sum_sq / self.frame_count as f32).sqrt();
+        if rms < self.threshold {
+            self.quiet += 1;
+        } else {
+            if self.quiet >= Self::MIN_FRAMES {
+                self.ends.push(self.frame_idx * Self::FRAME);
+            }
+            self.quiet = 0;
+        }
+        self.frame_sum_sq = 0.0;
+        self.frame_count = 0;
+        self.frame_idx += 1;
+    }
+
+    fn finish(mut self) -> Vec<usize> {
+        self.finish_frame();
+        self.ends
+    }
+}
+
 fn write_pcm16_samples(
     writer: &mut BufWriter<File>,
     samples: &[f32],
     skip_delay: &mut usize,
     written: &mut usize,
     limit: Option<usize>,
+    silences: &mut SilenceTracker,
 ) -> Result<(), String> {
     for &s in samples {
         if *skip_delay > 0 {
@@ -179,6 +247,7 @@ fn write_pcm16_samples(
             break;
         }
         let clamped = (s * 32767.0).clamp(-32768.0, 32767.0) as i16;
+        silences.push_pcm16(clamped);
         writer
             .write_all(&clamped.to_le_bytes())
             .map_err(|e| format!("lỗi ghi bộ đệm audio: {e}"))?;
@@ -218,10 +287,12 @@ fn decode_native_to_pcm16(source: &Path, dest: &Path) -> Result<Pcm16File, Strin
 
     let mut rate = track.codec_params.sample_rate.unwrap_or(0) as usize;
     let mut resampler: Option<FftFixedIn<f32>> = None;
-    let mut pending: Vec<f32> = Vec::with_capacity(8192);
+    let mut pending: Vec<f32> = Vec::with_capacity(16_384);
+    let mut pending_pos = 0usize;
     let mut skip_delay = 0usize;
     let mut total_in = 0usize;
     let mut written = 0usize;
+    let mut silences = SilenceTracker::new();
     let mut buffer: Option<SampleBuffer<f32>> = None;
 
     loop {
@@ -254,8 +325,16 @@ fn decode_native_to_pcm16(source: &Path, dest: &Path) -> Result<Pcm16File, Strin
         total_in += pending.len() - chunk_start;
 
         if rate == SAMPLE_RATE {
-            write_pcm16_samples(&mut writer, &pending, &mut skip_delay, &mut written, None)?;
+            write_pcm16_samples(
+                &mut writer,
+                &pending[pending_pos..],
+                &mut skip_delay,
+                &mut written,
+                None,
+                &mut silences,
+            )?;
             pending.clear();
+            pending_pos = 0;
         } else {
             let rs = match resampler.as_mut() {
                 Some(r) => r,
@@ -266,11 +345,27 @@ fn decode_native_to_pcm16(source: &Path, dest: &Path) -> Result<Pcm16File, Strin
                     resampler.insert(r)
                 }
             };
-            while pending.len() >= rs.input_frames_next() {
+            while pending.len() - pending_pos >= rs.input_frames_next() {
                 let need = rs.input_frames_next();
-                let resampled = rs.process(&[&pending[..need]], None).map_err(|e| fail_rs(&e))?;
-                write_pcm16_samples(&mut writer, &resampled[0], &mut skip_delay, &mut written, None)?;
-                pending.drain(..need);
+                let resampled = rs
+                    .process(&[&pending[pending_pos..pending_pos + need]], None)
+                    .map_err(|e| fail_rs(&e))?;
+                write_pcm16_samples(
+                    &mut writer,
+                    &resampled[0],
+                    &mut skip_delay,
+                    &mut written,
+                    None,
+                    &mut silences,
+                )?;
+                pending_pos += need;
+            }
+            if pending_pos == pending.len() {
+                pending.clear();
+                pending_pos = 0;
+            } else if pending_pos >= 16_384 {
+                pending.drain(..pending_pos);
+                pending_pos = 0;
             }
         }
     }
@@ -282,22 +377,37 @@ fn decode_native_to_pcm16(source: &Path, dest: &Path) -> Result<Pcm16File, Strin
 
     if let Some(rs) = resampler.as_mut() {
         let expected = total_in * SAMPLE_RATE / rate;
-        if !pending.is_empty() {
+        if pending_pos < pending.len() {
             let tail = rs
-                .process_partial(Some(&[&pending[..]]), None)
+                .process_partial(Some(&[&pending[pending_pos..]]), None)
                 .map_err(|e| fail_rs(&e))?;
-            write_pcm16_samples(&mut writer, &tail[0], &mut skip_delay, &mut written, Some(expected))?;
+            write_pcm16_samples(
+                &mut writer,
+                &tail[0],
+                &mut skip_delay,
+                &mut written,
+                Some(expected),
+                &mut silences,
+            )?;
         }
         let flushed = rs
             .process_partial::<&[f32]>(None, None)
             .map_err(|e| fail_rs(&e))?;
-        write_pcm16_samples(&mut writer, &flushed[0], &mut skip_delay, &mut written, Some(expected))?;
+        write_pcm16_samples(
+            &mut writer,
+            &flushed[0],
+            &mut skip_delay,
+            &mut written,
+            Some(expected),
+            &mut silences,
+        )?;
     }
 
     writer.flush().map_err(|e| format!("lỗi ghi bộ đệm audio: {e}"))?;
     Ok(Pcm16File {
         path: dest.to_owned(),
         len: written,
+        cached_silences: Some(silences.finish()),
     })
 }
 

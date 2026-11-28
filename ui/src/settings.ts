@@ -11,7 +11,6 @@ import {
   notifyModelLabelAdded,
   pickAndImportTemplate,
   PROVIDER_NAME,
-  PROVIDERS,
   type Provider,
   progressBar,
   resetTemplate,
@@ -55,36 +54,6 @@ const OS_LABEL: Record<OsId, string> = {
   linux: "Linux",
   mobile: "Di động",
 };
-
-/** Small OS icons showing where a model runs; a dimmed icon means it does not. */
-function platformChips(platforms?: string[]): HTMLElement {
-  const supported = new Set(platforms ?? ["mac", "windows", "linux"]);
-  return el(
-    "span",
-    { className: "os-chips", title: "Thiết bị / hệ điều hành hỗ trợ model này" },
-    ...(["mac", "windows", "linux", "mobile"] as OsId[]).map((os) => {
-      const ok = supported.has(os);
-      const title =
-        os === "mobile"
-          ? ok
-            ? "Hỗ trợ tốt cho Di động (nhẹ RAM)"
-            : "Nặng, không khuyên dùng cho Di động"
-          : ok
-            ? `Chạy được trên ${OS_LABEL[os]}`
-            : `Chưa hỗ trợ ${OS_LABEL[os]}`;
-      const chip = el(
-        "span",
-        {
-          className: `os-chip${ok ? "" : " off"}`,
-          title,
-        },
-        icon(os, 14),
-      );
-      chip.setAttribute("aria-label", chip.title);
-      return chip;
-    }),
-  );
-}
 
 type SystemInfo = {
   os: OsId;
@@ -137,7 +106,7 @@ const RESOURCE_PROFILES: { id: ResourceProfile; label: string; description: stri
   {
     id: "max",
     label: "Nhanh nhất",
-    description: "Dồn tối đa sức mạnh của máy để chép lời nhanh nhất.",
+    description: "Dồn tối đa sức mạnh của máy để chuyển văn bản nhanh nhất.",
   },
 ];
 
@@ -147,8 +116,6 @@ type LocalModelsView = {
   system?: SystemInfo;
   models: LocalModelView[];
 };
-
-let filterCompatibleOnly = true;
 
 type SummaryProfile = {
   id: string;
@@ -173,27 +140,36 @@ type UpdateInfo = {
   notes: string;
 };
 
-type TabId = "speech" | "ai" | "minutes" | "glossary" | "update";
+type TabId = "speech" | "ai" | "minutes" | "glossary" | "storage" | "update";
 
 const TABS: { id: TabId; label: string }[] = [
-  { id: "speech", label: "Chép lời" },
+  { id: "speech", label: "Chuyển văn bản" },
   { id: "ai", label: "Tài khoản AI" },
   { id: "minutes", label: "Biên bản" },
   { id: "glossary", label: "Từ vựng riêng" },
+  { id: "storage", label: "Dữ liệu & dọn dẹp" },
   { id: "update", label: "Cập nhật" },
 ];
+
+type StorageBucket = { files: number; bytes: number };
+type StorageStats = {
+  cache: StorageBucket;
+  cleaned: StorageBucket;
+  diagrams: StorageBucket;
+  transcripts: StorageBucket;
+};
+type CleanupTarget = "cache" | "cleaned" | "diagrams" | "transcripts";
+type CleanupOutcome = {
+  removedFiles: number;
+  freedBytes: number;
+  stats: StorageStats;
+};
 
 type LoadState<T> =
   | { kind: "idle" }
   | { kind: "loading" }
   | { kind: "ready"; data: T }
   | { kind: "error"; message: string };
-
-type ModelValidation = {
-  ok: boolean;
-  models: string[];
-  suggestion: string | null;
-};
 
 type ProviderCache = {
   models: string[] | null;
@@ -451,9 +427,9 @@ export function settingsPane(initialTab?: TabId): HTMLElement {
   const renderPanel = () => {
     if (activeTab === "speech") {
       if (speechState.kind === "loading" || speechState.kind === "idle") {
-        panel.replaceChildren(el("p", { className: "hint", textContent: "Đang đọc danh sách model chép lời…" }));
+        panel.replaceChildren(el("p", { className: "hint", textContent: "Đang đọc danh sách model chuyển văn bản…" }));
       } else if (speechState.kind === "error") {
-        panel.replaceChildren(errorBlock("Model chép lời cục bộ", speechState.message, loadSpeech));
+        panel.replaceChildren(errorBlock("Model chuyển văn bản cục bộ", speechState.message, loadSpeech));
       } else {
         panel.replaceChildren(
           speechSection(
@@ -532,6 +508,11 @@ export function settingsPane(initialTab?: TabId): HTMLElement {
       return;
     }
 
+    if (activeTab === "storage") {
+      panel.replaceChildren(storageSection());
+      return;
+    }
+
     if (activeTab === "update") {
       panel.replaceChildren(updateSection());
       return;
@@ -552,6 +533,27 @@ export function settingsPane(initialTab?: TabId): HTMLElement {
   return section;
 }
 
+const CURATED_SPEECH_IDS = [
+  "whisper-large-v3-turbo-q5_0",
+  "whisper-large-v3-turbo",
+  "whisper-large-v3",
+  "phowhisper-medium-q5_0",
+];
+
+const SPEECH_PLAIN_DESC: Record<string, string> = {
+  "whisper-large-v3-turbo-q5_0": "Nhanh, nhẹ máy — hợp máy 8 GB RAM và cuộc họp dài.",
+  "whisper-large-v3-turbo": "Cân bằng tốc độ và độ chính xác tiếng Việt & tiếng Anh.",
+  "whisper-large-v3": "Chính xác cao nhất cho nhiều thuật ngữ khó (cần máy ≥ 16 GB RAM).",
+  "phowhisper-medium-q5_0": "Chuyên cho cuộc họp thuần tiếng Việt, nhẹ máy.",
+};
+
+function recommendedSpeechId(data: LocalModelsView): string {
+  const ram = data.system?.ramGb ?? 8;
+  const preferred = ram <= 8 ? "whisper-large-v3-turbo-q5_0" : "whisper-large-v3-turbo";
+  if (data.models.some((m) => m.id === preferred && m.compatible !== false)) return preferred;
+  return data.models.find((m) => m.compatible !== false)?.id ?? data.selected;
+}
+
 function speechSection(
   data: LocalModelsView,
   downloading: Map<string, number>,
@@ -565,45 +567,154 @@ function speechSection(
   const currentProfile =
     RESOURCE_PROFILES.find((p) => p.id === data.resourceProfile) ?? RESOURCE_PROFILES[1];
   const resourceErr = errors.get("__resource__");
-  const resourceSelect = el(
-    "select",
-    {
-      className: "field",
-      ariaLabel: "Mức tài nguyên chép lời",
-      onchange: () => onResourceChange(resourceSelect.value as ResourceProfile),
-    },
-    ...RESOURCE_PROFILES.map((p) =>
-      el("option", {
-        value: p.id,
-        selected: p.id === currentProfile.id,
-        textContent: p.label,
+  const recId = recommendedSpeechId(data);
+  const activeModel = data.models.find((m) => m.selected && m.ready);
+  const sys = data.system;
+  const hwSummary = sys
+    ? [sys.chip || (OS_LABEL[sys.os] ?? sys.os), sys.ramGb > 0 ? `${sys.ramGb} GB RAM` : ""].filter(Boolean).join(" · ")
+    : "";
+
+  const summaryBanner = el(
+    "div",
+    { className: "settings-summary-bar" },
+    el(
+      "div",
+      { className: "settings-summary-main" },
+      el("strong", {
+        textContent: activeModel ? `Đang dùng: ${activeModel.name}` : "Chưa chọn gói nhận dạng giọng nói",
       }),
+      hwSummary ? el("span", { className: "settings-summary-meta", textContent: hwSummary }) : null,
     ),
   );
+
+  // Visual 3-option speed picker instead of dropdown + verbose copy.
+  const speedGroup = el(
+    "div",
+    { className: "speed-pills", role: "radiogroup", ariaLabel: "Mức tốc độ xử lý" },
+    ...RESOURCE_PROFILES.map((p) =>
+      el(
+        "button",
+        {
+          type: "button",
+          className: `speed-pill${p.id === currentProfile.id ? " selected" : ""}`,
+          onclick: () => {
+            if (p.id !== currentProfile.id) onResourceChange(p.id);
+          },
+        },
+        el("strong", { textContent: p.label }),
+        el("span", { textContent: p.description }),
+      ),
+    ),
+  );
+
   const resourceBox = el(
     "div",
     { className: "style-box" },
-    el("div", { className: "style-title", textContent: "Tốc độ xử lý" }),
-    el(
-      "div",
-      { className: "style-row" },
-      resourceSelect,
-      el("p", {
-        className: "style-desc",
-        textContent: `${currentProfile.description} Có hiệu lực từ lượt chép lời tiếp theo.`,
-      }),
-    ),
+    el("div", { className: "style-title", textContent: "Mức sử dụng máy khi chuyển văn bản" }),
+    speedGroup,
     resourceErr
       ? el("p", { className: "provider-status status-inline bad", textContent: resourceErr })
       : null,
   );
 
+  const renderModelCard = (m: LocalModelView) => {
+    const progress = downloading.get(m.id);
+    const error = errors.get(m.id);
+    const active = m.selected && m.ready;
+    const isRec = m.id === recId;
+
+    const action =
+      progress !== undefined
+        ? el("span", { className: "model-status-text", textContent: `Đang tải ${progress}%` })
+        : active
+          ? el("span", { className: "model-badge active", textContent: "Đang dùng" })
+          : m.ready
+            ? el(
+                "div",
+                { className: "actions" },
+                el("button", {
+                  type: "button",
+                  className: "add",
+                  textContent: "Chọn dùng",
+                  onclick: () => onSelect(m.id),
+                }),
+                el("button", {
+                  type: "button",
+                  className: "link danger-link",
+                  textContent: "Xoá",
+                  onclick: () => onDelete(m),
+                }),
+              )
+            : el("button", {
+                type: "button",
+                className: "btn-ghost",
+                textContent: error ? "Thử tải lại" : "Tải về",
+                onclick: () => onDownload(m.id),
+              });
+
+    const compatWarn =
+      m.compatible === false
+        ? el("span", {
+            className: "model-badge",
+            textContent:
+              sys && m.platforms && !m.platforms.includes(sys.os)
+                ? `Không hỗ trợ ${OS_LABEL[sys.os]}`
+                : "Nặng với máy này",
+          })
+        : null;
+
+    return el(
+      "div",
+      { className: `model-card${active ? " selected" : ""}` },
+      el(
+        "div",
+        { className: "model-card-head" },
+        el(
+          "div",
+          { className: "model-card-title" },
+          el("strong", { textContent: m.name }),
+          isRec && !active ? el("span", { className: "onboarding-badge", textContent: "Khuyên dùng" }) : null,
+          m.ready && !active ? el("span", { className: "model-badge ready", textContent: "Đã tải" }) : null,
+          compatWarn,
+        ),
+        action,
+      ),
+      el("p", { className: "model-desc", textContent: SPEECH_PLAIN_DESC[m.id] ?? m.description }),
+      el(
+        "div",
+        { className: "model-meta" },
+        el("span", {
+          textContent: m.minRamGb
+            ? `${formatBytes(m.bytes)} · Cần ≥ ${m.minRamGb} GB RAM`
+            : formatBytes(m.bytes),
+        }),
+      ),
+      progress !== undefined ? progressBar(progress) : null,
+      error ? el("p", { className: "provider-status status-inline bad", textContent: error }) : null,
+    );
+  };
+
+  // Curated main list: only the 3–4 practical choices + any already-downloaded/selected model.
+  const curatedSet = new Set(CURATED_SPEECH_IDS);
+  const primaryModels = data.models.filter(
+    (m) => (curatedSet.has(m.id) && m.compatible !== false) || m.ready || m.selected,
+  );
+  const primaryIds = new Set(primaryModels.map((m) => m.id));
+  const extraModels = data.models.filter((m) => !primaryIds.has(m.id));
+
+  const mainModelList = el(
+    "div",
+    { className: "model-list" },
+    ...(primaryModels.length ? primaryModels : data.models.slice(0, 4)).map(renderModelCard),
+  );
+
+  // Power-user Hugging Face search + extra models tucked cleanly inside Advanced disclosure.
   const hfQuery = el("input", {
     className: "field",
     type: "search",
     value: hfQueryText,
-    placeholder: "Gõ tên model muốn tìm (VD: phowhisper, whisper, vietnamese)…",
-    ariaLabel: "Tìm model chép lời mới trên Hugging Face",
+    placeholder: "Tìm model trên Hugging Face (VD: phowhisper, whisper)…",
+    ariaLabel: "Tìm model chuyển văn bản mới trên Hugging Face",
     oninput: (e: Event) => {
       hfQueryText = (e.target as HTMLInputElement).value;
     },
@@ -632,6 +743,7 @@ function speechSection(
           m.alreadyAdded || existingIds.has(m.id)
             ? el("span", { className: "model-badge", textContent: "Đã có" })
             : el("button", {
+                type: "button",
                 className: "link",
                 textContent: "Thêm vào danh sách",
                 onclick: async () => {
@@ -668,7 +780,7 @@ function speechSection(
     hfBtn.disabled = true;
     hfQueryText = hfQuery.value;
     hfStatusBad = false;
-    hfStatusText = "Đang tìm model GGML mới trên Hugging Face…";
+    hfStatusText = "Đang tìm model trên Hugging Face…";
     hfStatus.className = "provider-status status-inline";
     hfStatus.textContent = hfStatusText;
     hfFound = [];
@@ -677,11 +789,11 @@ function speechSection(
       const found = await invoke<DiscoveredModel[]>("discover_hf_models", { query: hfQueryText });
       hfFound = found;
       if (found.length === 0) {
-        hfStatusText = "Không tìm thấy file model GGML (.bin) phù hợp với từ khoá này.";
+        hfStatusText = "Không tìm thấy model phù hợp với từ khoá này.";
         hfStatus.textContent = hfStatusText;
         return;
       }
-      hfStatusText = `Tìm thấy ${found.length} model trên Hugging Face.`;
+      hfStatusText = `Tìm thấy ${found.length} model.`;
       hfStatus.textContent = hfStatusText;
       drawHfResults();
     } catch (e) {
@@ -694,187 +806,137 @@ function speechSection(
     }
   };
   const hfBtn = el("button", {
+    type: "button",
     className: "btn-ghost",
-    textContent: "Tìm trên Hugging Face",
+    textContent: "Tìm kiếm",
     onclick: runDiscover,
   });
   hfQuery.addEventListener("keydown", (e) => {
     if (e.key === "Enter") runDiscover();
   });
 
-  const hfBox = el(
-    "div",
-    { className: "style-box" },
+  const advancedBox = el(
+    "details",
+    { className: "advanced-box" },
+    el("summary", {
+      textContent:
+        extraModels.length > 0
+          ? `Tuỳ chọn nâng cao (${extraModels.length} model khác, Hugging Face, thư mục lưu)`
+          : "Tuỳ chọn nâng cao (Hugging Face, thư mục lưu model)",
+    }),
     el(
       "div",
-      { className: "hf-head" },
-      el("div", { className: "style-title tpl-label", textContent: "Tìm thêm model mới" }),
-      el("button", {
-        className: "link",
-        textContent: "Xem thư viện model",
-        onclick: () => invoke("open_hf_asr_hub"),
-      }),
-    ),
-    el("div", { className: "hf-bar" }, hfQuery, hfBtn),
-    hfStatus,
-    hfResults,
-  );
-
-  const modelListEl = el("div", { className: "model-list" });
-  const hwFilterWrap = el("div");
-
-  const renderModelList = () => {
-    const sys = data.system;
-    const isCompatible = (m: LocalModelView) => m.compatible !== false;
-    const visibleModels = filterCompatibleOnly
-      ? data.models.filter((m) => isCompatible(m) || m.ready || m.selected)
-      : data.models;
-    const hiddenCount = data.models.length - visibleModels.length;
-
-    if (sys) {
-      const hwParts: string[] = [];
-      if (sys.chip) hwParts.push(sys.chip);
-      else hwParts.push(OS_LABEL[sys.os] ?? sys.os);
-      if (sys.ramGb > 0) hwParts.push(`${sys.ramGb} GB RAM`);
-      if (sys.cpuCores > 0) hwParts.push(`${sys.cpuCores} nhân`);
-      const filterCheckbox = el("input", {
-        type: "checkbox",
-        checked: filterCompatibleOnly,
-        onchange: () => {
-          filterCompatibleOnly = filterCheckbox.checked;
-          renderModelList();
-        },
-      }) as HTMLInputElement;
-      hwFilterWrap.replaceChildren(
+      { className: "advanced-body" },
+      extraModels.length > 0
+        ? el("div", { className: "model-list" }, ...extraModels.map(renderModelCard))
+        : null,
+      el(
+        "div",
+        { className: "style-box" },
         el(
           "div",
-          { className: "hw-filter-bar" },
-          el("span", { textContent: `Cấu hình máy: ${hwParts.join(" · ")}` }),
-          el(
-            "label",
-            { className: "hw-filter-toggle" },
-            filterCheckbox,
-            el("span", {
-              textContent:
-                hiddenCount > 0
-                  ? `Chỉ hiện model phù hợp (đang ẩn ${hiddenCount})`
-                  : "Chỉ hiện model phù hợp",
-            }),
-          ),
+          { className: "hf-head" },
+          el("div", { className: "style-title tpl-label", textContent: "Tải thêm model cộng đồng (Hugging Face)" }),
+          el("button", {
+            type: "button",
+            className: "link",
+            textContent: "Mở thư mục lưu model",
+            onclick: () => invoke("open_models_dir"),
+          }),
         ),
-      );
-    } else {
-      hwFilterWrap.replaceChildren();
-    }
-
-    modelListEl.replaceChildren(
-      ...visibleModels.map((m) => {
-        const progress = downloading.get(m.id);
-        const error = errors.get(m.id);
-        const active = m.selected && m.ready;
-        const statusLabel =
-          progress !== undefined
-            ? `Đang tải ${progress}%`
-            : active
-              ? "Đang dùng"
-              : m.ready
-                ? "Sẵn sàng"
-                : "Chưa tải";
-
-        const action =
-          progress !== undefined
-            ? el("span", { className: "model-status-text", textContent: `Đang tải: ${progress}%` })
-            : active
-              ? el("span", { className: "model-badge active", textContent: "Đang dùng" })
-              : m.ready
-                ? el(
-                    "div",
-                    { className: "actions" },
-                    el("button", {
-                      className: "add",
-                      textContent: "Chọn dùng",
-                      onclick: () => onSelect(m.id),
-                    }),
-                    el("button", {
-                      className: "link danger-link",
-                      textContent: "Xoá",
-                      onclick: () => onDelete(m),
-                    }),
-                  )
-                : el("button", {
-                    className: "link",
-                    textContent: error ? "Thử tải lại" : "Tải model",
-                    onclick: () => onDownload(m.id),
-                  });
-
-        const ramTag = m.minRamGb ? ` · RAM ≥ ${m.minRamGb} GB` : "";
-        const compatWarn =
-          m.compatible === false
-            ? el("span", {
-                className: "model-badge",
-                textContent:
-                  sys && m.platforms && !m.platforms.includes(sys.os)
-                    ? `Chưa hỗ trợ ${OS_LABEL[sys.os]}`
-                    : "Nặng với máy",
-              })
-            : null;
-
-        return el(
-          "div",
-          { className: `model-card${active ? " selected" : ""}` },
-          el(
-            "div",
-            { className: "model-card-head" },
-            el(
-              "div",
-              { className: "model-card-title" },
-              el("strong", { textContent: m.name }),
-              el("span", {
-                className: `model-badge${active ? " active" : m.ready ? " ready" : ""}`,
-                textContent: statusLabel,
-              }),
-              compatWarn,
-            ),
-            action,
-          ),
-          el("p", { className: "model-desc", textContent: m.description }),
-          el(
-            "div",
-            { className: "model-meta" },
-            el("span", { textContent: `Dung lượng: ${formatBytes(m.bytes)}${ramTag}` }),
-            platformChips(m.platforms),
-          ),
-          progress !== undefined ? progressBar(progress) : null,
-          error ? el("p", { className: "provider-status status-inline bad", textContent: error }) : null,
-        );
-      }),
-    );
-  };
-  renderModelList();
+        el("div", { className: "hf-bar" }, hfQuery, hfBtn),
+        hfStatus,
+        hfResults,
+      ),
+    ),
+  );
 
   return el(
     "section",
     {},
-    el(
-      "div",
-      { className: "hf-head" },
-      el("h3", { textContent: "Giọng nói & tốc độ chép lời" }),
-      el("button", {
-        className: "link",
-        textContent: "Mở thư mục model",
-        title: "Mở thư mục lưu các file model đã tải trên máy trong Finder",
-        onclick: () => invoke("open_models_dir"),
-      }),
-    ),
+    el("h3", { textContent: "Chuyển văn bản trên máy" }),
+    summaryBanner,
     resourceBox,
-    hfBox,
-    hwFilterWrap,
-    modelListEl,
+    mainModelList,
+    advancedBox,
   );
 }
 
+const PROVIDER_ORDER: Provider[] = ["gemini", "chatGpt", "claude"];
+const PROVIDER_KEY_STEPS: Record<Provider, string[]> = {
+  gemini: [
+    "Mở Google AI Studio và đăng nhập tài khoản Google (có gói miễn phí).",
+    "Bấm \"Create API key\" rồi chọn dự án mặc định.",
+    "Sao chép chuỗi key (bắt đầu bằng AIza...) và dán vào ô bên dưới.",
+  ],
+  chatGpt: [
+    "Mở OpenAI Platform và đăng nhập tài khoản OpenAI (cần có số dư API).",
+    "Vào API keys → bấm \"Create new secret key\".",
+    "Sao chép key (bắt đầu bằng sk-...) và dán vào ô bên dưới.",
+  ],
+  claude: [
+    "Mở Anthropic Console và đăng nhập (cần có credit API).",
+    "Vào API Keys → bấm \"Create Key\".",
+    "Sao chép key (bắt đầu bằng sk-ant-...) và dán vào ô bên dưới.",
+  ],
+};
+
+let activeAiProvider: Provider | null = null;
+
 function aiSection(ai: AiView, reload: () => void): HTMLElement {
   const persist = () => persistAiSettings(ai);
+  const hasAnyKey = PROVIDER_ORDER.some((p) => Boolean(ai.keys[p]));
+  if (!activeAiProvider) {
+    activeAiProvider = hasAnyKey ? ai.defaultProvider : "gemini";
+  }
+
+  const tabsHost = el("div", {
+    className: "ai-provider-tabs",
+    role: "tablist",
+    ariaLabel: "Chọn nhà cung cấp AI",
+  });
+  const formHost = el("div", { className: "ai-provider-form-host" });
+
+  const renderProviderView = () => {
+    const selected = activeAiProvider ?? "gemini";
+    tabsHost.replaceChildren(
+      ...PROVIDER_ORDER.map((p) => {
+        const hasKey = Boolean(ai.keys[p]);
+        const isDefault = ai.defaultProvider === p;
+        const badgeText = isDefault && hasKey
+          ? "Đang dùng"
+          : hasKey
+            ? "Đã có key"
+            : p === "gemini"
+              ? "Miễn phí"
+              : "";
+        return el(
+          "button",
+          {
+            type: "button",
+            role: "tab",
+            className: `ai-provider-tab${selected === p ? " selected" : ""}`,
+            ariaSelected: String(selected === p),
+            onclick: () => {
+              activeAiProvider = p;
+              renderProviderView();
+            },
+          },
+          el("strong", { textContent: PROVIDER_NAME[p] }),
+          badgeText
+            ? el("span", {
+                className: `ai-provider-badge${isDefault && hasKey ? " active" : ""}`,
+                textContent: badgeText,
+              })
+            : null,
+        );
+      }),
+    );
+    formHost.replaceChildren(providerBlock(selected, ai, persist, reload, renderProviderView));
+  };
+
+  renderProviderView();
+
   const fallbackSwitch = el("input", {
     type: "checkbox",
     className: "switch-input",
@@ -919,8 +981,9 @@ function aiSection(ai: AiView, reload: () => void): HTMLElement {
   return el(
     "section",
     {},
-    el("h3", { textContent: "Tài khoản AI tóm tắt" }),
-    ...PROVIDERS.map((p) => providerBlock(p, ai, persist, reload)),
+    el("h3", { textContent: "Tài khoản AI" }),
+    tabsHost,
+    formHost,
     fallbackBox,
   );
 }
@@ -1079,7 +1142,7 @@ function minutesSection(ai: AiView): HTMLElement {
     [
       "1",
       "Chốt phạm vi phát hành",
-      "Giữ luồng chép lời tại máy và thêm xuất biên bản Word/Excel.",
+      "Giữ luồng chuyển văn bản tại máy và thêm xuất biên bản Word/Excel.",
       "Phụ trách: Nhóm sản phẩm · Hạn: Thứ 6",
     ],
     [
@@ -1420,13 +1483,19 @@ function minutesSection(ai: AiView): HTMLElement {
     tplStatus,
   );
 
+  const advancedMinutes = el(
+    "details",
+    { className: "advanced-box" },
+    el("summary", { textContent: "Tuỳ chọn nâng cao (Mẫu Word/Excel riêng & Khung biên bản)" }),
+    el("div", { className: "advanced-body" }, templateBlock, profileBlock),
+  );
+
   return el(
     "section",
     {},
     el("h3", { textContent: "Cách viết & xuất biên bản" }),
-    profileBlock,
     styleBlock,
-    templateBlock,
+    advancedMinutes,
   );
 }
 
@@ -1435,6 +1504,7 @@ function providerBlock(
   ai: AiView,
   persist: () => Promise<unknown>,
   reload: () => void,
+  onTabsDirty: () => void,
 ): HTMLElement {
   const name = PROVIDER_NAME[provider];
   const hint = ai.keys[provider];
@@ -1445,27 +1515,114 @@ function providerBlock(
     status.className = `provider-status${kind ? ` ${kind}` : ""}`;
   };
 
-  const key = el("input", {
+  let modelName = ai.models[provider] ?? "";
+  let fetchingModels = false;
+  let testingConn = false;
+
+  const keyInput = el("input", {
     className: "field",
     type: "password",
-    placeholder: hint ? `Đang dùng ${hint}. Nhập để thay key` : "Dán API key",
+    placeholder: hint ? `Đang dùng ${hint} — dán key mới để thay` : `Dán API key ${name}`,
     autocomplete: "off",
     ariaLabel: `API key của ${name}`,
-  });
+  }) as HTMLInputElement;
 
-  let modelName = ai.models[provider] ?? "";
-  const modelInput = el("input", {
-    className: "field",
-    value: modelName,
-    readOnly: true,
-    placeholder: hint ? "Bấm \"Chọn model\" để chọn từ danh sách" : "Lưu API key để chọn model",
-    title: "Bấm \"Chọn model\" để chọn model hợp lệ từ danh sách của nhà cung cấp",
-    ariaLabel: `ID model của ${name}`,
-  });
+  const modelHost = el("div", { className: "ai-model-control" });
 
+  const saveModel = async (value: string, announce = true) => {
+    const cleaned = value.trim();
+    if (!cleaned) return;
+    modelName = cleaned;
+    ai.models[provider] = cleaned;
+    await persist();
+    if (announce) show(`Đã chọn model ${cleaned}.`, "ok");
+  };
+
+  const availableModelOptions = (): string[] => {
+    const cache = providerModelCache[provider];
+    const list: string[] = [];
+    const pushUnique = (id: string) => {
+      const t = id.trim();
+      if (t && !list.includes(t)) list.push(t);
+    };
+    if (modelName) pushUnique(modelName);
+    for (const id of cache.models ?? []) pushUnique(id);
+    for (const id of ai.recommendedModels?.[provider] ?? []) pushUnique(id);
+    return list;
+  };
+
+  const renderModelControl = () => {
+    const options = availableModelOptions();
+    const select = el(
+      "select",
+      {
+        className: "field ai-model-select",
+        ariaLabel: `Chọn model của ${name}`,
+        onchange: () => void saveModel(select.value),
+      },
+      ...options.map((id) =>
+        el("option", {
+          value: id,
+          selected: id === modelName,
+          textContent: id,
+        }),
+      ),
+    ) as HTMLSelectElement;
+
+    const refreshBtn = el("button", {
+      type: "button",
+      className: "link",
+      textContent: fetchingModels ? "Đang tải…" : "Tải lại danh sách",
+      disabled: !hint || fetchingModels,
+      title: hint ? "Lấy danh sách model mới nhất (1 request GET /models)" : "Lưu API key trước",
+      onclick: () => void fetchModelsFast(true),
+    });
+
+    modelHost.replaceChildren(select, refreshBtn);
+  };
+
+  /** Fast single GET /models (~0.3–0.5s, 0 tokens). Never runs 6-model probe and never hides models. */
+  const fetchModelsFast = async (force: boolean, announce = true): Promise<string[] | null> => {
+    const cache = providerModelCache[provider];
+    if (!force && isCacheFresh(cache) && cache.models) {
+      renderModelControl();
+      return cache.models;
+    }
+    const generation = ++cache.generation;
+    fetchingModels = true;
+    renderModelControl();
+    try {
+      const models = await invoke<string[]>("list_models", { provider });
+      if (providerModelCache[provider].generation !== generation) return null;
+      const now = Date.now();
+      cache.models = models;
+      cache.fetchedAt = now;
+      persistProviderModels(provider, models, now);
+      if (models.length > 0 && (!modelName || !models.includes(modelName))) {
+        await saveModel(models[0], false);
+      }
+      if (announce) {
+        show(`Đã tải ${models.length} model từ ${name}.`, "ok");
+      }
+      return models;
+    } catch (e) {
+      if (providerModelCache[provider].generation === generation && announce) {
+        show(String(e), "bad");
+      }
+      return null;
+    } finally {
+      fetchingModels = false;
+      renderModelControl();
+    }
+  };
+
+  /** Single fail-fast completion ping (6s timeout, 0 retries). */
   const runTestConnection = async () => {
-    if (!hint) return;
-    show("Đang thử kết nối…");
+    if (!hint || testingConn) return;
+    testingConn = true;
+    testBtn.disabled = true;
+    testBtn.textContent = "Đang kiểm tra…";
+    show(`Đang thử kết nối ${name} (${modelName})…`);
     const generation = providerModelCache[provider].generation;
     try {
       const res = await invoke<{ ok: boolean; transient: boolean; message: string }>("test_provider", {
@@ -1473,479 +1630,157 @@ function providerBlock(
         model: modelName,
       });
       if (providerModelCache[provider].generation !== generation) return;
-      clearValidationBanner();
       if (res?.transient) {
-        show(res.message || "Key và model hợp lệ, nhưng nhà cung cấp đang quá tải. Thử lại sau.", "warn");
+        show(res.message, "warn");
       } else {
         show(res?.message || "Kết nối thành công.", "ok");
       }
     } catch (e) {
       if (providerModelCache[provider].generation !== generation) return;
-      const errText = String(e);
-      if (isModelUnavailableError(errText)) {
-        await autoResolveModel(generation, errText);
-      } else {
-        show(errText, "bad");
-      }
+      show(String(e), "bad");
     } finally {
-      if (pickerOpen) drawPicker();
+      testingConn = false;
+      testBtn.disabled = !hint;
+      testBtn.textContent = "Thử kết nối";
     }
   };
 
-  const validationBanner = el("div", { className: "model-validation-host" });
-  const clearValidationBanner = () => validationBanner.replaceChildren();
-  const showDeprecatedBanner = (saved: string, suggestion: string | null) => {
-    const msg = suggestion
-      ? `${saved} không còn khả dụng với key này — đổi sang ${suggestion}?`
-      : `${saved} không còn trong danh sách model của ${name}. Bấm "Chọn model" để chọn model mới.`;
-    validationBanner.replaceChildren(
+  const saveKeyBtn = el("button", {
+    type: "button",
+    className: "btn-primary",
+    textContent: "Lưu key",
+    onclick: async () => {
+      const raw = keyInput.value.trim();
+      if (!raw) return show("Hãy dán API key trước.", "bad");
+      saveKeyBtn.disabled = true;
+      saveKeyBtn.textContent = "Đang xác thực…";
+      show(`Đang xác thực key với ${name}…`);
+      try {
+        await invoke("set_api_key", { provider, key: raw });
+        invalidateProviderCache(provider);
+        keyInput.value = "";
+        // Fast verification + model list load in 1 GET /models call (~0.4s, 0 tokens).
+        const models = await invoke<string[]>("list_models", { provider });
+        const now = Date.now();
+        providerModelCache[provider].models = models;
+        providerModelCache[provider].fetchedAt = now;
+        persistProviderModels(provider, models, now);
+        if (models.length > 0 && (!modelName || !models.includes(modelName))) {
+          modelName = models[0];
+          ai.models[provider] = modelName;
+        }
+        const hadNoKey = !PROVIDER_ORDER.some((p) => Boolean(ai.keys[p]));
+        if (hadNoKey) {
+          ai.defaultProvider = provider;
+        }
+        await persist();
+        reload();
+      } catch (e) {
+        show(`Key đã lưu nhưng chưa xác thực được: ${e}`, "bad");
+        saveKeyBtn.disabled = false;
+        saveKeyBtn.textContent = "Lưu key";
+      }
+    },
+  }) as HTMLButtonElement;
+
+  keyInput.onkeydown = (e: KeyboardEvent) => {
+    if (e.key === "Enter" && !saveKeyBtn.disabled) saveKeyBtn.click();
+  };
+
+  const testBtn = el("button", {
+    type: "button",
+    className: "btn-ghost",
+    textContent: "Thử kết nối",
+    disabled: !hint,
+    title: hint ? `Gọi nhanh 1 yêu cầu tới ${name} (timeout 6s)` : "Lưu API key trước",
+    onclick: () => void runTestConnection(),
+  }) as HTMLButtonElement;
+
+  const guideDetails = el(
+    "details",
+    { className: "ai-key-guide" },
+    el("summary", { textContent: `Cách lấy API key ${name} (3 bước)` }),
+    el(
+      "ol",
+      { className: "ai-key-steps" },
+      ...PROVIDER_KEY_STEPS[provider].map((step) => el("li", { textContent: step })),
+    ),
+    el("button", {
+      type: "button",
+      className: "link",
+      textContent: `Mở trang tạo API key ${name} ↗`,
+      onclick: () => void invoke("open_url", { url: PROVIDER_KEY_URL[provider] }),
+    }),
+  ) as HTMLDetailsElement;
+  guideDetails.open = !hint;
+
+  const defaultCheck = el("input", {
+    type: "checkbox",
+    checked: ai.defaultProvider === provider,
+    onchange: async () => {
+      if (!defaultCheck.checked) {
+        defaultCheck.checked = true;
+        return;
+      }
+      ai.defaultProvider = provider;
+      await persist();
+      onTabsDirty();
+    },
+  }) as HTMLInputElement;
+
+  renderModelControl();
+
+  // Background refresh of model list only if key exists and cache is stale (1 fast GET, silent).
+  if (hint && !isCacheFresh(providerModelCache[provider])) {
+    void fetchModelsFast(false, false);
+  }
+
+  return el(
+    "div",
+    { className: "ai-form-card" },
+    el(
+      "div",
+      { className: "ai-form-head" },
+      el("strong", { textContent: name }),
+      el(
+        "label",
+        { className: "ai-default-toggle" },
+        defaultCheck,
+        el("span", { textContent: "Dùng mặc định" }),
+      ),
+    ),
+    guideDetails,
+    el(
+      "div",
+      { className: "ai-form-row" },
+      el("span", { className: "ai-form-label", textContent: "API key" }),
       el(
         "div",
-        { className: "diagram-banner warn", role: "alert" },
-        el("span", { textContent: msg }),
-        suggestion
+        { className: "ai-form-inline" },
+        keyInput,
+        saveKeyBtn,
+        hint
           ? el("button", {
-              className: "link",
-              textContent: `Đổi sang ${suggestion}`,
+              type: "button",
+              className: "link danger-link",
+              textContent: "Xoá key",
               onclick: async () => {
-                await saveModel(suggestion);
-                clearValidationBanner();
-                await runTestConnection();
+                await invoke("delete_api_key", { provider });
+                invalidateProviderCache(provider);
+                reload();
               },
             })
           : null,
       ),
-    );
-  };
-
-  const saveModel = async (value: string) => {
-    modelName = value.trim();
-    modelInput.value = modelName;
-    ai.models[provider] = modelName;
-    await persist();
-    clearValidationBanner();
-    show("Đã lưu model.");
-    if (pickerOpen) drawPicker();
-  };
-
-  let pickerOpen = false;
-  let pickerLoading = false;
-  let probing = false;
-  let showAllModels = false;
-  let pickerError: string | null = null;
-  let filterQuery = "";
-  const pickerHost = el("div", { className: "model-picker-host" });
-  const toggleBtn = el("button", {
-    className: "link",
-    textContent: "Chọn model",
-    disabled: !hint,
-    title: hint
-      ? "Lấy danh sách model trực tiếp từ nhà cung cấp (lưu cache 24 giờ)"
-      : "Cần lưu API key trước khi chọn model",
-    onclick: () => {
-      if (!hint) return;
-      pickerOpen = !pickerOpen;
-      toggleBtn.textContent = pickerOpen ? "Đóng danh sách" : "Chọn model";
-      if (pickerOpen) {
-        const cache = providerModelCache[provider];
-        if ((!isCacheFresh(cache) || cache.accessible === null) && !pickerLoading && !probing) {
-          fetchProviderModels(false);
-        } else {
-          drawPicker();
-        }
-      } else {
-        pickerHost.replaceChildren();
-      }
-    },
-  });
-
-  const fetchProviderModels = async (force: boolean) => {
-    if (!hint) return;
-    const cache = providerModelCache[provider];
-    if (!force && isCacheFresh(cache) && cache.accessible !== null) {
-      drawPicker();
-      return;
-    }
-    const generation = ++cache.generation;
-    pickerLoading = force || !isCacheFresh(cache);
-    probing = true;
-    pickerError = null;
-    drawPicker();
-    try {
-      // Step 1: fast list_models (~0.3-0.6s), render immediately without blocking on probing.
-      let models = isCacheFresh(cache) && !force ? cache.models : null;
-      if (models === null) {
-        models = await invoke<string[]>("list_models", { provider });
-        if (providerModelCache[provider].generation !== generation) return;
-        const now = Date.now();
-        cache.models = models;
-        cache.fetchedAt = now;
-        persistProviderModels(provider, models, now);
-        pickerLoading = false;
-        if (pickerOpen) drawPicker();
-      }
-      // Step 2: parallel probe (<=5s cap) reusing the already-fetched list (zero duplicate GET).
-      const probe = await invoke<{ checked: string[]; accessible: string[] }>("probe_accessible_models", {
-        provider,
-        candidates: models,
-        model: modelName,
-      });
-      if (providerModelCache[provider].generation !== generation) return;
-      const accessible = probe.accessible ?? [];
-      cache.accessible = accessible;
-      probing = false;
-      if (accessible.length > 0 && !accessible.includes(modelName)) {
-        await saveModel(accessible[0]);
-        show(`Tìm thấy ${accessible.length} model gọi được — đã chọn ${accessible[0]}.`);
-      } else if (accessible.length === 0) {
-        show("Không có model nào phản hồi thành công với API key hiện tại (hết hạn mức hoặc chưa bật billing).", true);
-      }
-      if (pickerOpen) drawPicker();
-    } catch (e) {
-      if (providerModelCache[provider].generation !== generation) return;
-      pickerLoading = false;
-      probing = false;
-      pickerError = String(e);
-      if (pickerOpen) drawPicker();
-    }
-  };
-
-  const drawPicker = () => {
-    if (!pickerOpen) {
-      pickerHost.replaceChildren();
-      return;
-    }
-    const cached = providerModelCache[provider].models;
-    const accessible = providerModelCache[provider].accessible;
-    const search = el("input", {
-      className: "field model-search",
-      type: "search",
-      placeholder: "Tìm model theo ID…",
-      ariaLabel: `Tìm model của ${name}`,
-      value: filterQuery,
-      oninput: (e: Event) => {
-        filterQuery = (e.target as HTMLInputElement).value;
-        drawList();
-      },
-    });
-    const filterToggleBtn = el("button", {
-      className: "link",
-      textContent: showAllModels ? "Chỉ model gọi được" : "Hiện tất cả",
-      disabled: pickerLoading || probing || !hint || accessible === null,
-      title: showAllModels
-        ? "Chỉ hiện những model tài khoản gọi được"
-        : "Xem toàn bộ danh sách model (kể cả model chưa có hạn mức)",
-      onclick: () => {
-        showAllModels = !showAllModels;
-        drawPicker();
-      },
-    });
-    const refreshBtn = el("button", {
-      className: "link",
-      textContent: "Làm mới",
-      disabled: pickerLoading || probing || !hint,
-      title: hint ? "Tải lại và kiểm tra model gọi được" : "Lưu API key để tải danh sách theo tài khoản",
-      onclick: () => fetchProviderModels(true),
-    });
-    const listBox = el("div", { className: "model-picker-list" });
-
-    const drawList = () => {
-      if (pickerLoading) {
-        listBox.replaceChildren(
-          el("p", {
-            className: "hint",
-            textContent: "Đang tải danh sách model…",
-          }),
-        );
-        return;
-      }
-      if (pickerError) {
-        listBox.replaceChildren(
-          el("p", { className: "problem problem-text", textContent: `Không tải được danh sách: ${pickerError}` }),
-          el("button", {
-            className: "link",
-            textContent: "Thử lại",
-            onclick: () => fetchProviderModels(true),
-          }),
-        );
-        return;
-      }
-      const fromApi = cached !== null;
-      const fallbackRecommended = ai.recommendedModels?.[provider] ?? [];
-      const models = cached ?? fallbackRecommended;
-      const q = filterQuery.trim().toLowerCase();
-      const matches = (id: string) => !q || id.toLowerCase().includes(q);
-      const items: HTMLElement[] = [];
-      const filteringAccessible = Boolean(hint && accessible !== null && !showAllModels);
-      const verifiedSet = new Set(accessible ?? []);
-
-      if (probing) {
-        items.push(
-          el("p", {
-            className: "hint picker-note",
-            textContent: "Đang lọc nhanh các model tài khoản gọi được…",
-          }),
-        );
-      }
-
-      if (!hint) {
-        items.push(
-          el("p", {
-            className: "hint picker-note",
-            textContent: "Chưa nhập API key — đang hiện các model gợi ý. Lưu key để tự lọc đúng model tài khoản gọi được.",
-          }),
-        );
-      }
-
-      const optionBtn = (id: string, badge?: string) =>
-        el(
-          "button",
-          {
-            className: `model-option${id === modelName ? " active" : ""}`,
-            onclick: () => saveModel(id),
-          },
-          el("span", { textContent: id }),
-          badge ? el("span", { className: "model-option-badge", textContent: badge }) : null,
-        );
-
-      // Saved model always shown at top.
-      if (modelName && matches(modelName)) {
-        const present = models.includes(modelName);
-        const savedBadge =
-          accessible !== null
-            ? verifiedSet.has(modelName)
-              ? "Dùng được · Đang chọn"
-              : "Không gọi được"
-            : !fromApi || present
-              ? "Đang chọn"
-              : "Không thấy trong danh sách";
-        items.push(el("div", { className: "model-group-label", textContent: "Model đang lưu" }));
-        items.push(optionBtn(modelName, savedBadge));
-      }
-
-      // Verified accessible models (shown exclusively by default when API key is set).
-      if (accessible !== null) {
-        const verified = accessible.filter((id) => id !== modelName && matches(id));
-        if (verified.length) {
-          items.push(
-            el("div", {
-              className: "model-group-label",
-              textContent: `Tài khoản gọi được (${accessible.length})`,
-            }),
-          );
-          for (const id of verified) items.push(optionBtn(id, "Dùng được"));
-        } else if (accessible.length === 0) {
-          items.push(
-            el("p", {
-              className: "hint picker-note",
-              textContent:
-                "Chưa có model nào phản hồi thành công với API key này. Bấm \"Hiện tất cả\" nếu muốn xem toàn bộ danh sách.",
-            }),
-          );
-        }
-      }
-
-      // Unverified / other models: hidden by default when accessible filter is active.
-      if (!filteringAccessible) {
-        const curated = fallbackRecommended.filter((id) => models.includes(id));
-        const recommended = (curated.length ? curated : models.slice(0, 3)).filter(
-          (id) => id !== modelName && !verifiedSet.has(id) && matches(id),
-        );
-        if (recommended.length) {
-          items.push(el("div", { className: "model-group-label", textContent: "Gợi ý (mới nhất)" }));
-          for (const id of recommended) items.push(optionBtn(id));
-        }
-
-        const rest = models.filter(
-          (id) => id !== modelName && !verifiedSet.has(id) && !recommended.includes(id) && matches(id),
-        );
-        if (rest.length) {
-          items.push(el("div", { className: "model-group-label", textContent: `Model mới khác (${rest.length})` }));
-          for (const id of rest) items.push(optionBtn(id));
-        }
-      }
-
-      if (items.length === 0) {
-        items.push(el("p", { className: "hint", textContent: "Không có model nào khớp bộ lọc." }));
-      }
-      listBox.replaceChildren(...items);
-    };
-
-    drawList();
-    pickerHost.replaceChildren(
-      el(
-        "div",
-        { className: "model-picker" },
-        el("div", { className: "model-picker-head" }, search, filterToggleBtn, refreshBtn),
-        listBox,
-      ),
-    );
-  };
-
-  const isModelUnavailableError = (msg: string): boolean => {
-    const lower = msg.toLowerCase();
-    return (
-      lower.includes("404") ||
-      lower.includes("not_found") ||
-      lower.includes("not found") ||
-      lower.includes("limit: 0") ||
-      lower.includes("does not exist") ||
-      lower.includes("model:")
-    );
-  };
-
-  /** Probes accessible models and auto-selects the first working one when the saved model fails. */
-  const autoResolveModel = async (generation: number, originalErr: string): Promise<boolean> => {
-    show("Model đang chọn không khả dụng — đang tự tìm model gọi được trên tài khoản…");
-    try {
-      const models = await invoke<string[]>("list_models", { provider });
-      if (providerModelCache[provider].generation !== generation) return false;
-      providerModelCache[provider].models = models;
-      const probe = await invoke<{ checked: string[]; accessible: string[] }>("probe_accessible_models", {
-        provider,
-        candidates: models,
-        model: modelName,
-      });
-      if (providerModelCache[provider].generation !== generation) return false;
-      providerModelCache[provider].accessible = probe.accessible;
-      if (probe.accessible.length > 0) {
-        const working = probe.accessible[0];
-        await saveModel(working);
-        show(`Model cũ không khả dụng — đã tự chuyển sang ${working} và kết nối thành công.`);
-        return true;
-      }
-      show(originalErr, true);
-      return false;
-    } catch {
-      if (providerModelCache[provider].generation === generation) {
-        show(originalErr, true);
-      }
-      return false;
-    }
-  };
-
-  const block = el(
-    "div",
-    { className: "provider" },
-    el(
-      "div",
-      { className: "provider-head" },
-      el("span", { textContent: name }),
-      el("button", {
-        className: "link",
-        textContent: "Tạo API key ↗",
-        title: `Mở trang tạo API key của ${name}`,
-        onclick: () => invoke("open_url", { url: PROVIDER_KEY_URL[provider] }),
-      }),
-      el(
-        "label",
-        {},
-        el("input", {
-          type: "radio",
-          name: "default-provider",
-          checked: ai.defaultProvider === provider,
-          onchange: async () => {
-            ai.defaultProvider = provider;
-            await persist();
-          },
-        }),
-        "Dùng mặc định",
-      ),
     ),
     el(
       "div",
-      { className: "field-grid" },
-      el("span", { textContent: "API key" }),
-      key,
-      el("button", {
-        className: "link",
-        textContent: "Lưu key",
-        onclick: async () => {
-          if (!key.value.trim()) return show("Hãy dán API key trước.", true);
-          try {
-            await invoke("set_api_key", { provider, key: key.value });
-            invalidateProviderCache(provider);
-            const generation = providerModelCache[provider].generation;
-            key.value = "";
-            show("Đã lưu key — đang kiểm tra model khả dụng…");
-            try {
-              await invoke("test_provider", { provider, model: modelName });
-              if (providerModelCache[provider].generation === generation) {
-                reload();
-              }
-            } catch (testErr) {
-              const errText = String(testErr);
-              if (isModelUnavailableError(errText)) {
-                await autoResolveModel(generation, errText);
-              }
-              reload();
-            }
-          } catch (e) {
-            show(String(e), true);
-          }
-        },
-      }),
-      hint
-        ? el("button", {
-            className: "link",
-            textContent: "Xoá key",
-            onclick: async () => {
-              await invoke("delete_api_key", { provider });
-              invalidateProviderCache(provider);
-              reload();
-            },
-          })
-        : el("span"),
-      el("span", { textContent: "Model" }),
-      modelInput,
-      toggleBtn,
-      el("button", {
-        className: "link",
-        textContent: "Thử kết nối",
-        disabled: !hint,
-        title: hint ? `Gọi thử 1 yêu cầu nhỏ tới ${name}` : "Lưu API key trước",
-        onclick: () => void runTestConnection(),
-      }),
+      { className: "ai-form-row" },
+      el("span", { className: "ai-form-label", textContent: "Model" }),
+      el("div", { className: "ai-form-inline" }, modelHost, testBtn),
     ),
-    validationBanner,
-    pickerHost,
     status,
   );
-
-  // On Settings mount, validate the saved model against the live (or 24h-cached) catalog.
-  if (hint && modelName) {
-    const cache = providerModelCache[provider];
-    const generation = cache.generation;
-    if (isCacheFresh(cache) && cache.models) {
-      if (!cache.models.includes(modelName)) {
-        const fam = ["opus", "sonnet", "haiku", "flash-lite", "flash", "pro", "nano", "mini"].find((f) =>
-          modelName.toLowerCase().includes(f),
-        );
-        const suggestion =
-          (fam ? cache.models.find((m) => m.toLowerCase().includes(fam)) : undefined) ??
-          cache.models[0] ??
-          null;
-        showDeprecatedBanner(modelName, suggestion);
-      }
-    } else {
-      invoke<ModelValidation>("validate_saved_model", { provider, model: modelName })
-        .then((res) => {
-          if (providerModelCache[provider].generation !== generation) return;
-          const now = Date.now();
-          cache.models = res.models;
-          cache.fetchedAt = now;
-          persistProviderModels(provider, res.models, now);
-          if (!res.ok) {
-            showDeprecatedBanner(modelName, res.suggestion);
-          }
-        })
-        .catch(() => {
-          // Offline or transient error on settings open: stay quiet so user can still work.
-        });
-    }
-  }
-
-  return block;
 }
 
 function glossarySection(initial: Term[]): HTMLElement {
@@ -2098,6 +1933,177 @@ function glossarySection(initial: Term[]): HTMLElement {
     ),
     status,
   );
+}
+
+function formatStorageSize(bytes: number): string {
+  if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(2)} GB`;
+  if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
+  if (bytes >= 1_000) return `${Math.round(bytes / 1_000)} KB`;
+  return `${bytes} B`;
+}
+
+function storageSection(): HTMLElement {
+  const host = el("section", {});
+  const listEl = el("div", { className: "storage-list" });
+  const status = el("p", { className: "provider-status status-inline" });
+  let busyTarget: CleanupTarget | null = null;
+  let currentStats: StorageStats | null = null;
+
+  const ITEMS: {
+    target: CleanupTarget;
+    title: string;
+    desc: string;
+    btnLabel: string;
+    confirmText: string;
+    danger?: boolean;
+  }[] = [
+    {
+      target: "cache",
+      title: "Bộ nhớ đệm & tệp tạm",
+      desc: "Tệp giải mã âm thanh tạm và cache danh sách model AI. Không ảnh hưởng văn bản hay biên bản.",
+      btnLabel: "Xoá cache",
+      confirmText: "Xoá toàn bộ bộ nhớ đệm và tệp tạm của ứng dụng?",
+    },
+    {
+      target: "cleaned",
+      title: "Các bản làm sạch",
+      desc: "Các bản văn bản đã lọc máy / AI. Văn bản gốc và biên bản tóm tắt vẫn được giữ nguyên.",
+      btnLabel: "Xoá bản làm sạch",
+      confirmText: "Xoá toàn bộ các bản làm sạch đã lưu? Văn bản gốc vẫn được giữ nguyên.",
+      danger: true,
+    },
+    {
+      target: "diagrams",
+      title: "Các sơ đồ đã tạo",
+      desc: "Toàn bộ sơ đồ quy trình đã lưu. Có thể tạo lại bất cứ lúc nào từ văn bản.",
+      btnLabel: "Xoá sơ đồ",
+      confirmText: "Xoá toàn bộ sơ đồ quy trình đã lưu?",
+      danger: true,
+    },
+    {
+      target: "transcripts",
+      title: "Các bản ghi đã chuyển văn bản",
+      desc: "Xoá danh sách đã xong cùng toàn bộ văn bản, bản làm sạch, biên bản và sơ đồ. File ghi âm gốc trên máy KHÔNG bị xoá.",
+      btnLabel: "Xoá toàn bộ bản ghi đã xong",
+      confirmText:
+        "Xoá danh sách đã xong và toàn bộ file văn bản, biên bản, sơ đồ trong thư mục kết quả? File ghi âm gốc của bạn trên máy sẽ KHÔNG bị xoá.",
+      danger: true,
+    },
+  ];
+
+  const runClear = async (item: (typeof ITEMS)[number]) => {
+    if (busyTarget) return;
+    const yes = await ask(item.confirmText, {
+      title: item.btnLabel,
+      kind: item.danger ? "warning" : "info",
+      okLabel: "Xoá",
+      cancelLabel: "Huỷ",
+    });
+    if (!yes) return;
+    busyTarget = item.target;
+    status.className = "provider-status status-inline";
+    status.textContent = "Đang dọn dẹp…";
+    draw();
+    try {
+      if (item.target === "cache") {
+        try {
+          localStorage.removeItem(MODEL_CACHE_KEY);
+        } catch {
+          // Ignore storage access errors.
+        }
+        for (const p of ["gemini", "chatGpt", "claude"] as Provider[]) {
+          invalidateProviderCache(p);
+        }
+      }
+      const res = await invoke<CleanupOutcome>("clear_storage", { target: item.target });
+      currentStats = res.stats;
+      status.textContent =
+        res.removedFiles > 0
+          ? `Đã xoá ${res.removedFiles} tệp (giải phóng ${formatStorageSize(res.freedBytes)}).`
+          : "Đã dọn sạch (không còn tệp nào cần xoá).";
+    } catch (e) {
+      status.className = "provider-status status-inline bad";
+      status.textContent = `Chưa xoá được: ${e}`;
+    } finally {
+      busyTarget = null;
+      draw();
+    }
+  };
+
+  const draw = () => {
+    if (!currentStats) {
+      listEl.replaceChildren(el("p", { className: "hint", textContent: "Đang tính dung lượng dữ liệu…" }));
+      return;
+    }
+    const stats = currentStats;
+    listEl.replaceChildren(
+      ...ITEMS.map((item) => {
+        const bucket = stats[item.target];
+        const metaText =
+          bucket.files > 0
+            ? `${bucket.files} tệp · ${formatStorageSize(bucket.bytes)}`
+            : "Trống (0 tệp)";
+        const isWorking = busyTarget === item.target;
+        return el(
+          "div",
+          { className: "storage-card" },
+          el(
+            "div",
+            { className: "storage-info" },
+            el(
+              "div",
+              { className: "storage-head" },
+              el("strong", { textContent: item.title }),
+              el("span", { className: "storage-meta", textContent: metaText }),
+            ),
+            el("p", { className: "storage-desc", textContent: item.desc }),
+          ),
+          el("button", {
+            type: "button",
+            className: item.danger ? "btn-ghost danger-btn" : "btn-ghost",
+            textContent: isWorking ? "Đang xoá…" : item.btnLabel,
+            disabled: Boolean(busyTarget) || (item.target !== "cache" && bucket.files === 0),
+            onclick: () => void runClear(item),
+          }),
+        );
+      }),
+    );
+  };
+
+  const refresh = async () => {
+    try {
+      currentStats = await invoke<StorageStats>("storage_stats");
+    } catch (e) {
+      status.className = "provider-status status-inline bad";
+      status.textContent = `Không đọc được dung lượng: ${e}`;
+      currentStats = {
+        cache: { files: 0, bytes: 0 },
+        cleaned: { files: 0, bytes: 0 },
+        diagrams: { files: 0, bytes: 0 },
+        transcripts: { files: 0, bytes: 0 },
+      };
+    }
+    draw();
+  };
+
+  host.append(
+    el(
+      "div",
+      { className: "hf-head" },
+      el("h3", { textContent: "Dữ liệu & dọn dẹp" }),
+      el("button", {
+        type: "button",
+        className: "link",
+        textContent: "Mở thư mục kết quả",
+        onclick: () => void invoke("open_output_dir"),
+      }),
+    ),
+    listEl,
+    status,
+  );
+  draw();
+  void refresh();
+  return host;
 }
 
 function updateSection(): HTMLElement {

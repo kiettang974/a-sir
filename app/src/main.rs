@@ -23,8 +23,10 @@ use asr_core::summary::Draft;
 use asr_core::transcriber::{self, ResourceProfile};
 use asr_core::transcript::Line;
 use asr_core::voice_memos::{self, ListError, Recording};
-use asr_core::workspace::{ProfilesConfig, UpdateInfo, Workspace};
-use asr_core::{Job, JobRunner, Paths, Queue, audio};
+use asr_core::workspace::{
+    CleanupOutcome, CleanupTarget, ProfilesConfig, StorageStats, UpdateInfo, Workspace,
+};
+use asr_core::{Job, JobRunner, JobState, Paths, Queue, audio};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -445,6 +447,37 @@ fn open_url(url: String) -> Result<(), String> {
     open_in_os(url)
 }
 
+fn active_running_job_ids(runner: &JobRunner) -> Vec<u64> {
+    runner
+        .jobs()
+        .into_iter()
+        .filter(|j| matches!(j.state, JobState::Running { .. }))
+        .map(|j| j.id)
+        .collect()
+}
+
+#[tauri::command]
+fn storage_stats(app: State<App>) -> StorageStats {
+    let active = active_running_job_ids(&app.runner);
+    app.workspace.storage_stats(&app.output_dir, &active)
+}
+
+#[tauri::command]
+fn clear_storage(app: State<App>, target: CleanupTarget) -> Result<CleanupOutcome, String> {
+    let active = active_running_job_ids(&app.runner);
+    if target == CleanupTarget::Transcripts {
+        let _ = app.runner.clear_removable();
+    }
+    app.workspace
+        .clear_storage(&app.output_dir, target, &active)
+}
+
+#[tauri::command]
+fn open_output_dir(app: State<App>) -> Result<(), String> {
+    std::fs::create_dir_all(&app.output_dir).map_err(|e| e.to_string())?;
+    open_in_os(&app.output_dir)
+}
+
 #[tauri::command]
 fn get_glossary(app: State<App>) -> Vec<Term> {
     app.workspace.glossary()
@@ -624,6 +657,17 @@ fn save_note(
 #[tauri::command]
 fn load_note(app: State<App>, id: u64) -> Result<Option<serde_json::Value>, String> {
     app.runner.transcript(id)?.note()
+}
+
+/// Applies the current user glossary to a working meeting-note draft (`discussion`, `rows`,
+/// `actions`, `pending`, `greeting`, `intro`) while keeping verbatim evidence quotes intact.
+#[tauri::command]
+fn sync_note_glossary(
+    app: State<App>,
+    draft: serde_json::Value,
+) -> asr_core::summary::GlossarySyncResult {
+    let terms = app.workspace.glossary();
+    asr_core::summary::sync_note_value_glossary(draft, &terms)
 }
 
 /// Sends the cleaned transcript (falling back to raw) to the configured AI model to extract a diagram.
@@ -1142,6 +1186,9 @@ fn main() {
             check_update,
             install_update,
             open_url,
+            storage_stats,
+            clear_storage,
+            open_output_dir,
             get_glossary,
             save_glossary,
             import_glossary,
@@ -1156,6 +1203,7 @@ fn main() {
             load_ai_clean,
             save_note,
             load_note,
+            sync_note_glossary,
             generate_diagram,
             load_diagram,
             save_diagram,

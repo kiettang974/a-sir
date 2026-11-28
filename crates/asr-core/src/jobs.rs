@@ -16,10 +16,10 @@ use crate::transcriber::{Control, SAMPLE_RATE, Segment, TranscribeError, Transcr
 use crate::transcript::Transcript;
 use crate::{audio, output};
 
-const CHUNK_S: usize = 900;
-const SEARCH_S: usize = 120;
+const CHUNK_S: usize = 300;
+const SEARCH_S: usize = 45;
 /// Only split when more than this remains, so the last piece is never tiny.
-const MAX_LAST_CHUNK_S: usize = 1350;
+const MAX_LAST_CHUNK_S: usize = 450;
 const MIN_CHUNK_S: usize = 60;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

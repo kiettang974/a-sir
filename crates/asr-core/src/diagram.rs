@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::ai::{AiError, LlmClient};
+use crate::clean;
+use crate::glossary::Term;
+use crate::transcript;
 use crate::ve_engine;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -398,10 +401,57 @@ fn uncertainty_mode_instruction(mode: Option<&str>) -> Option<&'static str> {
     }
 }
 
+fn strip_timestamps_for_diagram(raw: &str) -> String {
+    raw.lines()
+        .map(|line| transcript::split_line(line).1.trim())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn glossary_block(terms: &[Term]) -> Option<String> {
+    let lines: Vec<String> = terms
+        .iter()
+        .filter(|t| !t.correct.trim().is_empty())
+        .map(|t| {
+            let mut line = format!("- {}", t.correct.trim());
+            if !t.heard_as.trim().is_empty() {
+                line.push_str(&format!(" (hay bị nghe thành: {})", t.heard_as.trim()));
+            }
+            if !t.note.trim().is_empty() {
+                line.push_str(&format!(" — {}", t.note.trim()));
+            }
+            line
+        })
+        .collect();
+    (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
+fn apply_glossary_to_diagram(diagram: &mut ProcessDiagram, terms: &[Term]) {
+    let rules = clean::glossary_rules(terms);
+    if rules.is_empty() {
+        return;
+    }
+    diagram.title = clean::apply_glossary_rules(&diagram.title, &rules).0;
+    diagram.summary = clean::apply_glossary_rules(&diagram.summary, &rules).0;
+    for node in &mut diagram.nodes {
+        node.label = clean::apply_glossary_rules(&node.label, &rules).0;
+        node.role = clean::apply_glossary_rules(&node.role, &rules).0;
+    }
+    for edge in &mut diagram.edges {
+        edge.label = clean::apply_glossary_rules(&edge.label, &rules).0;
+    }
+    for u in &mut diagram.uncertainties {
+        u.item = clean::apply_glossary_rules(&u.item, &rules).0;
+        u.reason = clean::apply_glossary_rules(&u.reason, &rules).0;
+    }
+}
+
 fn build_user_prompt(
     transcript: &str,
     strategy: Option<&str>,
     uncertainty_mode: Option<&str>,
+    terms: &[Term],
 ) -> String {
     let mut prompt = String::from(
         "Hãy phân tích toàn bộ bản chép lời sau đây và tạo sơ đồ trực quan theo đúng JSON schema đã khai báo.",
@@ -420,8 +470,13 @@ fn build_user_prompt(
         );
         prompt.push_str(tpl);
     }
+    if let Some(glossary) = glossary_block(terms) {
+        prompt.push_str("\n\nDanh sách thuật ngữ dự án (dùng đúng chính tả trên sơ đồ):\n");
+        prompt.push_str(&glossary);
+    }
+    let compact = strip_timestamps_for_diagram(transcript);
     prompt.push_str("\n\n<transcript>\n");
-    prompt.push_str(transcript);
+    prompt.push_str(&compact);
     prompt.push_str("\n</transcript>");
     prompt
 }
@@ -773,16 +828,28 @@ pub fn generate_with_options(
     strategy: Option<&str>,
     uncertainty_mode: Option<&str>,
 ) -> Result<ProcessDiagram, DiagramError> {
+    generate_with_glossary(client, model, transcript, strategy, uncertainty_mode, &[])
+}
+
+/// Same as [`generate_with_options`] with user glossary terms applied both in prompt and post-pass.
+pub fn generate_with_glossary(
+    client: &dyn LlmClient,
+    model: &str,
+    transcript: &str,
+    strategy: Option<&str>,
+    uncertainty_mode: Option<&str>,
+    terms: &[Term],
+) -> Result<ProcessDiagram, DiagramError> {
     if transcript.trim().is_empty() {
         return Err(DiagramError::EmptyTranscript);
     }
-    let user = build_user_prompt(transcript, strategy, uncertainty_mode);
+    let user = build_user_prompt(transcript, strategy, uncertainty_mode, terms);
     let schema_val = schema();
-    let raw = client.complete(SYSTEM_PROMPT, &user, &schema_val)?;
     let strategy_tag = strategy
         .map(str::trim)
         .filter(|s| !s.is_empty() && *s != "auto")
         .map(str::to_owned);
+    let raw = client.complete(SYSTEM_PROMPT, &user, &schema_val)?;
     let uncertainty_tag = uncertainty_mode
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -805,6 +872,7 @@ pub fn generate_with_options(
             if lint_errors.is_empty() {
                 first_diagram.strategy = strategy_tag;
                 first_diagram.uncertainty_mode = uncertainty_tag;
+                apply_glossary_to_diagram(&mut first_diagram, terms);
                 return Ok(first_diagram);
             }
             let repair_prompt = build_repair_prompt(&user, &lint_errors);
@@ -827,11 +895,13 @@ pub fn generate_with_options(
                 if repaired_errors.len() < lint_errors.len() {
                     repaired_diagram.strategy = strategy_tag;
                     repaired_diagram.uncertainty_mode = uncertainty_tag;
+                    apply_glossary_to_diagram(&mut repaired_diagram, terms);
                     return Ok(repaired_diagram);
                 }
             }
             first_diagram.strategy = strategy_tag;
             first_diagram.uncertainty_mode = uncertainty_tag;
+            apply_glossary_to_diagram(&mut first_diagram, terms);
             Ok(first_diagram)
         }
         Err(DiagramError::InvalidDiagram(reason)) => {
@@ -840,6 +910,7 @@ pub fn generate_with_options(
             let (mut diagram, _) = parse_and_validate_with_lint(&repaired_raw, model)?;
             diagram.strategy = strategy_tag;
             diagram.uncertainty_mode = uncertainty_tag;
+            apply_glossary_to_diagram(&mut diagram, terms);
             Ok(diagram)
         }
         Err(other) => Err(other),
@@ -1165,5 +1236,77 @@ mod tests {
         let prompts = client.prompts.lock().unwrap();
         assert_eq!(prompts.len(), 2, "should run exactly 1 repair pass");
         assert!(prompts[1].contains("unknown_macro"));
+    }
+
+    #[test]
+    fn generate_with_glossary_strips_timestamps_keeps_system_prompt_and_normalizes_terms() {
+        struct InspectLlm {
+            reply: String,
+            captured_system: Mutex<String>,
+            captured_user: Mutex<String>,
+        }
+        impl LlmClient for InspectLlm {
+            fn complete(&self, system: &str, user: &str, _schema: &Value) -> Result<String, AiError> {
+                *self.captured_system.lock().unwrap() = system.to_owned();
+                *self.captured_user.lock().unwrap() = user.to_owned();
+                Ok(self.reply.clone())
+            }
+        }
+
+        let payload = json!({
+            "sufficient": true,
+            "insufficientReason": "",
+            "title": "Quy trình đồng bộ i r p",
+            "summary": "Nhân viên nhập đơn vào i r p rồi đẩy sang kế toán.",
+            "nodes": [
+                { "id": "n1", "kind": "start", "label": "Tạo phiếu trên i r p", "role": "Kinh doanh" },
+                { "id": "n2", "kind": "end", "label": "Ghi sổ kế toán", "role": "Kế toán" }
+            ],
+            "edges": [
+                { "from": "n1", "to": "n2", "label": "Chuyển i r p" }
+            ],
+            "uncertainties": [
+                { "item": "Chưa rõ hạn duyệt i r p", "reason": "Không nêu rõ hạn duyệt", "quote": "đẩy lên i r p" }
+            ]
+        })
+        .to_string();
+
+        let client = InspectLlm {
+            reply: payload,
+            captured_system: Mutex::new(String::new()),
+            captured_user: Mutex::new(String::new()),
+        };
+        let terms = vec![Term {
+            correct: "ERP".into(),
+            heard_as: "i r p".into(),
+            note: String::new(),
+        }];
+        let transcript = "[00:00:01 --> 00:00:05] Tạo đơn trên i r p\n[00:00:06 --> 00:00:10] Đẩy sang kế toán";
+
+        let diagram = generate_with_glossary(
+            &client,
+            "gemini-2.5-flash",
+            transcript,
+            Some("auto"),
+            Some("off"),
+            &terms,
+        )
+        .unwrap();
+
+        // Item 4 untouched: full SYSTEM_PROMPT is passed verbatim.
+        assert_eq!(client.captured_system.lock().unwrap().as_str(), SYSTEM_PROMPT);
+
+        // Item 3: timestamps stripped from <transcript>.
+        let user_prompt = client.captured_user.lock().unwrap().clone();
+        assert!(!user_prompt.contains("[00:00:01 --> 00:00:05]"));
+        assert!(user_prompt.contains("Tạo đơn trên i r p"));
+
+        // Item 2: glossary injected into user prompt AND applied to diagram fields.
+        assert!(user_prompt.contains("ERP"));
+        assert_eq!(diagram.title, "Quy trình đồng bộ ERP");
+        assert_eq!(diagram.summary, "Nhân viên nhập đơn vào ERP rồi đẩy sang kế toán.");
+        assert_eq!(diagram.nodes[0].label, "Tạo phiếu trên ERP");
+        assert_eq!(diagram.edges[0].label, "Chuyển ERP");
+        assert_eq!(diagram.uncertainties[0].item, "Chưa rõ hạn duyệt ERP");
     }
 }

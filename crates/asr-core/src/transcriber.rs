@@ -15,7 +15,47 @@ use crate::glossary::Term;
 
 pub const SAMPLE_RATE: usize = 16_000;
 const MAX_CHUNK_S: usize = 30;
+/// Avoid merging two speech spans across long dead-air pauses so Whisper doesn't encode silence.
+const MAX_MERGE_GAP_S: usize = 2;
+/// Ignore sub-250 ms VAD clicks/breaths so weak machines never waste a full Whisper pass on noise.
+const MIN_SPEECH_MS: i32 = 250;
+/// Skip spans whose RMS amplitude is pure silence / electrical hum.
+const MIN_SPAN_RMS: f32 = 0.0015;
+/// Cap decoder tokens per 30 s window to stop runaway hallucination loops on long recordings.
+const MAX_TOKENS_PER_WINDOW: i32 = 224;
 const MAX_PROMPT_CHARS: usize = 600;
+
+/// Computes an adaptive Whisper encoder context (`n_audio_ctx`) for spans shorter than ~26 s.
+/// Whisper's encoder attention is O(L^2); trimming unused trailing silence (while keeping >= 2.56 s
+/// safety padding and rounding to 256-frame blocks matching ggml's `GGML_PAD(n_audio_ctx, 256)`)
+/// cuts encoder compute & KV memory by 1.5x–3x on weak machines without hurting accuracy.
+fn adaptive_audio_ctx(span_samples: usize) -> i32 {
+    // 1 encoder frame = 20 ms = 320 samples at 16 kHz.
+    let speech_frames = span_samples.div_ceil(SAMPLE_RATE / 50);
+    let padded = speech_frames + 128; // +2.56 s safety margin
+    let aligned = padded.div_ceil(256) * 256;
+    if aligned >= 1408 {
+        0 // full 30 s default (1500 frames)
+    } else {
+        aligned.clamp(256, 1280) as i32
+    }
+}
+
+/// Fast RMS energy check to drop silent / near-silent spans before invoking Whisper.
+fn is_audible_span(samples: &[f32]) -> bool {
+    if samples.is_empty() {
+        return false;
+    }
+    let step = (samples.len() / 512).max(1);
+    let mut sum_sq = 0.0f64;
+    let mut count = 0usize;
+    for &s in samples.iter().step_by(step) {
+        let v = f64::from(s);
+        sum_sq += v * v;
+        count += 1;
+    }
+    (sum_sq / count.max(1) as f64).sqrt() as f32 >= MIN_SPAN_RMS
+}
 
 /// Builds a concise prompt from the user's glossary (`correct` column) for Whisper
 /// `initial_prompt` and Qwen3-ASR `set_prompt`, capped to stay well inside token limits.
@@ -55,12 +95,42 @@ impl ResourceProfile {
             .max(1)
     }
 
+    /// On Apple Silicon (M1/M2/M3/M4), returns the Performance-core count (`hw.perflevel0.physicalcpu`)
+    /// so `whisper.cpp` CPU work never spills onto slow Efficiency cores (which stalls ggml thread
+    /// barriers and increases thermal throttling on fanless MacBook Air).
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn performance_cores() -> usize {
+        static P_CORES: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        *P_CORES.get_or_init(|| {
+            std::process::Command::new("sysctl")
+                .args(["-n", "hw.perflevel0.physicalcpu"])
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .and_then(|s| s.trim().parse::<usize>().ok())
+                .filter(|&n| n >= 2)
+                .unwrap_or_else(|| (Self::available_cores() / 2).max(2))
+        })
+    }
+
     pub fn threads(self) -> usize {
-        let cores = Self::available_cores();
-        match self {
-            ResourceProfile::Eco => (cores * 2 / 5).max(2).min(cores),
-            ResourceProfile::Balanced => (cores * 7 / 10).max(2).min(cores),
-            ResourceProfile::Max => cores,
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            let p_cores = Self::performance_cores().min(Self::available_cores());
+            return match self {
+                ResourceProfile::Eco => (p_cores / 2).max(2).min(p_cores),
+                // Keep Balanced and Max strictly on P-cores when Metal is active.
+                ResourceProfile::Balanced | ResourceProfile::Max => p_cores.max(2),
+            };
+        }
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        {
+            let cores = Self::available_cores();
+            match self {
+                ResourceProfile::Eco => (cores * 2 / 5).max(2).min(cores),
+                ResourceProfile::Balanced => (cores * 7 / 10).max(2).min(cores),
+                ResourceProfile::Max => cores,
+            }
         }
     }
 }
@@ -124,7 +194,7 @@ impl Default for WhisperOptions {
             language: "vi".into(),
             beam_size: 1,
             use_vad: true,
-            speech_pad_ms: 400,
+            speech_pad_ms: 250,
             timestamps: false,
             n_threads: ResourceProfile::default().threads() as i32,
             initial_prompt: None,
@@ -152,30 +222,24 @@ impl WhisperCpp {
                 .ok_or_else(|| TranscribeError::Engine(format!("đường dẫn lỗi: {}", p.display())))
         };
         let model_path = path(model)?;
-        // Prioritize GPU (Metal on macOS, Vulkan on Windows) with automatic silent fallback
-        // to CPU when no compatible GPU/driver is available so users never need extra installs.
-        let (ctx, state) = {
-            let mut gpu_params = WhisperContextParameters::default();
-            gpu_params.use_gpu(true);
-            gpu_params.flash_attn(true);
-            match WhisperContext::new_with_params(&model_path, gpu_params)
+        // Prioritize GPU (Metal on macOS, Vulkan on Windows) with automatic silent fallback:
+        // 1) GPU + flash attention, 2) GPU without flash attention, 3) CPU without flash attention.
+        let try_load = |use_gpu: bool, flash_attn: bool| {
+            let mut params = WhisperContextParameters::default();
+            params.use_gpu(use_gpu);
+            params.flash_attn(flash_attn);
+            WhisperContext::new_with_params(&model_path, params)
                 .and_then(|c| c.create_state().map(|s| (c, s)))
-            {
-                Ok(pair) => pair,
-                Err(_) => {
-                    let mut cpu_params = WhisperContextParameters::default();
-                    cpu_params.use_gpu(false);
-                    cpu_params.flash_attn(true);
-                    let c = WhisperContext::new_with_params(&model_path, cpu_params)
-                        .map_err(engine)?;
-                    let s = c.create_state().map_err(engine)?;
-                    (c, s)
-                }
-            }
         };
+        let (ctx, state) = try_load(true, true)
+            .or_else(|_| try_load(true, false))
+            .or_else(|_| try_load(false, false))
+            .map_err(engine)?;
         let vad_ctx = if options.use_vad {
-            let vad = WhisperVadContext::new(&path(vad_model)?, WhisperVadContextParams::default())
-                .map_err(engine)?;
+            let mut vad_params = WhisperVadContextParams::default();
+            vad_params.set_use_gpu(false);
+            vad_params.set_n_threads(options.n_threads.clamp(1, 4));
+            let vad = WhisperVadContext::new(&path(vad_model)?, vad_params).map_err(engine)?;
             Some(Mutex::new(vad))
         } else {
             None
@@ -199,9 +263,9 @@ fn vad_speech_spans_with_ctx(
     speech_pad_ms: i32,
 ) -> Result<Vec<(usize, usize)>, TranscribeError> {
     let engine = |e: whisper_rs::WhisperError| TranscribeError::Engine(e.to_string());
-    // Same values faster-whisper's batched pipeline runs Silero with.
+    // Same values faster-whisper's batched pipeline runs Silero with, filtering sub-250 ms clicks.
     let mut vad = WhisperVadParams::new();
-    vad.set_min_speech_duration(0);
+    vad.set_min_speech_duration(MIN_SPEECH_MS);
     vad.set_min_silence_duration(500);
     vad.set_max_speech_duration(MAX_CHUNK_S as f32);
     vad.set_speech_pad(speech_pad_ms);
@@ -214,7 +278,11 @@ fn vad_speech_spans_with_ctx(
             ((s.start as usize * per_cs).min(end), end)
         })
         .collect::<Vec<_>>();
-    Ok(merge_spans(&spans, MAX_CHUNK_S * SAMPLE_RATE))
+    Ok(merge_spans_with_gap(
+        &spans,
+        MAX_CHUNK_S * SAMPLE_RATE,
+        MAX_MERGE_GAP_S * SAMPLE_RATE,
+    ))
 }
 
 /// whisper.cpp only honours `params.vad` in `whisper_full`; whisper-rs calls
@@ -241,16 +309,31 @@ impl WhisperCpp {
     }
 }
 
-/// Joins consecutive speech spans while the result still fits one Whisper window.
-fn merge_spans(spans: &[(usize, usize)], max_len: usize) -> Vec<(usize, usize)> {
+/// Joins consecutive speech spans while the result fits one Whisper window and doesn't bridge
+/// across long silence gaps.
+fn merge_spans_with_gap(
+    spans: &[(usize, usize)],
+    max_len: usize,
+    max_gap: usize,
+) -> Vec<(usize, usize)> {
     let mut merged: Vec<(usize, usize)> = Vec::new();
     for &(start, end) in spans {
         match merged.last_mut() {
-            Some(last) if end - last.0 <= max_len => last.1 = end,
+            Some(last)
+                if start.saturating_sub(last.1) <= max_gap && end - last.0 <= max_len =>
+            {
+                last.1 = end;
+            }
             _ => merged.push((start, end)),
         }
     }
     merged
+}
+
+/// Joins consecutive speech spans while the result still fits one Whisper window.
+#[cfg(test)]
+fn merge_spans(spans: &[(usize, usize)], max_len: usize) -> Vec<(usize, usize)> {
+    merge_spans_with_gap(spans, max_len, usize::MAX)
 }
 
 impl Transcriber for WhisperCpp {
@@ -269,6 +352,12 @@ impl Transcriber for WhisperCpp {
         for &(start, end) in &spans {
             if control.cancel.load(Ordering::Relaxed) {
                 return Err(TranscribeError::Cancelled);
+            }
+            let slice = &samples[start..end];
+            if !is_audible_span(slice) {
+                finished += end - start;
+                (control.on_progress)((finished * 100 / total) as u8);
+                continue;
             }
             let strategy = if self.options.beam_size > 1 {
                 SamplingStrategy::BeamSearch {
@@ -291,7 +380,22 @@ impl Transcriber for WhisperCpp {
             }
             // Like faster-whisper's batched pipeline: every chunk decodes on its own.
             params.set_no_context(true);
+            params.set_n_max_text_ctx(0);
             params.set_no_timestamps(!self.options.timestamps);
+            params.set_suppress_blank(true);
+            params.set_suppress_nst(true);
+            params.set_no_speech_thold(0.6);
+            params.set_max_tokens(MAX_TOKENS_PER_WINDOW);
+            let ctx_frames = adaptive_audio_ctx(end - start);
+            if ctx_frames > 0 {
+                params.set_audio_ctx(ctx_frames);
+            }
+            if self.options.beam_size <= 1 {
+                // Disable multi-temperature fallback retries (default 0.2 -> up to 6x re-decodes
+                // on noisy/long Vietnamese audio) to keep Turbo fast on Apple Silicon M1.
+                params.set_temperature(0.0);
+                params.set_temperature_inc(0.0);
+            }
             params.set_print_special(false);
             params.set_print_progress(false);
             params.set_print_realtime(false);
@@ -455,13 +559,34 @@ impl Transcriber for QwenAsr {
 
 #[cfg(test)]
 mod tests {
-    use super::{glossary_prompt, merge_spans};
+    use super::{adaptive_audio_ctx, glossary_prompt, is_audible_span, merge_spans, merge_spans_with_gap, SAMPLE_RATE};
     use crate::glossary::Term;
+
+    #[test]
+    fn adaptive_audio_ctx_trims_short_spans_and_keeps_full_for_long() {
+        assert_eq!(adaptive_audio_ctx(2 * SAMPLE_RATE), 256);
+        assert_eq!(adaptive_audio_ctx(6 * SAMPLE_RATE), 512);
+        assert_eq!(adaptive_audio_ctx(14 * SAMPLE_RATE), 1024);
+        assert_eq!(adaptive_audio_ctx(27 * SAMPLE_RATE), 0);
+    }
+
+    #[test]
+    fn is_audible_span_skips_silence_and_keeps_speech() {
+        assert!(!is_audible_span(&[]));
+        assert!(!is_audible_span(&vec![0.0001; SAMPLE_RATE]));
+        assert!(is_audible_span(&vec![0.05; SAMPLE_RATE]));
+    }
 
     #[test]
     fn merges_until_the_window_is_full() {
         let spans = [(0, 10), (12, 25), (28, 40), (41, 45)];
         assert_eq!(merge_spans(&spans, 30), [(0, 25), (28, 45)]);
+    }
+
+    #[test]
+    fn merge_spans_with_gap_skips_long_dead_air() {
+        let spans = [(0, 5), (6, 12), (20, 26)];
+        assert_eq!(merge_spans_with_gap(&spans, 30, 2), [(0, 12), (20, 26)]);
     }
 
     #[test]

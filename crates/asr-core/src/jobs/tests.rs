@@ -449,17 +449,17 @@ fn a_checkpoint_for_a_changed_source_is_ignored() {
 
 #[test]
 fn short_audio_stays_in_one_chunk() {
-    let len = 1350 * SAMPLE_RATE;
+    let len = MAX_LAST_CHUNK_S * SAMPLE_RATE;
     assert_eq!(plan_chunks(&[], len), [(0, len)]);
 }
 
 #[test]
 fn long_audio_splits_at_the_nearest_silence_or_hard_cuts() {
     let sr = SAMPLE_RATE;
-    let chunks = plan_chunks(&[880 * sr, 950 * sr], 1400 * sr);
-    assert_eq!(chunks, [(0, 880 * sr), (880 * sr, 1400 * sr)]);
-    let chunks = plan_chunks(&[], 2000 * sr);
-    assert_eq!(chunks, [(0, 900 * sr), (900 * sr, 2000 * sr)]);
+    let chunks = plan_chunks(&[290 * sr, 330 * sr], 500 * sr);
+    assert_eq!(chunks, [(0, 290 * sr), (290 * sr, 500 * sr)]);
+    let chunks = plan_chunks(&[], 700 * sr);
+    assert_eq!(chunks, [(0, CHUNK_S * sr), (CHUNK_S * sr, 700 * sr)]);
 }
 
 #[test]

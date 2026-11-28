@@ -465,8 +465,40 @@ impl Workspace {
         cols
     }
 
+    pub fn data_dir(&self) -> &Path {
+        &self.dir
+    }
+
     pub fn context_store(&self) -> ContextStore {
         ContextStore::new(&self.dir)
+    }
+
+    fn contextualize_ai_error(
+        provider: Provider,
+        model: &str,
+        err: AiError,
+        fallback_note: Option<&str>,
+    ) -> AiError {
+        let prefix = format!("[{} / {model}] ", provider.label());
+        let suffix = fallback_note
+            .map(|n| format!(" ({n})"))
+            .unwrap_or_default();
+        match err {
+            AiError::Unauthorized(m) => AiError::Unauthorized(format!("{prefix}{m}{suffix}")),
+            AiError::RateLimited(m) => AiError::RateLimited(format!("{prefix}{m}{suffix}")),
+            AiError::Transient { status, message } => AiError::Transient {
+                status,
+                message: format!("{prefix}{message}{suffix}"),
+            },
+            AiError::Rejected { status, message } => AiError::Rejected {
+                status,
+                message: format!("{prefix}{message}{suffix}"),
+            },
+            AiError::Refused(m) => AiError::Refused(format!("{prefix}{m}{suffix}")),
+            AiError::Network(m) => AiError::Network(format!("{prefix}{m}{suffix}")),
+            AiError::Malformed(m) => AiError::Malformed(format!("{prefix}{m}{suffix}")),
+            other => other,
+        }
     }
 
     /// Sends the transcript to `provider`, and only that one, with the user's glossary,
@@ -536,7 +568,8 @@ impl Workspace {
             }
         }
 
-        let mut last_err: Option<AiError> = None;
+        let mut primary_err: Option<AiError> = None;
+        let mut tried_fallbacks: Vec<String> = Vec::new();
         for (idx, (cand_provider, cand_model)) in chain.iter().enumerate() {
             let client = self.client(*cand_provider, Some(cand_model))?;
             match summary::summarize_with_context(
@@ -557,18 +590,34 @@ impl Workspace {
                     return Ok(draft);
                 }
                 Err(e) => {
-                    if !e.is_transient() || idx + 1 == chain.len() {
-                        return Err(e);
+                    if idx == 0 {
+                        primary_err = Some(e.clone());
+                    } else {
+                        tried_fallbacks.push(format!("{}/{}", cand_provider.label(), cand_model));
                     }
-                    last_err = Some(e);
+                    if !e.is_transient() || idx + 1 == chain.len() {
+                        let root_err = primary_err.unwrap_or(e);
+                        let note = (!tried_fallbacks.is_empty()).then(|| {
+                            format!(
+                                "đã thử dự phòng {} nhưng vẫn thất bại",
+                                tried_fallbacks.join(", ")
+                            )
+                        });
+                        return Err(Self::contextualize_ai_error(
+                            provider,
+                            &primary_model,
+                            root_err,
+                            note.as_deref(),
+                        ));
+                    }
                 }
             }
         }
-        Err(last_err.unwrap_or(AiError::MissingKey))
+        Err(AiError::MissingKey)
     }
 
-    /// Runs local rule-based + glossary cleanup first, then asks the selected AI provider to
-    /// propose grounded terminology corrections using optional per-recording notes/attachments.
+    /// Runs context-grounded AI cleaning (matching the summarization pipeline with glossary,
+    /// fact-preservation rules, chunking, and automatic model/provider fallback on transient errors).
     pub fn propose_ai_clean(
         &self,
         provider: Provider,
@@ -576,15 +625,61 @@ impl Workspace {
         context_notes: &str,
         attachments: &[AiAttachment],
     ) -> Result<AiCleanProposal, AiError> {
+        let settings = self.ai_settings();
         let glossary = self.glossary();
-        let precleaned = clean::clean_transcript_with_glossary(transcript, &glossary);
-        clean::propose_ai_clean(
-            &self.client(provider, None)?,
-            &precleaned,
-            &glossary,
-            context_notes,
-            attachments,
-        )
+        let primary_model = settings.model(provider).to_owned();
+        let mut chain: Vec<(Provider, String)> = vec![(provider, primary_model.clone())];
+        if settings.auto_fallback {
+            for fb in provider.fallback_models() {
+                if *fb != primary_model {
+                    chain.push((provider, (*fb).to_owned()));
+                }
+            }
+            let keys = self.keys();
+            for other in Provider::ALL {
+                if other != provider && keys.get(other).ok().flatten().is_some() {
+                    chain.push((other, settings.model(other).to_owned()));
+                }
+            }
+        }
+
+        let mut primary_err: Option<AiError> = None;
+        let mut tried_fallbacks: Vec<String> = Vec::new();
+        for (idx, (cand_provider, cand_model)) in chain.iter().enumerate() {
+            let client = self.client(*cand_provider, Some(cand_model))?;
+            match clean::propose_ai_clean(
+                &client,
+                transcript,
+                &glossary,
+                context_notes,
+                attachments,
+            ) {
+                Ok(proposal) => return Ok(proposal),
+                Err(e) => {
+                    if idx == 0 {
+                        primary_err = Some(e.clone());
+                    } else {
+                        tried_fallbacks.push(format!("{}/{}", cand_provider.label(), cand_model));
+                    }
+                    if !e.is_transient() || idx + 1 == chain.len() {
+                        let root_err = primary_err.unwrap_or(e);
+                        let note = (!tried_fallbacks.is_empty()).then(|| {
+                            format!(
+                                "đã thử dự phòng {} nhưng vẫn thất bại",
+                                tried_fallbacks.join(", ")
+                            )
+                        });
+                        return Err(Self::contextualize_ai_error(
+                            provider,
+                            &primary_model,
+                            root_err,
+                            note.as_deref(),
+                        ));
+                    }
+                }
+            }
+        }
+        Err(AiError::MissingKey)
     }
 
     /// Generates a process diagram from the transcript using the default configured AI
@@ -602,7 +697,8 @@ impl Workspace {
         self.generate_diagram_with_options(transcript, strategy, None)
     }
 
-    /// Generates a diagram with optional strategy and uncertainty display mode.
+    /// Generates a diagram with optional strategy and uncertainty display mode, passing the user's
+    /// glossary and using automatic model/provider fallback on transient errors.
     pub fn generate_diagram_with_options(
         &self,
         transcript: &str,
@@ -614,36 +710,187 @@ impl Workspace {
         }
         let settings = self.ai_settings();
         let keys = self.keys();
+        let glossary = self.glossary();
         let mut order = vec![settings.default_provider];
         for p in Provider::ALL {
             if !order.contains(&p) {
                 order.push(p);
             }
         }
-        let provider = order
+        let primary_provider = order
             .into_iter()
             .find(|&p| keys.get(p).ok().flatten().is_some())
             .ok_or(AiError::MissingKey)?;
-        let model = settings.model(provider).to_owned();
-        let client = self.client(provider, Some(&model))?;
-        let mut out = diagram::generate_with_options(
-            &client,
-            &model,
-            transcript,
-            strategy,
-            uncertainty_mode,
-        )?;
-        out.provider = match provider {
-            Provider::Claude => "Claude",
-            Provider::ChatGpt => "ChatGPT",
-            Provider::Gemini => "Gemini",
+        let primary_model = settings.model(primary_provider).to_owned();
+        let mut chain: Vec<(Provider, String)> = vec![(primary_provider, primary_model.clone())];
+        if settings.auto_fallback {
+            for fb in primary_provider.fallback_models() {
+                if *fb != primary_model {
+                    chain.push((primary_provider, (*fb).to_owned()));
+                }
+            }
+            for other in Provider::ALL {
+                if other != primary_provider && keys.get(other).ok().flatten().is_some() {
+                    chain.push((other, settings.model(other).to_owned()));
+                }
+            }
         }
-        .to_owned();
-        Ok(out)
+
+        let mut primary_err: Option<DiagramError> = None;
+        let mut tried_fallbacks: Vec<String> = Vec::new();
+        for (idx, (cand_provider, cand_model)) in chain.iter().enumerate() {
+            let client = self.client(*cand_provider, Some(cand_model))?;
+            match diagram::generate_with_glossary(
+                &client,
+                cand_model,
+                transcript,
+                strategy,
+                uncertainty_mode,
+                &glossary,
+            ) {
+                Ok(mut out) => {
+                    out.provider = cand_provider.label().to_owned();
+                    return Ok(out);
+                }
+                Err(DiagramError::Ai(e)) => {
+                    let transient = e.is_transient();
+                    if idx == 0 {
+                        primary_err = Some(DiagramError::Ai(e.clone()));
+                    } else {
+                        tried_fallbacks.push(format!("{}/{}", cand_provider.label(), cand_model));
+                    }
+                    if !transient || idx + 1 == chain.len() {
+                        let root = match primary_err.unwrap_or(DiagramError::Ai(e)) {
+                            DiagramError::Ai(ai_err) => {
+                                let note = (!tried_fallbacks.is_empty()).then(|| {
+                                    format!(
+                                        "đã thử dự phòng {} nhưng vẫn thất bại",
+                                        tried_fallbacks.join(", ")
+                                    )
+                                });
+                                DiagramError::Ai(Self::contextualize_ai_error(
+                                    primary_provider,
+                                    &primary_model,
+                                    ai_err,
+                                    note.as_deref(),
+                                ))
+                            }
+                            other => other,
+                        };
+                        return Err(root);
+                    }
+                }
+                Err(other) => return Err(other),
+            }
+        }
+        Err(DiagramError::Ai(AiError::MissingKey))
     }
 
     pub fn glossary(&self) -> Vec<Term> {
         glossary::load(&self.glossary_path())
+    }
+
+    /// Inspects disk usage of removable app data buckets (temp cache, cleaned transcripts,
+    /// saved diagrams, and all generated transcript/note outputs). Never touches original audio.
+    pub fn storage_stats(&self, output_dir: &Path, active_job_ids: &[u64]) -> StorageStats {
+        let work_dir = self.dir.join("work");
+        let cache = scan_work_cache(&work_dir, active_job_ids);
+        let mut cleaned = StorageBucket::default();
+        let mut diagrams = StorageBucket::default();
+        let mut transcripts = StorageBucket::default();
+
+        for (path, len) in walk_files(output_dir) {
+            let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if is_cleaned_file(name) {
+                cleaned.files += 1;
+                cleaned.bytes += len;
+            }
+            if is_diagram_file(name) {
+                diagrams.files += 1;
+                diagrams.bytes += len;
+            }
+            if is_generated_output_file(name) {
+                transcripts.files += 1;
+                transcripts.bytes += len;
+            }
+        }
+        StorageStats {
+            cache,
+            cleaned,
+            diagrams,
+            transcripts,
+        }
+    }
+
+    /// Deletes one selected storage bucket safely (skipping active running jobs and never
+    /// touching user's original recordings) and returns freed counts plus refreshed stats.
+    pub fn clear_storage(
+        &self,
+        output_dir: &Path,
+        target: CleanupTarget,
+        active_job_ids: &[u64],
+    ) -> Result<CleanupOutcome, String> {
+        let mut removed_files = 0usize;
+        let mut freed_bytes = 0u64;
+
+        match target {
+            CleanupTarget::Cache => {
+                let work_dir = self.dir.join("work");
+                if let Ok(entries) = fs::read_dir(&work_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        let skip = entry
+                            .file_name()
+                            .to_str()
+                            .and_then(|s| s.parse::<u64>().ok())
+                            .is_some_and(|id| active_job_ids.contains(&id));
+                        if skip {
+                            continue;
+                        }
+                        if path.is_dir() {
+                            for (f, len) in walk_files(&path) {
+                                if fs::remove_file(&f).is_ok() {
+                                    removed_files += 1;
+                                    freed_bytes += len;
+                                }
+                            }
+                            let _ = fs::remove_dir_all(&path);
+                        } else if let Ok(meta) = fs::metadata(&path)
+                            && fs::remove_file(&path).is_ok()
+                        {
+                            removed_files += 1;
+                            freed_bytes += meta.len();
+                        }
+                    }
+                }
+            }
+            CleanupTarget::Cleaned | CleanupTarget::Diagrams | CleanupTarget::Transcripts => {
+                for (path, len) in walk_files(output_dir) {
+                    let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+                        continue;
+                    };
+                    let should_delete = match target {
+                        CleanupTarget::Cleaned => is_cleaned_file(name),
+                        CleanupTarget::Diagrams => is_diagram_file(name),
+                        CleanupTarget::Transcripts => is_generated_output_file(name),
+                        CleanupTarget::Cache => false,
+                    };
+                    if should_delete && fs::remove_file(&path).is_ok() {
+                        removed_files += 1;
+                        freed_bytes += len;
+                    }
+                }
+            }
+        }
+
+        let stats = self.storage_stats(output_dir, active_job_ids);
+        Ok(CleanupOutcome {
+            removed_files,
+            freed_bytes,
+            stats,
+        })
     }
 
     pub fn save_glossary(&self, terms: &[Term]) -> Result<(), String> {
@@ -802,6 +1049,118 @@ pub fn download_update(url: &str, dir: &Path) -> Result<PathBuf, String> {
     Ok(dest)
 }
 
+/// Size summary for one removable storage bucket.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageBucket {
+    pub files: usize,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageStats {
+    pub cache: StorageBucket,
+    pub cleaned: StorageBucket,
+    pub diagrams: StorageBucket,
+    pub transcripts: StorageBucket,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CleanupTarget {
+    Cache,
+    Cleaned,
+    Diagrams,
+    Transcripts,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupOutcome {
+    pub removed_files: usize,
+    pub freed_bytes: u64,
+    pub stats: StorageStats,
+}
+
+fn walk_files(root: &Path) -> Vec<(PathBuf, u64)> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if let Ok(meta) = entry.metadata() {
+                out.push((path, meta.len()));
+            }
+        }
+    }
+    out
+}
+
+fn scan_work_cache(work_dir: &Path, active_job_ids: &[u64]) -> StorageBucket {
+    let mut bucket = StorageBucket::default();
+    let Ok(entries) = fs::read_dir(work_dir) else {
+        return bucket;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let skip = entry
+            .file_name()
+            .to_str()
+            .and_then(|s| s.parse::<u64>().ok())
+            .is_some_and(|id| active_job_ids.contains(&id));
+        if skip {
+            continue;
+        }
+        if path.is_dir() {
+            for (_, len) in walk_files(&path) {
+                bucket.files += 1;
+                bucket.bytes += len;
+            }
+        } else if let Ok(meta) = entry.metadata() {
+            bucket.files += 1;
+            bucket.bytes += meta.len();
+        }
+    }
+    bucket
+}
+
+fn is_cleaned_file(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    if lower.ends_with("_ai_fixed.txt")
+        || lower.ends_with("_ai_fixed.json")
+        || lower.ends_with("_fixed.txt")
+    {
+        return true;
+    }
+    if let Some(stem) = lower.strip_suffix(".txt")
+        && let Some((_, tail)) = stem.rsplit_once("_fixed (")
+        && let Some(num) = tail.strip_suffix(')')
+    {
+        return !num.is_empty() && num.bytes().all(|b| b.is_ascii_digit());
+    }
+    false
+}
+
+fn is_diagram_file(name: &str) -> bool {
+    name.to_ascii_lowercase().ends_with("_diagram.json")
+}
+
+fn is_generated_output_file(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    is_cleaned_file(&lower)
+        || is_diagram_file(&lower)
+        || lower.ends_with(".txt")
+        || lower.ends_with(".srt")
+        || lower.ends_with("_note.json")
+        || lower.ends_with("_note.html")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -915,5 +1274,47 @@ mod tests {
         let bad = dir.path().join("notes.txt");
         fs::write(&bad, "hi").unwrap();
         assert!(ws.import_template(&bad).is_err());
+    }
+
+    #[test]
+    fn storage_stats_and_clear_storage_target_only_requested_buckets() {
+        let data = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let ws = Workspace::at(data.path());
+
+        fs::create_dir_all(data.path().join("work/1")).unwrap();
+        fs::create_dir_all(data.path().join("work/2")).unwrap();
+        fs::write(data.path().join("work/1/audio_16k.pcm"), vec![0u8; 100]).unwrap();
+        fs::write(data.path().join("work/2/audio_16k.pcm"), vec![0u8; 200]).unwrap();
+
+        fs::write(out.path().join("hop.txt"), "raw").unwrap();
+        fs::write(out.path().join("hop_ai_fixed.txt"), "cleaned").unwrap();
+        fs::write(out.path().join("hop_diagram.json"), "{}").unwrap();
+        fs::write(out.path().join("original.m4a"), "keep").unwrap();
+
+        let stats = ws.storage_stats(out.path(), &[2]);
+        assert_eq!(stats.cache.files, 1);
+        assert_eq!(stats.cache.bytes, 100);
+        assert_eq!(stats.cleaned.files, 1);
+        assert_eq!(stats.diagrams.files, 1);
+        assert_eq!(stats.transcripts.files, 3);
+
+        let r1 = ws.clear_storage(out.path(), CleanupTarget::Cache, &[2]).unwrap();
+        assert_eq!(r1.removed_files, 1);
+        assert!(data.path().join("work/2/audio_16k.pcm").exists());
+
+        let r2 = ws.clear_storage(out.path(), CleanupTarget::Cleaned, &[2]).unwrap();
+        assert_eq!(r2.removed_files, 1);
+        assert!(out.path().join("hop.txt").exists());
+        assert!(out.path().join("hop_diagram.json").exists());
+
+        let r3 = ws.clear_storage(out.path(), CleanupTarget::Diagrams, &[2]).unwrap();
+        assert_eq!(r3.removed_files, 1);
+        assert!(out.path().join("hop.txt").exists());
+
+        let r4 = ws.clear_storage(out.path(), CleanupTarget::Transcripts, &[2]).unwrap();
+        assert_eq!(r4.removed_files, 1);
+        assert!(!out.path().join("hop.txt").exists());
+        assert!(out.path().join("original.m4a").exists());
     }
 }
